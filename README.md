@@ -70,13 +70,20 @@ on Rust.
 The npm package metadata lives under `npm/` only to reserve the package name.
 It is not the primary implementation target.
 
+## Repository Layout
+
+- `examples/` contains current-valid Spock examples only.
+- `docs/rfd/` contains discussion drafts and proposal-only language ideas.
+- `npm/` contains package metadata for npm name reservation.
+
 ## Status
 
 Spock is currently a design-stage proposal. There is no compiler, runtime, or
 stable specification yet.
 
-The older, more ambitious draft has been moved to `vision.spock`. It is a sketch
-of possible direction, not the v0 implementation target.
+The older, more ambitious draft has been moved to
+`docs/rfd/0000-vision.spock`. It is a sketch of possible direction, not the v0
+implementation target.
 
 The name and phrase stay:
 
