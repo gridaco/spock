@@ -1,0 +1,20 @@
+[package]
+name = "spock-runtime"
+description = "The Spock v0 runtime: embedded SQLite engine + HTTP surface over a compiled contract"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+spock-lang = { path = "../spock-lang" }
+serde_json.workspace = true
+rusqlite.workspace = true
+axum.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+time.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true

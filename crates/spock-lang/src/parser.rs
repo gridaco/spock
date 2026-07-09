@@ -1,0 +1,433 @@
+//! Recursive-descent parser (docs/spec/v0.md §3). Fail-fast: the first
+//! syntax error aborts the parse; the checker (many-error) runs after.
+
+use crate::ast::*;
+use crate::diag::Diagnostic;
+use crate::lexer::{Token, TokenKind};
+use crate::span::Span;
+
+pub fn parse(tokens: Vec<Token>) -> Result<File, Diagnostic> {
+    Parser { tokens, pos: 0 }.file()
+}
+
+struct Parser {
+    tokens: Vec<Token>,
+    pos: usize,
+}
+
+impl Parser {
+    fn peek(&self) -> &Token {
+        &self.tokens[self.pos.min(self.tokens.len() - 1)]
+    }
+
+    fn peek2(&self) -> &Token {
+        &self.tokens[(self.pos + 1).min(self.tokens.len() - 1)]
+    }
+
+    fn bump(&mut self) -> Token {
+        let tok = self.tokens[self.pos.min(self.tokens.len() - 1)].clone();
+        if self.pos < self.tokens.len() - 1 {
+            self.pos += 1;
+        }
+        tok
+    }
+
+    fn expect(&mut self, kind: TokenKind, what: &str) -> Result<Token, Diagnostic> {
+        if self.peek().kind == kind {
+            Ok(self.bump())
+        } else {
+            Err(self.unexpected(what))
+        }
+    }
+
+    fn unexpected(&self, expected: &str) -> Diagnostic {
+        let tok = self.peek();
+        Diagnostic::new(
+            "L010",
+            format!("expected {expected}, found {}", tok.kind.describe()),
+            tok.span,
+        )
+    }
+
+    fn ident(&mut self, what: &str) -> Result<Ident, Diagnostic> {
+        match &self.peek().kind {
+            TokenKind::Ident(_) => {
+                let tok = self.bump();
+                let TokenKind::Ident(name) = tok.kind else {
+                    unreachable!()
+                };
+                Ok(Ident {
+                    name,
+                    span: tok.span,
+                })
+            }
+            _ => Err(self.unexpected(what)),
+        }
+    }
+
+    // file = { table_decl | seed_block }
+    fn file(&mut self) -> Result<File, Diagnostic> {
+        let mut tables = Vec::new();
+        let mut seeds = Vec::new();
+        loop {
+            match self.peek().kind {
+                TokenKind::KwTable => tables.push(self.table_decl()?),
+                TokenKind::KwSeed => seeds.push(self.seed_block()?),
+                TokenKind::Eof => break,
+                _ => return Err(self.unexpected("`table` or `seed`")),
+            }
+        }
+        Ok(File { tables, seeds })
+    }
+
+    // table_decl = "table" ident "{" { table_item } "}"
+    fn table_decl(&mut self) -> Result<TableDecl, Diagnostic> {
+        let start = self.expect(TokenKind::KwTable, "`table`")?.span;
+        let name = self.ident("table name")?;
+        self.expect(TokenKind::LBrace, "`{`")?;
+        let mut items = Vec::new();
+        let end = loop {
+            match self.peek().kind {
+                TokenKind::RBrace => break self.bump().span,
+                TokenKind::Eof => return Err(self.unexpected("`}`")),
+                _ => items.push(self.table_item()?),
+            }
+        };
+        Ok(TableDecl {
+            name,
+            items,
+            span: start.to(end),
+        })
+    }
+
+    fn table_item(&mut self) -> Result<TableItem, Diagnostic> {
+        match (&self.peek().kind, &self.peek2().kind) {
+            // `key (` → composite key; `key ident` → inline-key field
+            (TokenKind::KwKey, TokenKind::LParen) => {
+                let start = self.bump().span;
+                let (fields, end) = self.ident_group()?;
+                Ok(TableItem::Key {
+                    fields,
+                    span: start.to(end),
+                })
+            }
+            // `unique (` at item position → unique group
+            (TokenKind::KwUnique, TokenKind::LParen) => {
+                let start = self.bump().span;
+                let (fields, end) = self.ident_group()?;
+                Ok(TableItem::Unique {
+                    fields,
+                    span: start.to(end),
+                })
+            }
+            _ => Ok(TableItem::Field(self.field_decl()?)),
+        }
+    }
+
+    // "(" ident "," ident { "," ident } ")"  — two or more (§3)
+    fn ident_group(&mut self) -> Result<(Vec<Ident>, Span), Diagnostic> {
+        self.expect(TokenKind::LParen, "`(`")?;
+        let mut fields = vec![self.ident("field name")?];
+        self.expect(TokenKind::Comma, "`,` (groups name two or more fields)")?;
+        fields.push(self.ident("field name")?);
+        while self.peek().kind == TokenKind::Comma {
+            self.bump();
+            fields.push(self.ident("field name")?);
+        }
+        let end = self.expect(TokenKind::RParen, "`)`")?.span;
+        Ok((fields, end))
+    }
+
+    // field_decl = ["key"] ident ":" type ["?"] ["unique"] ["=" default]
+    //              ["on" "delete" ("restrict"|"cascade")]
+    fn field_decl(&mut self) -> Result<FieldDecl, Diagnostic> {
+        let is_key = if self.peek().kind == TokenKind::KwKey {
+            self.bump();
+            true
+        } else {
+            false
+        };
+        let name = self.ident("field name")?;
+        let start = name.span;
+        self.expect(TokenKind::Colon, "`:`")?;
+        let ty = self.type_expr()?;
+        let mut end = ty.span;
+
+        let optional = if self.peek().kind == TokenKind::Question {
+            end = self.bump().span;
+            true
+        } else {
+            false
+        };
+
+        // `unique` here is the field modifier; `unique (` would be the next
+        // table item (a group), so require that `(` does not follow.
+        let unique =
+            if self.peek().kind == TokenKind::KwUnique && self.peek2().kind != TokenKind::LParen {
+                end = self.bump().span;
+                true
+            } else {
+                false
+            };
+
+        let default = if self.peek().kind == TokenKind::Eq {
+            self.bump();
+            let d = self.default_expr()?;
+            end = d.span();
+            Some(d)
+        } else {
+            None
+        };
+
+        let on_delete = if self.peek().kind == TokenKind::KwOn {
+            let on = self.bump().span;
+            self.expect(TokenKind::KwDelete, "`delete`")?;
+            let (kind, kspan) = match self.peek().kind {
+                TokenKind::KwRestrict => (OnDeleteKind::Restrict, self.bump().span),
+                TokenKind::KwCascade => (OnDeleteKind::Cascade, self.bump().span),
+                _ => return Err(self.unexpected("`restrict` or `cascade`")),
+            };
+            end = kspan;
+            Some(OnDeleteClause {
+                kind,
+                span: on.to(kspan),
+            })
+        } else {
+            None
+        };
+
+        Ok(FieldDecl {
+            is_key,
+            name,
+            ty,
+            optional,
+            unique,
+            default,
+            on_delete,
+            span: start.to(end),
+        })
+    }
+
+    fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {
+        let tok = self.peek().clone();
+        let kind = match &tok.kind {
+            TokenKind::KwText => TypeExprKind::Text,
+            TokenKind::KwInt => TypeExprKind::Int,
+            TokenKind::KwBool => TypeExprKind::Bool,
+            TokenKind::KwTimestamp => TypeExprKind::Timestamp,
+            TokenKind::KwUuid => TypeExprKind::Uuid,
+            TokenKind::Ident(name) => TypeExprKind::Named(name.clone()),
+            _ => return Err(self.unexpected("a type")),
+        };
+        self.bump();
+        Ok(TypeExpr {
+            kind,
+            span: tok.span,
+        })
+    }
+
+    fn default_expr(&mut self) -> Result<DefaultExpr, Diagnostic> {
+        let tok = self.peek().clone();
+        let expr = match &tok.kind {
+            TokenKind::KwAuto => DefaultExpr::Auto(tok.span),
+            TokenKind::KwNow => DefaultExpr::Now(tok.span),
+            TokenKind::Str(s) => DefaultExpr::Lit(Lit::Str(s.clone(), tok.span)),
+            TokenKind::Int(v) => DefaultExpr::Lit(Lit::Int(*v, tok.span)),
+            TokenKind::KwTrue => DefaultExpr::Lit(Lit::Bool(true, tok.span)),
+            TokenKind::KwFalse => DefaultExpr::Lit(Lit::Bool(false, tok.span)),
+            _ => return Err(self.unexpected("`auto`, `now`, or a literal")),
+        };
+        self.bump();
+        Ok(expr)
+    }
+
+    // seed_block = "seed" "{" { seed_stmt } "}"
+    fn seed_block(&mut self) -> Result<SeedBlock, Diagnostic> {
+        let start = self.expect(TokenKind::KwSeed, "`seed`")?.span;
+        self.expect(TokenKind::LBrace, "`{`")?;
+        let mut stmts = Vec::new();
+        let end = loop {
+            match self.peek().kind {
+                TokenKind::RBrace => break self.bump().span,
+                TokenKind::Eof => return Err(self.unexpected("`}`")),
+                _ => stmts.push(self.seed_stmt()?),
+            }
+        };
+        Ok(SeedBlock {
+            stmts,
+            span: start.to(end),
+        })
+    }
+
+    // seed_stmt = [ident "="] ident "{" [seed_field {"," seed_field} [","]] "}"
+    fn seed_stmt(&mut self) -> Result<SeedStmt, Diagnostic> {
+        let first = self.ident("table name or binding")?;
+        let (binding, table) = if self.peek().kind == TokenKind::Eq {
+            self.bump();
+            let table = self.ident("table name")?;
+            (Some(first), table)
+        } else {
+            (None, first)
+        };
+        let start = binding.as_ref().map(|b| b.span).unwrap_or(table.span);
+        self.expect(TokenKind::LBrace, "`{`")?;
+
+        let mut fields = Vec::new();
+        let end;
+        loop {
+            if self.peek().kind == TokenKind::RBrace {
+                end = self.bump().span;
+                break;
+            }
+            let name = self.ident("field name")?;
+            self.expect(TokenKind::Colon, "`:`")?;
+            let value = self.seed_value()?;
+            fields.push((name, value));
+            match self.peek().kind {
+                TokenKind::Comma => {
+                    self.bump();
+                }
+                TokenKind::RBrace => {}
+                _ => return Err(self.unexpected("`,` or `}`")),
+            }
+        }
+
+        Ok(SeedStmt {
+            binding,
+            table,
+            fields,
+            span: start.to(end),
+        })
+    }
+
+    fn seed_value(&mut self) -> Result<SeedValue, Diagnostic> {
+        let tok = self.peek().clone();
+        let value = match &tok.kind {
+            TokenKind::Str(s) => SeedValue::Lit(Lit::Str(s.clone(), tok.span)),
+            TokenKind::Int(v) => SeedValue::Lit(Lit::Int(*v, tok.span)),
+            TokenKind::KwTrue => SeedValue::Lit(Lit::Bool(true, tok.span)),
+            TokenKind::KwFalse => SeedValue::Lit(Lit::Bool(false, tok.span)),
+            TokenKind::Ident(name) => SeedValue::Binding(Ident {
+                name: name.clone(),
+                span: tok.span,
+            }),
+            _ => return Err(self.unexpected("a literal or a seed binding")),
+        };
+        self.bump();
+        Ok(value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::lex;
+
+    fn parse_ok(source: &str) -> File {
+        parse(lex(source).unwrap()).unwrap()
+    }
+
+    fn parse_err(source: &str) -> Diagnostic {
+        parse(lex(source).unwrap()).unwrap_err()
+    }
+
+    #[test]
+    fn parses_full_table() {
+        let file = parse_ok(
+            "table post {\n\
+               key id: uuid = auto\n\
+               author: user on delete cascade\n\
+               caption: text?\n\
+               pinned: bool = false\n\
+               created_at: timestamp = now\n\
+             }",
+        );
+        assert_eq!(file.tables.len(), 1);
+        let table = &file.tables[0];
+        assert_eq!(table.name.name, "post");
+        assert_eq!(table.items.len(), 5);
+        let TableItem::Field(id) = &table.items[0] else {
+            panic!("expected field");
+        };
+        assert!(id.is_key);
+        assert!(matches!(id.default, Some(DefaultExpr::Auto(_))));
+        let TableItem::Field(author) = &table.items[1] else {
+            panic!("expected field");
+        };
+        assert!(matches!(&author.ty.kind, TypeExprKind::Named(n) if n == "user"));
+        assert_eq!(
+            author.on_delete.as_ref().map(|c| c.kind),
+            Some(OnDeleteKind::Cascade)
+        );
+        let TableItem::Field(caption) = &table.items[2] else {
+            panic!("expected field");
+        };
+        assert!(caption.optional);
+    }
+
+    #[test]
+    fn parses_composite_key_and_unique_group() {
+        let file = parse_ok(
+            "table follow {\n\
+               key (follower, target)\n\
+               follower: user\n\
+               target: user\n\
+               unique (follower, target)\n\
+             }",
+        );
+        let table = &file.tables[0];
+        assert!(matches!(&table.items[0], TableItem::Key { fields, .. } if fields.len() == 2));
+        assert!(matches!(&table.items[3], TableItem::Unique { fields, .. } if fields.len() == 2));
+    }
+
+    #[test]
+    fn distinguishes_field_unique_from_group() {
+        let file = parse_ok(
+            "table user {\n\
+               key id: uuid = auto\n\
+               username: text unique\n\
+               unique (id, username)\n\
+             }",
+        );
+        let table = &file.tables[0];
+        let TableItem::Field(username) = &table.items[1] else {
+            panic!("expected field");
+        };
+        assert!(username.unique);
+        assert!(matches!(&table.items[2], TableItem::Unique { .. }));
+    }
+
+    #[test]
+    fn parses_seed_with_bindings() {
+        let file = parse_ok(
+            "seed {\n\
+               maya = user { username: \"maya\" }\n\
+               post { author: maya, caption: \"hi\", }\n\
+             }",
+        );
+        let seed = &file.seeds[0];
+        assert_eq!(seed.stmts.len(), 2);
+        assert_eq!(seed.stmts[0].binding.as_ref().unwrap().name, "maya");
+        assert!(seed.stmts[1].binding.is_none());
+        assert!(matches!(&seed.stmts[1].fields[0].1, SeedValue::Binding(b) if b.name == "maya"));
+    }
+
+    #[test]
+    fn rejects_single_field_group() {
+        // a one-field group must be written as the field modifier
+        let d = parse_err("table t { key (a) a: int }");
+        assert_eq!(d.code, "L010");
+    }
+
+    #[test]
+    fn rejects_stray_top_level_token() {
+        let d = parse_err("42");
+        assert_eq!(d.code, "L010");
+    }
+
+    #[test]
+    fn rejects_unclosed_table() {
+        let d = parse_err("table t { a: int");
+        assert_eq!(d.code, "L010");
+    }
+}
