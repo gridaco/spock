@@ -238,7 +238,8 @@ Spock is a compact language for definitive backend contracts. The surface is
 deliberately small:
 
 - `table` — persistent application data; the durable truth
-- `view` — named public projections; the stable shapes the open surface reads
+- `view` — named public projections; how the open surface reads and, where
+  fields allow, writes
 - `fn` — deliberate mutations and backend operations; the contracts that are
   intentionally not open
 
@@ -257,6 +258,20 @@ instead of reinventing identity per project. Storage is built in, so files are
 linked, queryable, governable entities rather than detached blobs. Channels —
 email and other outbound systems — are planned to join them as explicit
 contracts, though that part of the design is not settled.
+
+Four more concepts are committed from day one, even though their syntax is
+not: `error` — failure outcomes are part of a function's contract, derived
+from the schema's own constraints rather than guessed; `role` and `policy` —
+the actor taxonomy, and named, testable blocks of authorization logic that are
+deliberately richer than SQL predicates; and `seed` — the world is populated
+through the contract itself, so every prototype runs against believable state.
+The working notes live in `docs/rfd/0002-day-one-concepts.md`.
+
+Views are also planned to stay writable across joins — one departure from
+SQL's own ceiling. Where a field traces back to a base column, even renamed or
+nested, writes flow through it; computed fields are read-only by construction.
+Writability is provenance, derived per field
+(`docs/rfd/0003-write-through-views.md`).
 
 ```spock
 // durable truth
@@ -547,7 +562,11 @@ backends could implement them.
 ## Implementation
 
 Spock will be implemented as a real language with a compiler and runtime built
-on Rust.
+on Rust. The architecture is IR-first: source lowers to a checked, specified
+contract that one static runtime loads and plays; generating SQL comes later
+as a second back-end (`docs/rfd/0006-language-identity-ir-first.md`). The Rust
+decision and its alternatives are recorded in
+`docs/rfd/0007-implementation-language.md`.
 
 The npm package metadata lives under `npm/` only to reserve the package name.
 It is not the primary implementation target.
