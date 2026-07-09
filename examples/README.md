@@ -1,16 +1,20 @@
 # Examples
 
-This directory is for current-valid Spock examples only.
+This directory is for example application domains.
 
-Examples here should reflect the language surface that Spock is actively trying
-to build now:
+Each domain may start with a `PRD.md` that describes the product requirements
+without caring about Spock. The Spock language should fit the requirements, not
+the other way around.
+
+Spock files in this directory should reflect the language surface that Spock is
+actively trying to build now:
 
 - `model` for persistent data
 - `view` for public projections
 - `fn` for RPC-style backend operations
 
-Do not use proposal-only concepts here. Future-facing ideas belong in
-`docs/rfd/`.
+Do not use proposal-only concepts in `.spock` examples. Future-facing language
+ideas belong in `docs/rfd/`.
 
 ## Scenario Tracks
 
@@ -31,8 +35,8 @@ why `model`, `view`, and `fn` belong together.
 
 An example should:
 
-- use only accepted Spock syntax
 - model a concrete application scenario
+- use only accepted Spock syntax in `.spock` files
 - include public views for the data that leaves the backend
 - include functions for operations that would be called over RPC
 - avoid speculative authorization, effects, traits, decorators, or test syntax

@@ -72,7 +72,7 @@ It is not the primary implementation target.
 
 ## Repository Layout
 
-- `examples/` contains current-valid Spock examples only.
+- `examples/` contains product requirements and current-valid Spock examples.
 - `docs/rfd/` contains discussion drafts and proposal-only language ideas.
 - `npm/` contains package metadata for npm name reservation.
 
