@@ -43,3 +43,19 @@ An example should:
 
 If an example needs a language feature that does not exist yet, write an RFD
 instead of adding the feature here.
+
+## Answer Sheets (`pg.sql`, …)
+
+A scenario may also include a reference implementation in a conventional
+stack (e.g. `pg.sql` for plain PostgreSQL). These are answer sheets: they
+solve the PRD for real, with the patterns a specialist would actually use,
+and stand entirely on their own.
+
+## Design Drafts (`vN.spock`)
+
+Exception: files named `v1.spock`, `v2.spock`, … inside a scenario are
+**design drafts** — paper programs (see `docs/rfd/0005`, Task 0) written to
+pressure-test the language before it exists. They may invent syntax freely;
+every invention must be marked in the file and indexed for review. Drafts are
+review artifacts for the language design, not accepted-surface examples, and
+are superseded by the next version rather than maintained.

@@ -1,0 +1,1341 @@
+///
+/// instagram · v1.spock — design draft 1
+///
+/// A paper program (docs/rfd/0005, Task 0): the Instagram PRD (./PRD.md)
+/// written as one Spock contract, before the language exists. Its job is to
+/// break the design on paper — every place the fixed surface was not enough,
+/// this file invents syntax and marks it `INVENT(n)`. The index of inventions
+/// and the frictions found live at the bottom of the file (REVIEW NOTES).
+///
+/// This file deliberately suspends the "accepted syntax only" rule of
+/// examples/README.md — it is a language-design draft for review, not an
+/// accepted-surface example. v2, v3, … will revise it as the design settles.
+///
+/// Fixed concepts exercised:  table · view · fn · role · policy · error · seed
+/// Prior sketches reused:     protected/unlocks (rfd 0000/0004), write-through
+///                            views (rfd 0003), expect (rfd 0004), extern/stub
+///                            (rfd 0001)
+///
+/// Out of contract, by doctrine (README, "What all services own"):
+/// sign-in, sign-out, sessions, password/credential recovery, and their rate
+/// limits are std::auth builtins — the contract starts where the product
+/// starts, at the profile.
+///
+
+use std::auth
+use std::storage
+use std::text        // deterministic mention/hashtag extraction
+use std::time
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1 · ACTORS — the closed actor space
+// ─────────────────────────────────────────────────────────────────────────────
+
+iam {
+    role visitor extends auth::anon
+    role user extends auth::user
+    // Operator assignment is an auth claim, not product data.
+    role moderator extends auth::user
+
+    // Scoped role: a user acting on a row they own (rfd 0000 style).
+    // NOTE for review: this is expressible as a policy — two mechanisms,
+    // one meaning. See REVIEW NOTES (R1).
+    role post_author extends user on table::post {
+        check: .author == actor.profile
+    }
+}
+
+// `actor` is the ambient authenticated context (rfd 0005: explicit actor,
+// no definer/invoker ambiguity). `actor.profile` resolves through the unique
+// constraint profile.account — a derived traversal, not magic. For a visitor
+// it is absent, hence typed `profile?` wherever policies accept it.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2 · VALUE SPACE — formats, enums, states
+// ─────────────────────────────────────────────────────────────────────────────
+
+format username extends text {
+    check: regex("^[a-z0-9._]{3,30}$")
+    // format violation derives error `invalid_username` below
+}
+
+format display_name extends text { check: .length <= 30 }
+format bio_text     extends text { check: .length <= 150 }
+format caption_text extends text { check: .length <= 2200 }
+format comment_body extends text { check: .length >= 1 and .length <= 2200 }
+format collection_name extends text { check: .length >= 1 and .length <= 50 }
+format hashtag_text extends text {
+    check: regex("^[a-z0-9_]{1,64}$")   // stored normalized (lowercased)
+}
+
+enum profile_visibility { public, private }
+enum audience_permission { everyone, followed, no_one }   // tags & mentions
+enum comment_permission  { everyone, followers, no_one }
+enum moderation { visible, limited, held, removed }
+enum report_reason { spam, abuse, nudity, violence, ip, self_harm, other }
+enum notice_kind {
+    followed, follow_requested, follow_approved,
+    liked, commented, replied, mentioned, tagged, report_resolved
+}
+enum follow_outcome { following, requested }
+
+// INVENT(1) — `state`: an enum whose members carry declared transitions.
+// A fn moves a row along an edge with a `transition` statement; the checker
+// rejects undeclared edges, and an edge to the state the row is already in
+// is a no-op inside an `idempotent` fn (see INVENT(2)) and a derived
+// `invalid_transition` error elsewhere. This is the atom — guarded state
+// transitions — given a literal home.
+state account_status {
+    active <-> deactivated
+    active | deactivated -> deletion_pending
+    deletion_pending -> active          // cancel within the grace window
+    deletion_pending -> deleted         // background lifecycle; see fn notes
+}
+
+state post_state {
+    published <-> archived
+    published | archived -> deleted
+    deleted -> published                // restore within the recovery window
+}
+
+state media_status {
+    uploaded -> processing
+    processing -> ready | failed
+}
+
+state request_status { pending -> approved | denied }
+
+state report_status { open -> reviewed }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 3 · ERRORS — named product outcomes over derived rejections (rfd 0002)
+// ─────────────────────────────────────────────────────────────────────────────
+
+error invalid_username extends format_violation(username) {
+    "usernames are 3–30 characters: a–z, 0–9, dot, underscore"
+}
+error username_taken extends unique_violation(profile.username) {
+    "this username is already taken"
+}
+error cannot_follow_self extends check_violation(follow.no_self) {
+    "you cannot follow yourself"
+}
+// INVENT(3) — `denial(policy)`: every policy guard is a derivable denial;
+// naming one gives it a product message. Unnamed denials still exist as
+// `denied(policy_name)` — nothing is silent, some things are anonymous.
+error blocked extends denial(not_blocked) {
+    "you can't interact with this account"
+}
+error comments_closed extends denial(may_comment) {
+    "comments are limited on this post"
+}
+error tag_not_allowed extends denial(may_tag) {
+    "this account doesn't allow tags from you"
+}
+error media_not_ready { "media is still processing or failed" }
+error mention_limit   { "too many mentions" }
+error recovery_window_passed { "this post can no longer be restored" }
+
+// `not_found` is a builtin error family, derived from keyed lookups:
+//     let p = post[id] ! not_found
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 4 · TABLES — the state space
+// ─────────────────────────────────────────────────────────────────────────────
+
+// PRD "Account" ≅ std::auth::user (credentials, sessions, recovery live
+// there). Product-side lifecycle lives on the profile.
+
+table profile {
+    key id: uuid = auto()               // uuidv7 (rfd 0005 stance)
+    account: auth::user unique immutable
+    username: username unique protected // write path: fn change_username only
+    display_name: display_name?
+    bio: bio_text?
+    avatar: storage::object?
+    visibility: profile_visibility = public
+    tag_permission: audience_permission = everyone
+    mention_permission: audience_permission = everyone
+    comment_permission: comment_permission = everyone
+    status: account_status = active
+    created_at: instant = now() immutable
+
+    // INVENT(4) — `derived … = count of <table>.<ref-field>`: a materialized
+    // counter the runtime owns. `count of follow.followee` reads: rows of
+    // `follow` whose `followee` is this row. Inside a trailing `where`, `.`
+    // binds to the counted row. Derived fields are read-only everywhere by
+    // construction (rfd 0003, "computed"); convergence, not per-read counting
+    // (PRD, "Counters").
+    derived follower_count: int  = count of follow.followee
+    derived following_count: int = count of follow.follower
+    derived post_count: int      = count of post.author
+                                   where .state == published
+    derived pending_request_count: int = count of follow_request.target
+                                         where .status == pending
+}
+
+// Delivery preferences are separate from activity existence (PRD,
+// "Notifications"). Also the write-through demo partner (rfd 0003).
+table notification_prefs {
+    key profile: profile
+    push_follows: bool = true
+    push_likes: bool = true
+    push_comments: bool = true
+    push_mentions: bool = true
+    push_tags: bool = true
+}
+
+table follow {
+    key (follower: profile, followee: profile)
+    created_at: instant = now() immutable
+    check no_self: follower != followee
+}
+
+table follow_request {
+    key (requester: profile, target: profile)
+    status: request_status = pending
+    created_at: instant = now() immutable
+    responded_at: instant?
+    check no_self: requester != target
+}
+
+table block {
+    key (blocker: profile, blocked: profile)
+    created_at: instant = now() immutable
+}
+
+table restriction {
+    key (restrictor: profile, restricted: profile)
+    created_at: instant = now() immutable
+}
+
+table media_asset {
+    key id: uuid = auto()
+    owner: profile immutable
+    original: storage::object immutable
+    kind: enum { image, video }
+    width: int?
+    height: int?
+    duration_ms: int?                   // video only
+    variants: [storage::object]         // processed renditions
+    status: media_status = uploaded
+    created_at: instant = now() immutable
+}
+
+table post {
+    key id: uuid = auto()
+    author: profile immutable
+    caption: caption_text?
+    location: location?
+    state: post_state = published
+    moderation: moderation = visible
+    created_at: instant = now() immutable
+    updated_at: instant = now()         // runtime-maintained on write
+    deleted_at: instant?
+
+    // Post audience is derived from the author's profile visibility —
+    // a denormalized `visibility` column here would only invite drift.
+
+    derived like_count: int    = count of like.post
+    derived comment_count: int = count of comment.post
+                                 where .deleted_at absent
+                                   and .moderation == visible
+    derived save_count: int    = count of save.post
+}
+
+// Carousel: ordered media under one post (PRD, "Media Asset").
+table post_media {
+    key (post: post, position: int)
+    asset: media_asset
+    check position_range: position >= 0 and position < 10
+    unique (post, asset)
+}
+
+table like {
+    key (profile: profile, post: post)  // at-most-once is the key, not code
+    created_at: instant = now() immutable
+}
+
+table comment {
+    key id: uuid = auto()
+    post: post immutable
+    author: profile immutable
+    parent: comment?                    // reply threading
+    // The profile being replied to, captured at write time so a deleted
+    // parent does not break reply display (PRD, "Reply to Comment").
+    reply_to: profile? immutable
+    body: comment_body
+    moderation: moderation = visible    // `held` when author is restricted
+    created_at: instant = now() immutable
+    deleted_at: instant?
+}
+
+// INVENT(5) — union references: `post | comment` is a closed, typed target.
+// The runtime stores (kind, id); the checker keeps the world closed. This
+// replaces the stringly (target_type, target_id) pair the PRD implies.
+table mention {
+    key (source: post | comment, mentioned: profile)
+    author: profile immutable           // who wrote the mentioning text
+    handle: text                        // as typed; target survives renames
+    created_at: instant = now() immutable
+}
+
+table media_tag {
+    key id: uuid = auto()
+    post: post immutable
+    media: media_asset immutable
+    tagged: profile immutable
+    x: float
+    y: float
+    created_at: instant = now() immutable
+    removed_at: instant?                // tagged user removed themselves
+    unique (media, tagged)
+    check pos: x >= 0.0 and x <= 1.0 and y >= 0.0 and y <= 1.0
+}
+
+table hashtag {
+    key tag: hashtag_text               // normalized form is the identity
+    created_at: instant = now() immutable
+}
+
+table post_hashtag {
+    key (post: post, hashtag: hashtag)
+}
+
+// Locations are seeded, never user-created (PRD, "Location").
+table location {
+    key id: uuid = auto()
+    name: text
+    external_place_id: text unique
+}
+
+// A save always exists unfiled (collection absent); filing into a collection
+// adds a second row. "All saved" is the unfiled set; deleting a collection
+// therefore cannot lose saves. At-most-once-per-collection is the key.
+table save {
+    key (profile: profile, post: post, collection: collection?)
+    created_at: instant = now() immutable
+}
+
+table collection {
+    key id: uuid = auto()
+    owner: profile immutable
+    name: collection_name
+    cover: post?
+    created_at: instant = now() immutable
+    unique (owner, name)
+}
+
+table report {
+    key (reporter: profile, target: post | comment | profile)
+    // the key bounds duplicate reports per reporter per target (PRD)
+    reason: report_reason
+    note: text?
+    status: report_status = open
+    outcome: enum { removed, limited, none }?
+    created_at: instant = now() immutable
+    reviewed_at: instant?
+}
+
+// Activity record ≠ push delivery. The key is the idempotency: a retried
+// interaction upserts the same logical activity row (PRD, "duplicate retries
+// must not create duplicate notification rows").
+table notification {
+    key (recipient: profile, kind: notice_kind,
+         source: post | comment | profile | follow | follow_request | report)
+    by: profile?                        // actor; absent for system notices
+    created_at: instant = now() immutable
+    read_at: instant?
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5 · POLICIES — named guards, composed once, honored everywhere (rfd 0002)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Policies are domain-typed: they relate profiles, not transport actors.
+// Surfaces adapt `actor` → `actor.profile` (absent for visitors); reactions
+// and seeds can evaluate the same policies for any profile. One definition
+// of "may X see Y" serves feed, profile, hashtag, location, search,
+// notifications, and direct links — the PRD's leak matrix collapses into
+// policy composition ("you see what you were meant to see").
+
+policy not_blocked(a: profile?, b: profile) =
+    a absent or not exists block where
+        (.blocker == a and .blocked == b) or (.blocker == b and .blocked == a)
+
+policy is_follower(viewer: profile?, p: profile) =
+    viewer exists and exists follow
+        where .follower == viewer and .followee == p
+
+policy profile_alive(p: profile) =
+    p.status == active
+
+policy can_see_profile(viewer: profile?, p: profile) =
+    profile_alive(p)
+    and not_blocked(viewer, p)
+
+// Content access is stricter than profile access: private profiles show
+// their shell, not their posts.
+policy can_see_content_of(viewer: profile?, p: profile) =
+    can_see_profile(viewer, p)
+    and (p.visibility == public or viewer == p.id or is_follower(viewer, p))
+
+policy post_live(p: post) =
+    p.state == published and p.moderation == visible
+
+policy can_see_post(viewer: profile?, p: post) =
+    (post_live(p) and can_see_content_of(viewer, p.author))
+    or viewer == p.author               // author sees own archived/held
+
+policy may_comment(viewer: profile, p: post) =
+    can_see_post(viewer, p)
+    and not_blocked(viewer, p.author.id)
+    and (p.author.comment_permission == everyone
+         or (p.author.comment_permission == followers
+             and is_follower(viewer, p.author.id))
+         or viewer == p.author)
+
+// A held (restricted) comment is visible to its author and to the post
+// owner only — restriction is quieter than blocking (PRD, "Restrict User").
+policy can_see_comment(viewer: profile?, c: comment) =
+    c.deleted_at absent
+    and can_see_post(viewer, c.post)
+    and (c.moderation == visible
+         or viewer == c.author
+         or viewer == c.post.author)
+
+policy may_mention(author: profile, target: profile) =
+    not_blocked(author, target)
+    and (target.mention_permission == everyone
+         or (target.mention_permission == followed
+             and is_follower(target.id, author)))
+
+policy may_tag(author: profile, target: profile) =
+    not_blocked(author, target)
+    and (target.tag_permission == everyone
+         or (target.tag_permission == followed
+             and is_follower(target.id, author)))
+
+policy discoverable(viewer: profile?, p: profile) =
+    profile_alive(p) and not_blocked(viewer, p)
+    // private profiles are findable; their content is not.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6 · VIEWS — the open surface. No `for` grant ⇒ internal (deny by default,
+//     rfd 0004). Fields are read-only unless `mut` (rfd 0000/0003). An
+//     `order by` on a granted view implies keyset cursor pagination in the
+//     protocol (rfd 0005 stance) — offset does not exist.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Internal building block: embeddable, not an endpoint (no grant).
+view profile_summary from profile {
+    id: .id
+    username: .username
+    display_name: .display_name
+    avatar: .avatar
+}
+
+view media_item from post_media {
+    position: .position
+    kind: .asset.kind
+    variants: .asset.variants
+    width: .asset.width
+    height: .asset.height
+    duration_ms: .asset.duration_ms
+}
+
+// INVENT(6) — parameterized views: the contract names its required inputs
+// instead of hiding them in ad-hoc query strings. Protocol:
+//     GET /view/profile_page?username=maya
+view profile_page(username: username)
+    from profile
+    for role::user, role::visitor
+    where .username == username and can_see_profile(actor.profile, this)
+{
+    // In view/policy scope, `this` is the current row and `.f` is this.f;
+    // inside `exists`/`count of`, `.` rebinds to the inner row.
+    profile: this as profile_summary    // INVENT(7) — view embedding via `as`
+    bio: .bio
+    visibility: .visibility
+    followers: .follower_count
+    following: .following_count
+    posts: .post_count
+    viewer_follows: is_follower(actor.profile, .id)
+    viewer_requested: exists follow_request
+        where .requester == actor.profile and .target == this.id
+              and .status == pending
+    // grid is content: gated separately
+    grid: list of post.author where can_see_post(actor.profile, this)
+          as post_cell
+          order by .created_at desc, .id desc
+}
+
+view post_cell from post {
+    id: .id
+    cover: (list of post_media.post as media_item order by .position).first
+    like_count: .like_count
+    comment_count: .comment_count
+}
+
+view post_detail(id: uuid)
+    from post
+    for role::user, role::visitor
+    where .id == id and can_see_post(actor.profile, this)
+{
+    id: .id
+    author: .author as profile_summary
+    media: list of post_media.post as media_item order by .position
+    caption: .caption
+    mentions: list of mention.source as mention_ref
+    hashtags: list of post_hashtag.post as hashtag_ref
+    tags: list of media_tag.post where .removed_at absent as media_tag_ref
+    location: .location as location_ref
+    created_at: .created_at
+    like_count: .like_count
+    comment_count: .comment_count
+    viewer_has_liked: exists like
+        where .profile == actor.profile and .post == this.id
+    viewer_has_saved: exists save
+        where .profile == actor.profile and .post == this.id
+}
+
+view mention_ref from mention {
+    mentioned: .mentioned as profile_summary
+    handle: .handle
+}
+view hashtag_ref from post_hashtag { tag: .hashtag.tag }
+view location_ref from location { id: .id, name: .name }
+view media_tag_ref from media_tag {
+    media: .media.id
+    tagged: .tagged as profile_summary
+    x: .x
+    y: .y
+}
+
+// The home feed: the contract states membership and order; whether the
+// runtime fans in at read or fans out at write is a materialization
+// strategy, not contract (PRD, "Feed Generation").
+view home_feed
+    from post
+    for role::user
+    where exists follow
+              where .follower == actor.profile and .followee == this.author
+          and can_see_post(actor.profile, this)
+    order by .created_at desc, .id desc
+{
+    id: .id
+    author: .author as profile_summary
+    media: list of post_media.post as media_item order by .position
+    caption: .caption
+    location: .location as location_ref
+    created_at: .created_at
+    like_count: .like_count
+    comment_count: .comment_count
+    viewer_has_liked: exists like
+        where .profile == actor.profile and .post == this.id
+    viewer_has_saved: exists save
+        where .profile == actor.profile and .post == this.id
+}
+
+view post_comments(post: uuid)
+    from comment
+    for role::user, role::visitor
+    where .post == post and can_see_comment(actor.profile, this)
+    order by .created_at asc, .id asc
+{
+    id: .id
+    author: .author as profile_summary
+    parent: .parent
+    reply_to: .reply_to as profile_summary
+    body: .body
+    created_at: .created_at
+}
+
+view tagged_posts(profile: uuid)
+    from media_tag
+    for role::user, role::visitor
+    where .tagged == profile
+          and .removed_at absent
+          and can_see_post(actor.profile, .post)
+    order by .created_at desc, .id desc
+{
+    post: .post as post_cell
+}
+
+view hashtag_page(tag: hashtag_text)
+    from post_hashtag
+    for role::user, role::visitor
+    where .hashtag == tag
+          and post_live(.post)
+          and .post.author.visibility == public   // discovery is public-only
+          and can_see_post(actor.profile, .post)
+    order by .post.created_at desc, .post.id desc
+{
+    post: .post as post_cell
+}
+// A private post can carry hashtags forever and never leak here: the same
+// policy that guards the direct link guards discovery. (PRD, "Hashtags and
+// Locations".)
+
+view location_page(id: uuid)
+    from post
+    for role::user, role::visitor
+    where .location == id
+          and post_live(this)
+          and .author.visibility == public
+          and can_see_post(actor.profile, this)
+    order by .created_at desc, .id desc
+{
+    post: this as post_cell
+}
+
+view profile_search(q: text)
+    from profile
+    for role::user, role::visitor
+    where discoverable(actor.profile, this)
+          and (.username contains q or .display_name contains q)
+    order by .follower_count desc, .id asc
+    limit 20 per request                 // INVENT(8) — declarative limits
+{
+    profile: this as profile_summary
+    followers: .follower_count
+}
+
+view mention_autocomplete(q: text)
+    from profile
+    for role::user
+    where discoverable(actor.profile, this)
+          and may_mention(actor.profile, this)   // don't offer what will fail
+          and .username starts_with q
+    order by .follower_count desc
+    limit 10 per request
+{
+    profile: this as profile_summary
+}
+// Ranking by mutuals/recency is a runtime quality concern; the contract
+// fixes only what is *allowed* to appear (PRD permits simple ranking).
+
+view saved_posts
+    from save
+    for role::user
+    where .profile == actor.profile
+          and .collection absent          // the unfiled set = "all saved"
+          and can_see_post(actor.profile, .post)
+    order by .created_at desc
+{
+    post: .post as post_cell
+    saved_at: .created_at
+}
+// Saves are private by construction: the grant row-binds to the viewer.
+
+view my_collections
+    from collection
+    for role::user
+    where .owner == actor.profile
+{
+    id: .id
+    mut name: .name                     // rename = write-through (rfd 0003);
+                                        // unique(owner,name) derives its error
+    cover: .cover as post_cell
+    count: count of save.collection
+}
+
+view collection_posts(id: uuid)
+    from save
+    for role::user
+    where .collection == id
+          and .profile == actor.profile
+          and can_see_post(actor.profile, .post)
+    order by .created_at desc
+{
+    post: .post as post_cell
+}
+
+view follow_requests
+    from follow_request
+    for role::user
+    where .target == actor.profile and .status == pending
+    order by .created_at desc
+{
+    requester: .requester as profile_summary
+    created_at: .created_at
+}
+
+view notifications
+    from notification
+    for role::user
+    where .recipient == actor.profile
+    order by .created_at desc
+{
+    kind: .kind
+    by: .by as profile_summary
+    source: .source                     // typed union ref; client switches
+    created_at: .created_at
+    read_at: .read_at
+}
+
+// The write-through flagship (rfd 0003): one settings form over two tables.
+// INVENT(9) — `with <name>: <table>.<ref-field>` declares a named functional
+// join (unique backlink ⇒ exactly one row ⇒ provenance holds, writes legal).
+view my_settings
+    from profile
+    with prefs: notification_prefs.profile
+    for role::user
+    where .id == actor.profile
+{
+    username: .username                 // protected ⇒ read-only here; the
+                                        // write path is fn change_username
+    mut display_name: .display_name
+    mut bio: .bio
+    mut avatar: .avatar
+    mut visibility: .visibility
+    mut tag_permission: .tag_permission
+    mut mention_permission: .mention_permission
+    mut comment_permission: .comment_permission
+    mut push_follows: prefs.push_follows      // across the join, one PATCH,
+    mut push_likes: prefs.push_likes          // one transaction
+    mut push_comments: prefs.push_comments
+    mut push_mentions: prefs.push_mentions
+    mut push_tags: prefs.push_tags
+    followers: .follower_count          // derived ⇒ read-only by construction
+    following: .following_count
+}
+
+// Moderation surface.
+view report_queue
+    from report
+    for role::moderator
+    where .status == open
+    order by .created_at asc
+{
+    reporter: .reporter as profile_summary
+    target: .target
+    reason: .reason
+    note: .note
+    created_at: .created_at
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 7 · FUNCTIONS — the deliberate surface
+//     Body statements: let · if/else · if let · for · require · insert ·
+//     upsert · update · delete · transition · return. Bounded iteration only;
+//     no while — the rule of least power holds inside bodies too.
+//     `require <cond> ! <error>` maps a failed guard to a declared outcome.
+//     INVENT(2) — `idempotent fn`: a checkable claim. The checker verifies
+//     every write is keyed by the arguments (upsert / keyed delete / keyed
+//     transition), so calling twice ≡ calling once (PRD, "Idempotency").
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ---- identity & profile ----
+
+// G0, the tracer bullet (rfd 0005): claim a username, own a profile.
+fn claim_username(name: username) -> profile
+    for role::user
+    ! invalid_username | username_taken
+{
+    let p = insert profile { account: actor, username: name }
+    insert notification_prefs { profile: p }
+    return p
+}
+
+fn change_username(name: username) -> profile
+    for role::user
+    unlocks profile.username            // the only write path (rfd 0004)
+    ! invalid_username | username_taken
+{
+    let p = profile[account: actor] ! not_found
+    update p { username: name }
+    // mention/tag references survive: they point at profile.id, and the
+    // typed handle preserves what was displayed at write time (PRD).
+    return p
+}
+
+fn deactivate_account() for role::user idempotent {
+    let p = profile[account: actor] ! not_found
+    transition p.status -> deactivated
+    std::auth::suspend(actor)           // builtin effect: end sessions
+}
+
+fn request_account_deletion() for role::user {
+    let p = profile[account: actor] ! not_found
+    transition p.status -> deletion_pending
+    std::auth::suspend(actor)
+    // The grace-window expiry (deletion_pending -> deleted after N days)
+    // is a durable timer — rung 2 (rfd 0001 §4). Declared, not yet
+    // expressible:
+    todo("protocol: purge after grace window")
+}
+
+// ---- social graph ----
+
+fn follow(target: profile) -> { outcome: follow_outcome }
+    for role::user
+    limit 60 per hour                   // INVENT(8) applied to a fn
+    ! cannot_follow_self | blocked | not_found
+    idempotent
+{
+    let me = actor.profile
+    let t = profile[target] ! not_found
+    require profile_alive(t) ! not_found        // hide dead accounts
+    require not_blocked(me, t.id) ! blocked
+    if t.visibility == private and not is_follower(me, t.id) {
+        upsert follow_request { requester: me, target: t.id }
+        return { outcome: requested }
+    }
+    upsert follow { follower: me, followee: t.id }
+    return { outcome: following }
+}
+
+fn unfollow(target: profile) for role::user idempotent {
+    delete follow where .follower == actor.profile and .followee == target
+    delete follow_request
+        where .requester == actor.profile and .target == target
+              and .status == pending
+}
+
+fn approve_follow_request(requester: profile)
+    for role::user
+    ! not_found
+    idempotent
+{
+    let r = follow_request[requester: requester, target: actor.profile]
+            ! not_found
+    transition r.status -> approved
+    update r { responded_at: now() }
+    upsert follow { follower: requester, followee: actor.profile }
+}
+
+fn deny_follow_request(requester: profile)
+    for role::user
+    ! not_found
+    idempotent
+{
+    let r = follow_request[requester: requester, target: actor.profile]
+            ! not_found
+    transition r.status -> denied
+    update r { responded_at: now() }
+    // denial is quiet: no notification reaction fires on `denied`
+}
+
+fn block_profile(target: profile) for role::user ! cannot_follow_self idempotent {
+    let me = actor.profile
+    require target != me ! cannot_follow_self   // reuse; rename in v2?
+    upsert block { blocker: me, blocked: target }
+    // blocking severs the relationship both ways, explicitly — domain
+    // mutations belong in fn bodies, not reactions (see §9 rule):
+    delete follow where .follower == me and .followee == target
+    delete follow where .follower == target and .followee == me
+    delete follow_request where .requester == target and .target == me
+                                and .status == pending
+    delete follow_request where .requester == me and .target == target
+                                and .status == pending
+}
+
+fn unblock_profile(target: profile) for role::user idempotent {
+    delete block where .blocker == actor.profile and .blocked == target
+    // unblocking does not restore follows (PRD)
+}
+
+fn restrict_profile(target: profile) for role::user idempotent {
+    upsert restriction { restrictor: actor.profile, restricted: target }
+}
+
+fn unrestrict_profile(target: profile) for role::user idempotent {
+    delete restriction
+        where .restrictor == actor.profile and .restricted == target
+}
+
+// ---- media & posts ----
+
+fn upload_media(file: storage::object, kind: enum { image, video })
+    -> media_asset
+    for role::user
+{
+    return insert media_asset { owner: actor.profile, original: file,
+                                kind: kind }
+}
+
+// Processing is genuinely foreign — transcoding is rung 3 (rfd 0001 §3).
+extern fn process_media(asset: media_asset) -> media_status
+    writes media_asset
+    effects host::transcode
+
+stub process_media {
+    scenario ready  -> ready            // prototype default
+    scenario failed -> failed           // play the failure path (PRD:
+                                        // failures must leave the post
+                                        // unpublishable)
+}
+
+// INVENT(10) — `spawn` from a reaction: fire an extern asynchronously after
+// commit. Ordering/retry semantics are rung 2; the shape is claimed here.
+on create media_asset {
+    transition this.status -> processing
+    spawn process_media(this)
+}
+
+// record: a transport-only shape — typed input, never stored. INVENT(11)
+record media_tag_input {
+    media: media_asset
+    tagged: profile
+    x: float
+    y: float
+}
+
+fn publish_post(
+    media: [media_asset; 1..10],        // bounded list type: a carousel is
+                                        // 1–10 items, illegal states
+                                        // unrepresentable
+    caption: caption_text?,
+    location: location?,
+    tags: [media_tag_input]?
+) -> post
+    for role::user
+    limit 20 per hour
+    ! media_not_ready | tag_not_allowed | mention_limit | not_found
+{
+    let me = actor.profile
+    require all m in media: m.owner == me ! not_found
+    require all m in media: m.status == ready ! media_not_ready
+    let p = insert post { author: me, caption: caption, location: location }
+    for (m, i) in media {
+        insert post_media { post: p, asset: m, position: i }
+    }
+    resolve_mentions(source: p, author: me, text: caption)
+    index_hashtags(post: p, text: caption)
+    if let list = tags {
+        for t in list { apply_media_tag(post: p, input: t) }
+    }
+    return p
+}
+
+fn edit_post(
+    id: uuid,
+    caption: caption_text?,
+    location: location?,
+    tags: [media_tag_input]?
+) -> post
+    for role::post_author               // scoped role carries ownership
+    ! tag_not_allowed | mention_limit | not_found
+{
+    let p = post[id] ! not_found
+    update p { caption: caption, location: location }
+    // caption edits re-parse mentions and hashtags (PRD, "Edit Post")
+    delete mention where .source == p
+    delete post_hashtag where .post == p
+    resolve_mentions(source: p, author: p.author, text: caption)
+    index_hashtags(post: p, text: caption)
+    if let list = tags {
+        delete media_tag where .post == p and .removed_at absent
+        for t in list { apply_media_tag(post: p, input: t) }
+    }
+    // media files are not editable after publish (PRD); created_at, likes,
+    // comments, saves untouched by construction — nothing here writes them.
+    return p
+}
+
+fn archive_post(id: uuid) for role::post_author ! not_found idempotent {
+    let p = post[id] ! not_found
+    transition p.state -> archived
+}
+
+fn unarchive_post(id: uuid) for role::post_author ! not_found idempotent {
+    let p = post[id] ! not_found
+    transition p.state -> published
+}
+
+fn delete_post(id: uuid) for role::post_author ! not_found idempotent {
+    let p = post[id] ! not_found
+    transition p.state -> deleted
+    update p { deleted_at: now() }
+    // Soft delete: rows for likes/comments/saves/tags/mentions survive for
+    // audit and counter repair; every read surface already excludes them
+    // through can_see_post (PRD, "Deletion").
+}
+
+fn restore_post(id: uuid)
+    for role::post_author
+    ! not_found | recovery_window_passed
+{
+    let p = post[id] ! not_found
+    require now() - p.deleted_at <= 30d ! recovery_window_passed
+    transition p.state -> published
+    update p { deleted_at: absent }
+    // permanent purge after the window: rung 2, same as account deletion
+}
+
+// ---- interactions ----
+
+fn like_post(post: uuid) for role::user ! not_found | blocked idempotent {
+    let p = post[post] ! not_found
+    require can_see_post(actor.profile, p) ! not_found   // don't reveal
+    upsert like { profile: actor.profile, post: p }
+}
+
+fn unlike_post(post: uuid) for role::user idempotent {
+    delete like where .profile == actor.profile and .post == post
+    // counters are derived (INVENT(4)): repeated like/unlike cannot drift
+    // or go negative — there is no counter code to corrupt (PRD).
+}
+
+fn add_comment(post: uuid, body: comment_body, parent: comment?)
+    -> comment
+    for role::user
+    limit 60 per hour
+    ! not_found | comments_closed | blocked | mention_limit
+{
+    let me = actor.profile
+    let p = post[post] ! not_found
+    require can_see_post(me, p) ! not_found
+    require may_comment(me, p) ! comments_closed
+    let reply_to: profile? = absent
+    if let par = parent {
+        require par.post == p ! not_found       // parent must be on-post
+        let reply_to = par.author
+    }
+    let held = exists restriction
+        where .restrictor == p.author and .restricted == me
+    let c = insert comment {
+        post: p, author: me, parent: parent, reply_to: reply_to,
+        body: body,
+        moderation: held ? held : visible
+    }
+    require std::text::mentions(body).count <= 10 ! mention_limit
+    resolve_mentions(source: c, author: me, text: body)
+    return c
+}
+
+fn delete_comment(id: uuid) for role::user ! not_found idempotent {
+    let c = comment[id] ! not_found
+    // author may delete their own; post author may delete any on their post
+    require c.author == actor.profile or c.post.author == actor.profile
+        ! not_found
+    update c { deleted_at: now() }
+}
+
+fn remove_my_tag(tag: uuid) for role::user ! not_found idempotent {
+    let t = media_tag[tag] ! not_found
+    require t.tagged == actor.profile ! not_found
+    update t { removed_at: now() }
+}
+
+fn save_post(post: uuid, collection: collection?)
+    for role::user
+    ! not_found
+    idempotent
+{
+    let me = actor.profile
+    let p = post[post] ! not_found
+    require can_see_post(me, p) ! not_found
+    upsert save { profile: me, post: p, collection: absent }  // "all saved"
+    if let c = collection {
+        require c.owner == me ! not_found
+        upsert save { profile: me, post: p, collection: c }
+    }
+}
+
+fn unsave_post(post: uuid) for role::user idempotent {
+    delete save where .profile == actor.profile and .post == post
+    // removes the unfiled row and every collection row (PRD, "Unsaving")
+}
+
+fn create_collection(name: collection_name) -> collection
+    for role::user
+    ! unique_violation(collection)      // anonymous derived outcome, kept
+{                                       // visible in the signature
+    return insert collection { owner: actor.profile, name: name }
+}
+
+fn delete_collection(id: uuid) for role::user ! not_found idempotent {
+    let c = collection[id] ! not_found
+    require c.owner == actor.profile ! not_found
+    delete save where .collection == c   // unfiled rows remain: posts stay
+    delete c                             // saved (PRD, "Manage Collections")
+}
+
+fn report_target(target: post | comment | profile,
+                 reason: report_reason, note: text?)
+    for role::user
+    limit 20 per day
+    idempotent
+{
+    upsert report { reporter: actor.profile, target: target,
+                    reason: reason, note: note }
+}
+
+fn mark_notifications_read(before: instant) for role::user idempotent {
+    update notification
+        where .recipient == actor.profile
+              and .created_at <= before and .read_at absent
+        { read_at: now() }
+}
+
+// ---- moderation (deliberate, internal-facing) ----
+
+fn review_report(reporter: profile, target: post | comment | profile,
+                 action: enum { remove, limit, dismiss })
+    for role::moderator
+    ! not_found
+{
+    let r = report[reporter: reporter, target: target] ! not_found
+    transition r.status -> reviewed
+    if action == remove {
+        moderate_target(target, removed)
+        update r { outcome: removed, reviewed_at: now() }
+    } else if action == limit {
+        moderate_target(target, limited)
+        update r { outcome: limited, reviewed_at: now() }
+    } else {
+        update r { outcome: none, reviewed_at: now() }
+    }
+    upsert notification { recipient: r.reporter, kind: report_resolved,
+                          source: r }
+    // outcome detail is not exposed to the reporter beyond "resolved" —
+    // the notifications view projects kind + source, not the verdict (PRD).
+}
+
+fn disable_account(target: profile) for role::moderator ! not_found idempotent {
+    let p = profile[target] ! not_found
+    transition p.status -> deactivated
+    std::auth::suspend(p.account)
+}
+
+// ---- internal helpers (no grant ⇒ unreachable from outside) ----
+
+fn resolve_mentions(source: post | comment, author: profile, text: caption_text?) {
+    if text absent { return }
+    for handle in std::text::mentions(text) {   // deterministic extraction
+        if let target = profile[username: handle] {
+            if may_mention(author, target) {
+                upsert mention { source: source, mentioned: target,
+                                 author: author, handle: handle }
+            }
+        }
+        // unresolved or disallowed handles remain plain text (PRD)
+    }
+}
+
+fn index_hashtags(post: post, text: caption_text?) {
+    if text absent { return }
+    for raw in std::text::hashtags(text) {
+        let tag = upsert hashtag { tag: std::text::lower(raw) }
+        upsert post_hashtag { post: post, hashtag: tag }
+    }
+}
+
+fn apply_media_tag(post: post, input: media_tag_input) ! tag_not_allowed | not_found {
+    require input.media belongs_to post ! not_found
+    require may_tag(post.author, input.tagged) ! tag_not_allowed
+    upsert media_tag { post: post, media: input.media,
+                       tagged: input.tagged, x: input.x, y: input.y }
+}
+
+fn moderate_target(target: post | comment | profile, level: moderation) {
+    // match on a union reference — the closed world makes this exhaustive,
+    // and the checker can demand every arm (rfd 0002, match analogy)
+    match target {
+        p: post    -> update p { moderation: level }
+        c: comment -> update c { moderation: level }
+        pr: profile -> if level == removed { transition pr.status -> deactivated }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8 · REACTIONS — derived records only (INVENT(12))
+//     `on <transition> { … }` runs in the same transaction as its trigger.
+//     Rule proposed here: a reaction may only append *derived* records —
+//     notifications, audit — never mutate domain state. Domain consequences
+//     (block severs follows) stay in fn bodies where they are visible.
+//     Push delivery is an effect: after commit, honoring notification_prefs
+//     (rfd 0005 stance: effects after commit).
+// ─────────────────────────────────────────────────────────────────────────────
+
+on create follow {
+    upsert notification { recipient: .followee, kind: followed,
+                          by: .follower, source: this }
+}
+
+on create follow_request {
+    upsert notification { recipient: .target, kind: follow_requested,
+                          by: .requester, source: this }
+}
+
+on transition follow_request.status -> approved {
+    upsert notification { recipient: .requester, kind: follow_approved,
+                          by: .target, source: this }
+}
+
+on create like {
+    if .post.author != .profile {       // don't notify self-likes
+        upsert notification { recipient: .post.author, kind: liked,
+                              by: .profile, source: .post }
+    }
+}
+
+on create comment {
+    if .moderation == visible and .post.author != .author {
+        upsert notification {
+            recipient: .post.author,
+            kind: .parent exists ? replied : commented,
+            by: .author, source: this
+        }
+    }
+    if let target = .reply_to {
+        if target != .post.author and can_see_comment(target, this) {
+            upsert notification { recipient: target, kind: replied,
+                                  by: .author, source: this }
+        }
+    }
+}
+
+on create mention {
+    // a mention notifies only someone who could see the source — a private
+    // post's mention must not signal content the target cannot open (PRD)
+    if can_see_source(.mentioned, .source) {
+        upsert notification { recipient: .mentioned, kind: mentioned,
+                              by: .author, source: .source }
+    }
+}
+
+on create media_tag {
+    if can_see_post(.tagged, .post) {
+        upsert notification { recipient: .tagged, kind: tagged,
+                              by: .post.author, source: .post }
+    }
+}
+
+// helper over the union: dispatch to the right policy
+policy can_see_source(viewer: profile?, s: post | comment) =
+    match s {
+        p: post    -> can_see_post(viewer, p)
+        c: comment -> can_see_comment(viewer, c)
+    }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 9 · SEED — personas and a played walk (rfd 0002: seeds run through the
+//     contract; committed, deterministic, LLM only at authoring time)
+// ─────────────────────────────────────────────────────────────────────────────
+
+seed dev {
+    persona maya = user via claim_username("maya")
+    persona luis = user via claim_username("luis")
+    persona vera = user via claim_username("vera")     // will go private
+    persona rex  = user via claim_username("rex")      // will be blocked
+    persona mods = moderator
+
+    play {
+        as vera {
+            update my_settings { visibility: private }
+        }
+        as maya {
+            let m = upload_media(fixture("beach.jpg"), image)
+            let beach = publish_post(media: [m],
+                caption: "day one with @luis at the beach #sunset")
+            block_profile(rex)
+        }
+        as luis {
+            follow("maya")                     // public → following
+            follow("vera")                     // private → requested
+            like_post(beach)
+            let c = add_comment(beach, "take me next time @maya")
+        }
+        as vera {
+            approve_follow_request(luis)
+            let v = upload_media(fixture("cat.jpg"), image)
+            let cat = publish_post(media: [v], caption: "#caturday")
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10 · EXPECTATIONS — the PRD's acceptance criteria as checkable claims
+//      (rfd 0004: obligations; persona forms are playable acceptance tests)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// role-level: reachability over the transition system
+expect role::visitor can read view::profile_page
+expect role::visitor can read view::post_detail
+expect role::user can call fn::publish_post
+expect role::user can call fn::follow
+expect role::moderator can read view::report_queue
+
+// negative: safety properties the leak matrix demands. INVENT(13) — `cannot`
+// asks the checker to prove *no* path exists, the dual of `can`.
+expect role::visitor cannot call fn::publish_post
+expect role::visitor cannot read view::saved_posts
+expect role::user cannot write profile.follower_count   // derived: no path
+expect role::user cannot write profile.username via view::*  // protected
+
+// persona-level, state-conditional: scenario tests over the seed.
+// INVENT(14) — `after <persona>: <call>,` sequences a precondition.
+expect luis can read view::post_detail(cat)         // approved follower
+expect rex cannot read view::profile_page(username: "maya")   // blocked
+expect rex cannot call fn::follow(maya)
+expect after maya: block_profile(luis),
+       luis cannot read view::post_detail(beach)
+expect after vera: deny_follow_request(rex),
+       rex cannot read view::post_detail(cat)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REVIEW NOTES — what writing v1 surfaced (input to v2)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Inventions introduced by this draft, indexed:
+//   INVENT(1)  `state` — enums with declared transitions + `transition` stmt
+//   INVENT(2)  `idempotent fn` — checkable retry-safety claim
+//   INVENT(3)  `error … extends denial(policy)` — named policy denials
+//   INVENT(4)  `derived … = count of table.ref` — runtime-owned counters
+//   INVENT(5)  union references (`post | comment`) + `match` over them
+//   INVENT(6)  parameterized views
+//   INVENT(7)  view embedding (`.author as profile_summary`)
+//   INVENT(8)  `limit N per <window>` on fns and views
+//   INVENT(9)  `with x: table.ref` — named functional join in a view
+//   INVENT(10) `spawn` — async extern invocation from a reaction (rung 2!)
+//   INVENT(11) `record` — transport-only input shapes
+//   INVENT(12) `on <transition>` reactions, derived-records-only rule
+//   INVENT(13) `expect … cannot` — negative obligations (leak proofs)
+//   INVENT(14) `expect after …` — state-conditional obligations
+//
+// Frictions and open questions found while writing:
+//   R1  Scoped roles (post_author) are expressible as policies — two
+//       mechanisms, one meaning. Keep both, or make roles pure taxonomy and
+//       guards pure policy?
+//   R2  `.` scoping: `.f` = this.f in views/policies, but rebinds inside
+//       `exists` / `count of` / `list of`. Workable, but v1 already hit
+//       shadowing (see follow(): arg `target` vs `.target`). Needs a rule
+//       or explicit binders (`exists f in follow: f.follower == …`).
+//   R3  Optionals inside composite keys (save.collection?) — is `absent` a
+//       key value? v1 says yes; it carries the "all saved" design. Decide.
+//   R4  `list of` inside a view (profile_page.grid) makes one view both a
+//       page and a nested collection — pagination of a *nested* list is
+//       unspecified. Probably: nested lists are previews, capped; full sets
+//       are their own parameterized views.
+//   R5  Errors reused across meanings (cannot_follow_self in block_profile)
+//       — cheap now, wrong later. Error taxonomy per fn vs shared pool?
+//   R6  `transition` inside `update` vs alongside it: two statements touch
+//       one row (delete_post) — should transition carry field updates
+//       (`transition p.state -> deleted with { deleted_at: now() }`)?
+//   R7  Notifications for *withdrawn* actions: unlike after like leaves the
+//       notification row. Reactions on delete? Retract rule? v1 ignores it.
+//   R8  `spawn` (INVENT 10) is the first rung-2 surface in an example —
+//       ordering, retry, and failure semantics are unwritten (rfd 0001 §4).
+//   R9  Feed strategy is declared "runtime concern" — but keyset pagination
+//       over a fan-in view needs a stable composite cursor. Is `order by`
+//       enough contract for cursor stability, or does the view need an
+//       explicit `cursor (created_at, id)` clause?
+//   R10 `limit N per <window>` needs a per-what (actor? ip? persona?) —
+//       v1 implies per-actor; visitors have no actor. Unresolved.
+//   R11 The ternary (`held ? held : visible`, `.parent exists ? replied :
+//       commented`) crept in — decide expression grammar deliberately.
+//   R12 Counter freshness: derived counts are eventually consistent (PRD
+//       allows) — but `expect` claims over counters would need "eventually"
+//       semantics. Expectations are strict; counters are lazy. Tension.
+//   R13 Media ownership check (`all m in media: m.owner == me`) is a policy
+//       inlined as a require — should collection-valued args carry
+//       row-policies in the signature (`media: [media_asset where .owner ==
+//       actor.profile]`)?
+//   R14 account_status.deleted is unreachable in v1 (rung-2 timer) — the
+//       reachability linter *should* flag it; the todo() is the waiver.
+//   R15 Username reuse policy (PRD open question) — unique is global and
+//       forever in v1; conditional uniqueness (`unique … where status !=
+//       deleted`) was deliberately not invented.
