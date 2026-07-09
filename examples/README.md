@@ -9,7 +9,7 @@ the other way around.
 Spock files in this directory should reflect the language surface that Spock is
 actively trying to build now:
 
-- `model` for persistent data
+- `table` for persistent data
 - `view` for public projections
 - `fn` for RPC-style backend operations
 
@@ -29,7 +29,7 @@ Good example tracks include:
 - `cms` - authors, articles, drafts, publishing, public content views
 
 Each scenario should stay small enough to read quickly, but real enough to show
-why `model`, `view`, and `fn` belong together.
+why `table`, `view`, and `fn` belong together.
 
 ## Example Rules
 
