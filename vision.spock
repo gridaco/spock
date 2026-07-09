@@ -1,0 +1,180 @@
+///
+/// <spock> language specification 2026, original author universe @softmarshmallow
+/// 
+/// reserved tokens: iam, role, model, volatile, trait, and, pub, mut, once, fn, extends, @identity, @frequency, @protected, @default, for, materialized
+/// std modules: auth, storage
+/// 
+/// key considerations: ergonomics, performance, security
+/// 
+
+
+use std::auth
+use std::storage
+use std::channels
+
+iam {
+    role user extends auth::user;
+    role visitor exetnds auth::anon;
+    role post_author extends user on model::post {
+        check: .author
+        allow: *
+    }
+    role community_owner extends user on model::community {
+        check: .user and .owner
+        allow: *
+    }
+}
+
+format username extends text {
+    check: regex("^[a-zA-Z0-9_-]{3,16}$")
+}
+
+error ERR_USERNAME_ALREADY_EXISTS extends UNIQUE_CONSTRAINTS_CONFLICT {
+    "this username is already taken"
+}
+
+model user_profile {
+    user: auth::user
+    // username can't be directly changed
+    pub username: username @protected
+    pub bio: text
+}
+
+pub view user_profile for role::visitor {
+    pub user_id: .user.id
+    pub username: .username
+    pub mut bio: .bio
+}
+
+pub fn check_username_available {
+    todo()
+}
+
+pub fn change_username over model::user_profile unlocks .username {
+    todo()
+}
+
+model community {
+    cover_image: storage::object
+    name: text
+    slug: text @identity
+    created_at: timestamp @createdat
+}
+
+pub view community {
+    mut cover_image: .cover_image
+    mut name: .name
+    slug: .slug
+    created_at: .created_at
+}
+
+model community_admin {
+    user: auth::user @identity
+    community: community
+    owner: bool
+}
+
+model community_member {
+    @identity(user, community)
+    user: auth::user
+    community: community
+}
+
+format tag extends text {
+    check: regex("#\w{2,10}\b")
+}
+
+model post_tag {
+    key: tag @identity
+}
+
+model post {
+    id: uuid @identity
+    community: community @protected
+    author: auth::user @protected
+    title: text
+    content: storage::object
+    created_at: timestamp @createdat
+    updated_at: timestamp @updatedat
+    tags post_tag[] // ?
+    is_draft: bool @default(false) @draft
+}
+
+pub view post respects draft {
+    id: .id
+    community: .community
+    author: .author
+    mut title: .title
+    mut tags: .tags
+}
+
+format comment_body extends text {
+    check: regex("^[^\\n\\r]*$")   
+}
+
+model post_comment {
+    id: uuid @identity
+    author: auth::user @protected
+    body: comment_body
+    created_at: timestamp @createdat
+    is_deleted: bool @default(false) @softdelete
+}
+
+pub view post_comment respects softdelete {
+    id: .id
+    body: .body
+    created_at: .created_at
+}
+
+trait votes {
+    count_upvotes: int @materialized
+    count_downvotes: int @materialized
+    
+    fn upvote
+    fn downvote
+    fn unvote
+}
+
+enum VoteStatus { none = 0, up = 1, down = 2 }
+
+trait votes for model::post, model::post_comment {
+    vote_user: auth::user
+    vote_kind: VoteStatus
+}
+
+// effects for votes counter
+effect on_votes_bit_change for votes {
+    // ???
+    let current_vote_kind = vote_kind
+    fn upvote {
+        todo()
+    }
+    fn downvote {
+         todo()
+    }
+    fn unvote {
+        todo()
+    }
+}
+
+pub volatile fn upvote for votes over model::post, model::post_comment with effect on_votes_bit_change {
+    todo()
+}
+
+pub volatile fn downvote for votes over model::post, model::post_comment with effect on_votes_bit_change {
+    todo()
+}
+
+pub volatile fn unvote for votes over model::post, model::post_comment with effect on_votes_bit_change {
+    todo()
+}
+
+test {
+    describe("only community owner can invite new admin") {
+        todo()
+    }
+
+    describe("user profile to be auto inserted as user sign up"){
+        todo()
+    }
+}

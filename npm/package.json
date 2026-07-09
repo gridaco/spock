@@ -1,0 +1,21 @@
+{
+  "name": "spock",
+  "version": "0.0.1",
+  "description": "Name reservation for the Spock language package.",
+  "main": "index.js",
+  "private": false,
+  "scripts": {
+    "test": "echo \"No npm tests. Spock is implemented in Rust.\""
+  },
+  "keywords": [
+    "spock",
+    "language",
+    "compiler",
+    "rust"
+  ],
+  "author": "",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}
