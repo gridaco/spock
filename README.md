@@ -561,12 +561,22 @@ backends could implement them.
 
 ## Implementation
 
-Spock will be implemented as a real language with a compiler and runtime built
-on Rust. The architecture is IR-first: source lowers to a checked, specified
+Spock is implemented as a real language with a compiler and runtime built on
+Rust. The architecture is IR-first: source lowers to a checked, specified
 contract that one static runtime loads and plays; generating SQL comes later
 as a second back-end (`docs/rfd/0006-language-identity-ir-first.md`). The Rust
 decision and its alternatives are recorded in
 `docs/rfd/0007-implementation-language.md`.
+
+The v0 toolchain lives in `crates/` and implements the table slice
+(`docs/rfd/0008-v0-table-first.md`) against the specification in
+`docs/spec/v0.md` — lexer, parser, checker, contract IR, embedded-SQLite
+runtime, and the HTTP protocol:
+
+```sh
+cargo run -p spock-cli -- run examples/instagram/v0.spock
+# GET /~contract · GET /{table} · POST /~dev/{table}
+```
 
 The npm package metadata lives under `npm/` only to reserve the package name.
 It is not the primary implementation target.

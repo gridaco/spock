@@ -1,0 +1,71 @@
+// instagram — the v0 slice
+//
+// This file uses only the implemented v0 surface (docs/spec/v0.md) and runs
+// on the toolchain in crates/:
+//
+//   spock run examples/instagram/v0.spock
+//
+// v0 is the table slice (RFD 0008): durable state, keys, uniqueness,
+// references, defaults, and a seed — no fn, no view, no auth yet. The full
+// product contract this is a slice of lives in v1.spock (a design draft).
+
+table user {
+  key id: uuid = auto
+  username: text unique
+  full_name: text?
+  bio: text?
+  joined_at: timestamp = now
+}
+
+table post {
+  key id: uuid = auto
+  author: user
+  caption: text?
+  published_at: timestamp = now
+}
+
+table follow {
+  key (follower, target)
+  follower: user
+  target: user
+  since: timestamp = now
+}
+
+table like {
+  key (post, user)
+  post: post on delete cascade
+  user: user
+  at: timestamp = now
+}
+
+table comment {
+  key id: uuid = auto
+  post: post on delete cascade
+  author: user
+  body: text
+  at: timestamp = now
+}
+
+// Deleting a post cascades its likes and comments; deleting a user is
+// restricted while posts, follows, likes, or comments reference them
+// (restrict is the default, stated here by omission).
+
+seed {
+  maya = user { username: "maya", full_name: "Maya Chen", bio: "photographer" }
+  luis = user { username: "luis" }
+  vera = user { username: "vera", bio: "coffee, mostly" }
+
+  p1 = post { author: maya, caption: "first light" }
+  p2 = post { author: luis }
+
+  follow { follower: luis, target: maya }
+  follow { follower: vera, target: maya }
+  follow { follower: maya, target: vera }
+
+  like { post: p1, user: luis }
+  like { post: p1, user: vera }
+  like { post: p2, user: maya }
+
+  comment { post: p1, author: luis, body: "great shot" }
+  comment { post: p1, author: vera, body: "where is this?" }
+}

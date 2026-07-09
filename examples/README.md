@@ -51,7 +51,17 @@ stack (e.g. `pg.sql` for plain PostgreSQL). These are answer sheets: they
 solve the PRD for real, with the patterns a specialist would actually use,
 and stand entirely on their own.
 
-## Design Drafts (`vN.spock`)
+## Runnable Slices (`v0.spock`)
+
+A file named `v0.spock` is the **runnable slice**: it uses only the surface
+the toolchain in `crates/` actually implements (`docs/spec/v0.md`) and runs
+for real:
+
+```sh
+cargo run -p spock-cli -- run examples/instagram/v0.spock
+```
+
+## Design Drafts (`vN.spock`, N ≥ 1)
 
 Exception: files named `v1.spock`, `v2.spock`, … inside a scenario are
 **design drafts** — paper programs (see `docs/rfd/0005`, Task 0) written to
