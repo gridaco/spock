@@ -90,6 +90,7 @@ const RESERVED_TS_NAMES: &[&str] = &[
     "contract",
     "error_code",
     "fns",
+    "refusal_code",
     "reserved_error",
     "timestamp",
     "uuid",
@@ -223,10 +224,32 @@ pub fn typescript(contract: &Contract) -> Result<String, TsGenError> {
         let _ = writeln!(out, "  | \"{code}\"{end}");
     }
 
+    // refusals minted by fns (§7.4) join the total union — `error_code`
+    // is "everything this contract can produce" (RFD 0010 §4), and the
+    // runtime demonstrably produces these
+    let mut refusals: Vec<&str> = contract
+        .fns
+        .iter()
+        .flat_map(|f| f.refusals.iter().map(|r| r.as_str()))
+        .collect();
+    refusals.sort_unstable();
+    refusals.dedup();
+    if !refusals.is_empty() {
+        out.push_str("\n/** Refusals minted by fns (docs/spec/v0.md §7.4). */\n");
+        out.push_str("export type refusal_code =\n");
+        for (i, code) in refusals.iter().enumerate() {
+            let end = if i + 1 == refusals.len() { ";" } else { "" };
+            let _ = writeln!(out, "  | \"{code}\"{end}");
+        }
+    }
+
     out.push_str("\n/** Every error code this contract can produce. */\n");
     out.push_str("export type error_code =\n");
     for table in &contract.tables {
         let _ = writeln!(out, "  | {}_error", table.name);
+    }
+    if !refusals.is_empty() {
+        out.push_str("  | refusal_code\n");
     }
     out.push_str("  | reserved_error;\n");
 

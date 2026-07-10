@@ -134,6 +134,27 @@ fn validate_fns(contract: &Contract, conn: &Connection) -> Result<(), EngineErro
             };
             let at = |message: String| fail(format!("{loc}{message}"));
 
+            // a fn body reads and writes ROWS — engine state is the
+            // engine's. Checked on the raw text BEFORE prepare, because
+            // sqlite reports PRAGMA/ATTACH as "readonly" and applies
+            // PRAGMAs at prepare time: without this gate, an uncalled
+            // read fn could mutate the shared connection during this very
+            // validation. BEGIN/COMMIT would break the one-transaction
+            // envelope the same way. Allow-list, per RFD 0004: the
+            // unknown fails loudly.
+            match first_keyword(sql) {
+                Some(kw)
+                    if ["SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "WITH", "VALUES"]
+                        .contains(&kw.to_ascii_uppercase().as_str()) => {}
+                Some(kw) => {
+                    return Err(at(format!(
+                        "`{kw}` is not a fn statement (a body reads and writes rows: \
+                         SELECT, INSERT, UPDATE, DELETE, REPLACE, WITH, VALUES)"
+                    )));
+                }
+                None => return Err(at("the escape contains no SQL statement".into())),
+            }
+
             // exactly one statement per escape: Batch skips comment- and
             // whitespace-only segments, so trailing `;` and comments are
             // tolerated
@@ -203,6 +224,30 @@ fn validate_fns(contract: &Contract, conn: &Connection) -> Result<(), EngineErro
         }
     }
     Ok(())
+}
+
+/// The first SQL keyword of an escape, skipping whitespace and both
+/// comment forms — the statement-kind gate reads the raw text so nothing
+/// is prepared before the kind is known.
+fn first_keyword(sql: &str) -> Option<&str> {
+    let mut rest = sql;
+    loop {
+        rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix("--") {
+            rest = after.split_once('\n').map_or("", |(_, r)| r);
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            rest = after.split_once("*/").map_or("", |(_, r)| r);
+        } else {
+            break;
+        }
+    }
+    let end = rest
+        .find(|c: char| !c.is_ascii_alphabetic())
+        .unwrap_or(rest.len());
+    if end == 0 {
+        return None;
+    }
+    Some(&rest[..end])
 }
 
 /// The final statement's result columns must equal the declared return
@@ -442,8 +487,12 @@ mod tests {
 
     #[test]
     fn fn_sql_failures_gate_the_load() {
-        // syntax error surfaces SQLite's own message
-        assert!(open_err("fn f() -> user { unchecked sql(\"SELEC *\") }").contains("does not compile"));
+        // a typo'd verb dies at the kind gate, which names the legal ones
+        assert!(open_err("fn f() -> user { unchecked sql(\"SELEC *\") }")
+            .contains("not a fn statement"));
+        // a real syntax error surfaces SQLite's own message
+        assert!(open_err("fn f() -> user { unchecked sql(\"SELECT FROM WHERE\") }")
+            .contains("does not compile"));
         // unknown column resolves at prepare
         assert!(open_err("fn f() -> user { unchecked sql(\"SELECT * FROM user WHERE ghost = 1\") }")
             .contains("does not compile"));
@@ -488,6 +537,71 @@ mod tests {
             "mut fn f(username: text) -> user { unchecked sql(\"UPDATE user SET username = :username\") }"
         )
         .contains("RETURNING"));
+    }
+
+    #[test]
+    fn fn_bodies_are_row_statements_only() {
+        // sqlite reports PRAGMA as "readonly" AND applies it at prepare
+        // time — the kind gate rejects it on the raw text, before
+        // anything is prepared, for reads and writes alike (§7.4)
+        assert!(open_err(
+            "fn f() -> [user] {\n\
+               unchecked sql(\"PRAGMA case_sensitive_like=ON\")\n\
+               unchecked sql(\"SELECT * FROM user\")\n\
+             }"
+        )
+        .contains("not a fn statement"));
+        assert!(open_err(
+            "mut fn f() -> [user] {\n\
+               unchecked sql(\"PRAGMA case_sensitive_like=ON\")\n\
+               unchecked sql(\"SELECT * FROM user\")\n\
+             }"
+        )
+        .contains("not a fn statement"));
+        // comments do not hide the kind
+        assert!(open_err(
+            "fn f() -> [user] { unchecked sql(\"-- note\\n/* more */ ATTACH DATABASE 'x' AS y\") }"
+        )
+        .contains("`ATTACH`"));
+        // transaction control would break the one-transaction envelope
+        assert!(open_err(
+            "mut fn f() -> [user] {\n\
+               unchecked sql(\"COMMIT\")\n\
+               unchecked sql(\"SELECT * FROM user\")\n\
+             }"
+        )
+        .contains("`COMMIT`"));
+        // case-insensitive; CTEs stay legal
+        open_ok("fn f() -> [user] { unchecked sql(\"with x as (select * from user) select * from x\") }");
+    }
+
+    #[test]
+    fn shape_returns_reject_null_under_required_fields() {
+        // the §7.4 no-null-smuggling law covers shape fields too: a NULL
+        // in a non-optional column is internal, before commit
+        let contract = spock_lang::compile(&format!(
+            "{BASE}mut fn sneaky(username: text) -> user {{\n\
+               unchecked sql(\"INSERT INTO user (username) VALUES (:username)\")\n\
+               unchecked sql(\"SELECT id, NULL AS username FROM user WHERE username = :username\")\n\
+             }}"
+        ))
+        .expect("compiles");
+        let mut conn = open(&contract, None).expect("loads: columns match by name");
+        let f = contract.fn_def("sneaky").expect("declared");
+        let err = crate::func::call(
+            &contract,
+            f,
+            &mut conn,
+            &serde_json::Map::from_iter([("username".to_string(), "maya".into())]),
+        )
+        .expect_err("NULL under a required field is a contract break");
+        assert_eq!(err.code, "internal");
+        assert!(err.message.contains("user.username"), "{}", err.message);
+        // ...and the INSERT rolled back with it — one transaction
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM user", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

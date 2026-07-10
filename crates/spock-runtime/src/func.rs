@@ -115,12 +115,12 @@ pub fn call(
         }
 
         // the last statement answers: scalar returns map column 0 as a
-        // bare value; shapes map by name, each column's value type
-        // resolved once — every row reuses the mapping
+        // bare value; shapes map by name, each column's value type and
+        // optionality resolved once — every row reuses the mapping
         let scalar_ty = f.returns.scalar_type();
         let mut stmt = tx.prepare(answer).map_err(map_err)?;
         let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
-        let col_types: Vec<&Type> = match &scalar_ty {
+        let col_types: Vec<(&Type, bool)> = match &scalar_ty {
             Some(_) => Vec::new(),
             None => {
                 let declared = contract
@@ -132,7 +132,7 @@ pub fn call(
                         declared
                             .iter()
                             .find(|(n, _, _)| *n == col.as_str())
-                            .map(|(_, ty, _)| contract.value_type(ty))
+                            .map(|(_, ty, optional)| (contract.value_type(ty), *optional))
                             .ok_or_else(|| {
                                 ApiError::internal("contract drift: unvalidated column")
                             })
@@ -163,11 +163,22 @@ pub fn call(
                 continue;
             }
             let mut obj = Map::new();
-            for (i, (col, ty)) in columns.iter().zip(&col_types).enumerate() {
+            for (i, (col, (ty, optional))) in columns.iter().zip(&col_types).enumerate() {
                 let value = row
                     .get_ref(i)
                     .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
-                obj.insert(col.clone(), sql_to_json_scalar(ty, value));
+                let json = sql_to_json_scalar(ty, value);
+                // the same no-null-smuggling law as scalars (§7.4): a
+                // NULL under a field the shape declares non-optional is
+                // the body breaking its contract — internal, before
+                // commit, never a null under a non-nullable type
+                if json.is_null() && !optional {
+                    return Err(ApiError::internal(format!(
+                        "fn `{}`: the SQL returned NULL for `{}.{col}`, which the shape declares non-optional",
+                        f.name, f.returns.of
+                    )));
+                }
+                obj.insert(col.clone(), json);
             }
             out.push(Json::Object(obj));
         }

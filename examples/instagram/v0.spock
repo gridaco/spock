@@ -300,20 +300,27 @@ mut fn unfollow(follower: user, target: user) -> follow? {
 // follow a private profile: request. A denied request revives to pending —
 // a policy the PRD leaves open, adopted from the answer sheet (pg.sql;
 // v1-B1) — and saying so still takes a CASE per column (W1). A public
-// target is a refusal now, not a silent miss: use `follow` instead.
+// target is a refusal now, not a silent miss: use `follow` instead. The
+// guards carry the same existing-row exemption as follow/like/save: a
+// pending request whose target later went public (or got floor-blocked)
+// is returned, not refused — re-request stays idempotent.
 mut fn request_follow(requester: user, target: user) -> follow_request ! self_follow | blocked | account_public {
   unchecked sql("""
     SELECT spock_refuse('self_follow') WHERE :requester = :target
   """)
   unchecked sql("""
     SELECT spock_refuse('blocked')
-    WHERE EXISTS (SELECT 1 FROM block
+    WHERE NOT EXISTS (SELECT 1 FROM follow_request
+                      WHERE requester = :requester AND target = :target)
+      AND EXISTS (SELECT 1 FROM block
                   WHERE (blocker = :target AND blocked = :requester)
                      OR (blocker = :requester AND blocked = :target))
   """)
   unchecked sql("""
     SELECT spock_refuse('account_public')
-    WHERE NOT (SELECT private FROM user WHERE id = :target)
+    WHERE NOT EXISTS (SELECT 1 FROM follow_request
+                      WHERE requester = :requester AND target = :target)
+      AND NOT (SELECT private FROM user WHERE id = :target)
   """)
   unchecked sql("""
     INSERT INTO follow_request (requester, target)
@@ -329,11 +336,12 @@ mut fn request_follow(requester: user, target: user) -> follow_request ! self_fo
 // UNBROKEN (G3, taken): approving flips the request, creates the follow
 // edge, and writes the acceptance notification — three tables, one
 // transaction, the flow the single-statement wall famously severed.
-// Statement order carries the idempotency: the notification checks
-// `status = 'pending'` BEFORE the flip, so re-approving an approved
-// request (PRD: idempotent) re-notifies no one; the edge INSERT is
-// DO NOTHING. A denied request refuses by name — revive it via
-// request_follow first.
+// Statement order carries the idempotency: the notification AND the
+// edge INSERT both check `status = 'pending'` BEFORE the flip, so
+// re-approving an approved request (PRD: idempotent) re-notifies no one
+// and — crucially — cannot resurrect an edge the requester has since
+// unfollowed: only the pending→approved transition creates the follow.
+// A denied request refuses by name — revive it via request_follow first.
 mut fn approve_follow_request(requester: user, target: user) -> follow_request ! request_denied | not_found {
   unchecked sql("""
     SELECT spock_refuse('request_denied')
@@ -352,7 +360,7 @@ mut fn approve_follow_request(requester: user, target: user) -> follow_request !
     SELECT :requester, :target
     WHERE EXISTS (SELECT 1 FROM follow_request
                   WHERE requester = :requester AND target = :target
-                    AND status IN ('pending', 'approved'))
+                    AND status = 'pending')
     ON CONFLICT (follower, target) DO NOTHING
   """)
   unchecked sql("""
@@ -539,7 +547,10 @@ mut fn unsave_post(user: user, post: post) -> save? {
 // pass values, so the new comment's id is unreachable from the next
 // statement (G17) — the notification links the post only. Mention
 // parsing is still not attempted (per-row fan-out — G17's plural form).
-mut fn add_comment(author: user, post: post, body: text, parent: comment?) -> comment ! empty_body | body_too_long | parent_mismatch | blocked | account_private {
+// `not_found` is declared because it is reachable here: the answering
+// INSERT..SELECT needs the post row (for the held CASE), so a missing
+// post is the arity miss, not the siblings' FK bad_request.
+mut fn add_comment(author: user, post: post, body: text, parent: comment?) -> comment ! empty_body | body_too_long | parent_mismatch | blocked | account_private | not_found {
   unchecked sql("""
     SELECT spock_refuse('empty_body')
     WHERE length(trim(:body, ' ' || char(9, 10, 13))) = 0
