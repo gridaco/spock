@@ -191,7 +191,7 @@ async fn dev_delete(
         .db
         .lock()
         .map_err(|_| ApiError::internal("db lock poisoned"))?;
-    write::delete_row(&app.contract, table, &mut db, &key)?;
+    write::delete_row(&app.contract, table, &mut db, &[key])?;
     Ok(StatusCode::NO_CONTENT)
 }
 

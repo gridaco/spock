@@ -634,7 +634,12 @@ fn derive_errors(table: &Table, all: &[Table]) -> Vec<DerivedError> {
         });
     }
     for field in &table.fields {
-        if !field.optional && field.default.is_none() {
+        // Every required field that can be absent on insert (no default) or
+        // cleared on update (any non-key field). Required key fields with a
+        // default stay underived: the default satisfies insert and key
+        // immutability protects update — the error is unreachable.
+        let reachable = field.default.is_none() || !table.key.contains(&field.name);
+        if !field.optional && reachable {
             errors.push(DerivedError {
                 code: format!("{t}_{}_required", field.name),
                 kind: ErrorKind::Required,
@@ -708,6 +713,21 @@ mod tests {
         assert!(user.error_for(ErrorKind::Restricted, &[]).is_some());
         // username has no default and is required
         assert!(user.error_for(ErrorKind::Required, &["username"]).is_some());
+    }
+
+    #[test]
+    fn required_derivation_covers_update_clearable_fields() {
+        let contract = compile(
+            "table user { key id: uuid = auto\n username: text unique\n joined_at: timestamp = now }",
+        )
+        .unwrap();
+        let user = contract.table("user").unwrap();
+        // required-with-default non-key field: clearable on update → derived
+        assert!(user
+            .error_for(ErrorKind::Required, &["joined_at"])
+            .is_some());
+        // required-with-default key field: unreachable → underived
+        assert!(user.error_for(ErrorKind::Required, &["id"]).is_none());
     }
 
     #[test]
