@@ -271,10 +271,12 @@ pub fn typescript(contract: &Contract) -> Result<String, TsGenError> {
                     .collect::<Vec<_>>()
                     .join(" | ")
             };
+            // polarity travels with the signature: a typed client must
+            // know which GraphQL root (and which rpc method) a fn answers
             let _ = writeln!(
                 out,
-                "    {}: {{ args: {}_args; returns: {returns}; error: {error} }};",
-                f.name, f.name
+                "    {}: {{ args: {}_args; returns: {returns}; error: {error}; readonly: {} }};",
+                f.name, f.name, f.readonly
             );
         }
         out.push_str("  };\n");
@@ -568,7 +570,7 @@ export interface contract {
         let ts = emit(
             "table user { key id: uuid = auto\n username: text unique }\n\
              record stats { posts: int\n latest: timestamp? }\n\
-             fn rename_user(user: user, name: text, note: text?) -> user ! user_username_taken { unchecked sql(\"S\") }\n\
+             mut fn rename_user(user: user, name: text, note: text?) -> user ! user_username_taken { unchecked sql(\"S\") }\n\
              fn find_user(name: text) -> user? { unchecked sql(\"S\") }\n\
              fn tally() -> [stats] { unchecked sql(\"S\") }\n\
              fn user_count() -> int { unchecked sql(\"S\") }\n\
@@ -581,26 +583,26 @@ export interface contract {
         assert!(ts.contains("export interface rename_user_args {\n  user: user[\"id\"];\n  name: string;\n  note?: string | null;\n}"), "{ts}");
         // zero-param fn still gets an (empty) args interface
         assert!(ts.contains("export interface tally_args {\n}"), "{ts}");
-        // the fns map: arity rendering and error unions
+        // the fns map: arity rendering, error unions, and polarity
         assert!(
-            ts.contains("    rename_user: { args: rename_user_args; returns: user; error: \"user_username_taken\" };"),
+            ts.contains("    rename_user: { args: rename_user_args; returns: user; error: \"user_username_taken\"; readonly: false };"),
             "{ts}"
         );
         assert!(
-            ts.contains("    find_user: { args: find_user_args; returns: user | null; error: never };"),
+            ts.contains("    find_user: { args: find_user_args; returns: user | null; error: never; readonly: true };"),
             "{ts}"
         );
         // scalar returns render as TS value types, not interface names
         assert!(
-            ts.contains("    user_count: { args: user_count_args; returns: number; error: never };"),
+            ts.contains("    user_count: { args: user_count_args; returns: number; error: never; readonly: true };"),
             "{ts}"
         );
         assert!(
-            ts.contains("    last_seen: { args: last_seen_args; returns: timestamp | null; error: never };"),
+            ts.contains("    last_seen: { args: last_seen_args; returns: timestamp | null; error: never; readonly: true };"),
             "{ts}"
         );
         assert!(
-            ts.contains("    tally: { args: tally_args; returns: stats[]; error: never };"),
+            ts.contains("    tally: { args: tally_args; returns: stats[]; error: never; readonly: true };"),
             "{ts}"
         );
     }

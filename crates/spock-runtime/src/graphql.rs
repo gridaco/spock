@@ -81,7 +81,7 @@ pub enum SchemaBuildError {
     ReservedTableName { table: String },
     #[error("tables `{a}` and `{b}` both derive a GraphQL type named `{name}`")]
     DuplicateTypeName { a: String, b: String, name: String },
-    #[error("query fields for tables `{a}` and `{b}` collide on `{name}`")]
+    #[error("query fields for {a} and {b} collide on `{name}`")]
     DuplicateQueryField { a: String, b: String, name: String },
     #[error("mutation fields for {a} and {b} collide on `{name}`")]
     DuplicateMutationField { a: String, b: String, name: String },
@@ -145,17 +145,29 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
         }
     }
 
-    // Pass 1b — query-root field names: the bare list root and `_by_pk`.
-    let mut claimed_roots: HashMap<String, String> = HashMap::new(); // field -> table
-    for table in &contract.tables {
-        for name in [table.name.clone(), format!("{}_by_pk", table.name)] {
-            if let Some(other) = claimed_roots.insert(name.clone(), table.name.clone()) {
+    // Pass 1b — query-root field names: the bare list root, `_by_pk`,
+    // and read fns (polarity puts them here — §7.4, RFD 0012). A read fn
+    // named exactly like a table's root field fails startup like every
+    // other claim collision.
+    let mut claimed_roots: HashMap<String, String> = HashMap::new(); // field -> owner
+    {
+        let mut claim = |name: String, owner: String| -> Result<(), SchemaBuildError> {
+            if let Some(other) = claimed_roots.insert(name.clone(), owner.clone()) {
                 return Err(SchemaBuildError::DuplicateQueryField {
                     a: other,
-                    b: table.name.clone(),
+                    b: owner,
                     name,
                 });
             }
+            Ok(())
+        };
+        for table in &contract.tables {
+            let owner = format!("table `{}`", table.name);
+            claim(table.name.clone(), owner.clone())?;
+            claim(format!("{}_by_pk", table.name), owner)?;
+        }
+        for f in contract.fns.iter().filter(|f| f.readonly) {
+            claim(f.name.clone(), format!("fn `{}`", f.name))?;
         }
     }
 
@@ -183,7 +195,7 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
             }
             claim(format!("delete_{}_by_pk", table.name), owner)?;
         }
-        for f in &contract.fns {
+        for f in contract.fns.iter().filter(|f| !f.readonly) {
             claim(f.name.clone(), format!("fn `{}`", f.name))?;
         }
     }
@@ -276,11 +288,16 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
         mutation = mutation.field(delete_by_pk_field(contract, table));
     }
 
-    // Pass 3c — fn mutation fields: the deliberate surface, on the same
-    // root as the borrowed floor (the Hasura-Actions analogue,
-    // graphql.md §1). All fns land on Mutation in v0.
+    // Pass 3c — fn fields: the deliberate surface, on the root its
+    // polarity names (§7.4, RFD 0012) — read fns next to the borrowed
+    // floor's query fields, `mut` fns on Mutation (the Hasura-Actions
+    // analogue, graphql.md §1).
     for f in &contract.fns {
-        mutation = mutation.field(fn_field(contract, f));
+        if f.readonly {
+            query = query.field(fn_field(contract, f));
+        } else {
+            mutation = mutation.field(fn_field(contract, f));
+        }
     }
 
     // Pass 4 — register and finish. Introspection stays enabled.
@@ -940,8 +957,9 @@ fn delete_by_pk_field(contract: &Contract, table: &Table) -> Field {
     field
 }
 
-/// `Mutation.<fn>(<params>): <ret>` — a declared fn on the same root as
-/// the derived CRUD (graphql.md §1: the deliberate surface next to the
+/// `<Root>.<fn>(<params>): <ret>` — a declared fn on the root its
+/// polarity names (`Query` for reads, `Mutation` for `mut` — §7.4), next
+/// to the derived CRUD (graphql.md §1: the deliberate surface beside the
 /// borrowed floor). One argument per param, nullable iff optional; for fn
 /// arguments `null` means absent, so the `_set`-style unprovided-variable
 /// machinery is unnecessary here. The description carries the declared
@@ -1207,12 +1225,27 @@ mod tests {
         let schema = build(
             "table user { key id: uuid = auto\n username: text unique\n bio: text? }\n\
              record stats { posts: int\n latest: timestamp? }\n\
-             fn rename_user(user: user, username: text, note: text?) -> user ! user_username_taken { unchecked sql(\"UPDATE user SET username = :username, bio = :note WHERE id = :user RETURNING *\") }\n\
+             mut fn rename_user(user: user, username: text, note: text?) -> user ! user_username_taken { unchecked sql(\"UPDATE user SET username = :username, bio = :note WHERE id = :user RETURNING *\") }\n\
              fn find_user(username: text) -> user? { unchecked sql(\"SELECT * FROM user WHERE username = :username\") }\n\
              fn tally(n: int) -> [stats] { unchecked sql(\"SELECT count(*) AS posts, NULL AS latest FROM user LIMIT :n\") }",
         )
         .unwrap();
         let sdl = schema.sdl();
+        // polarity decides the root (§7.4): reads on Query, mut on Mutation
+        let root_block = |root: &str| -> String {
+            sdl.split(&format!("type {root} {{"))
+                .nth(1)
+                .expect("root type exists")
+                .split('}')
+                .next()
+                .expect("root type closes")
+                .to_string()
+        };
+        assert!(root_block("Query").contains("find_user("), "{sdl}");
+        assert!(root_block("Query").contains("tally("), "{sdl}");
+        assert!(!root_block("Query").contains("rename_user("), "{sdl}");
+        assert!(root_block("Mutation").contains("rename_user("), "{sdl}");
+        assert!(!root_block("Mutation").contains("find_user("), "{sdl}");
         // record object type, scalar fields, nullability from `?`
         assert!(sdl.contains("type stats"), "{sdl}");
         assert!(sdl.contains("latest: timestamp"), "{sdl}");
@@ -1234,16 +1267,35 @@ mod tests {
 
     #[test]
     fn fn_mutation_collision_fails_startup() {
-        // a fn named like a derived CRUD mutation dies in the claim pass
+        // a mut fn named like a derived CRUD mutation dies in the claim
+        // pass (an unmarked fn of the same name would live on Query)
         let err = build(
             "table user { key id: uuid = auto\n a: int }\n\
-             fn insert_user_one() -> user { unchecked sql(\"SELECT * FROM user\") }",
+             mut fn insert_user_one() -> user { unchecked sql(\"SELECT * FROM user\") }",
         )
         .unwrap_err();
         assert!(
             matches!(err, SchemaBuildError::DuplicateMutationField { .. }),
             "{err}"
         );
+        // polarity moves the collision surface: a READ fn named like a
+        // table's query field dies in the Query claim pass instead
+        let err = build(
+            "table user { key id: uuid = auto\n a: int }\n\
+             fn user() -> [user] { unchecked sql(\"SELECT * FROM user\") }",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, SchemaBuildError::DuplicateQueryField { .. }),
+            "{err}"
+        );
+        // ...and frees the other root: a READ fn named `insert_user_one`
+        // no longer collides with the derived mutation
+        let schema = build(
+            "table user { key id: uuid = auto\n a: int }\n\
+             fn insert_user_one() -> [user] { unchecked sql(\"SELECT * FROM user\") }",
+        );
+        assert!(schema.is_ok(), "{:?}", schema.err());
         // a fn named `update_follow_by_pk` on a PURE-KEY follow builds:
         // the claim pass claims exactly what is registered
         let schema = build(

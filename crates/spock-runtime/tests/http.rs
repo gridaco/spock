@@ -44,7 +44,7 @@ fn find_user(username: text) -> user? {
   unchecked sql("""SELECT * FROM user WHERE username = :username""")
 }
 
-fn rename_user(user: user, username: text) -> user ! user_username_taken {
+mut fn rename_user(user: user, username: text) -> user ! user_username_taken {
   unchecked sql("""UPDATE user SET username = :username WHERE id = :user RETURNING *""")
 }
 
@@ -261,6 +261,24 @@ async fn the_rpc_surface() {
     )
     .await;
     assert_eq!((status, error_code(&body)), (404, "not_found"));
+
+    // -- GET rpc: read fns answer safe methods (§7.4, RFD 0012) ----------------
+    // query-string values parse by the declared parameter type
+    let (status, body) = get(&base, "/rest/v1/rpc/find_user?username=maya").await;
+    assert_eq!(status, 200);
+    assert_eq!(body["bio"], "photographer");
+    let (status, body) = get(&base, "/rest/v1/rpc/recent_posts?n=1").await;
+    assert_eq!(status, 200);
+    assert_eq!(body["rows"].as_array().unwrap().len(), 1);
+    // an unparseable value keeps the canonical type_mismatch envelope
+    let (status, body) = get(&base, "/rest/v1/rpc/recent_posts?n=abc").await;
+    assert_eq!((status, error_code(&body)), (422, "type_mismatch"));
+    // unknown keys keep the canonical unknown_field envelope
+    let (status, body) = get(&base, "/rest/v1/rpc/find_user?username=maya&ghost=1").await;
+    assert_eq!((status, error_code(&body)), (422, "unknown_field"));
+    // a mut fn refuses the safe method: 405, never a write
+    let (status, body) = get(&base, "/rest/v1/rpc/rename_user?user=x&username=y").await;
+    assert_eq!((status, error_code(&body)), (405, "bad_request"));
 }
 
 #[tokio::test]

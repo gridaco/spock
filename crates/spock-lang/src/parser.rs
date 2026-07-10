@@ -75,10 +75,21 @@ impl Parser {
             match self.peek().kind {
                 TokenKind::KwTable => tables.push(self.table_decl()?),
                 TokenKind::KwRecord => records.push(self.record_decl()?),
-                TokenKind::KwFn => fns.push(self.fn_decl()?),
+                TokenKind::KwFn => fns.push(self.fn_decl(false)?),
+                TokenKind::KwMut => {
+                    let start = self.bump().span;
+                    if self.peek().kind != TokenKind::KwFn {
+                        return Err(self.unexpected("`fn` (only a fn can be `mut`)"));
+                    }
+                    let mut decl = self.fn_decl(true)?;
+                    decl.span = start.to(decl.span);
+                    fns.push(decl);
+                }
                 TokenKind::KwSeed => seeds.push(self.seed_block()?),
                 TokenKind::Eof => break,
-                _ => return Err(self.unexpected("`table`, `record`, `fn`, or `seed`")),
+                _ => {
+                    return Err(self.unexpected("`table`, `record`, `fn`, `mut fn`, or `seed`"));
+                }
             }
         }
         Ok(File {
@@ -131,11 +142,12 @@ impl Parser {
         })
     }
 
-    // fn_decl = "fn" ident "(" [param {"," param} [","]] ")" "->" ret
+    // fn_decl = ["mut"] "fn" ident "(" [param {"," param} [","]] ")" "->" ret
     //           ["!" ident {"|" ident}]
     //           "{" escape { escape } "}"
     // escape  = "unchecked" "sql" "(" string ")"
-    fn fn_decl(&mut self) -> Result<FnDecl, Diagnostic> {
+    // (the caller has already consumed a leading `mut`, if any)
+    fn fn_decl(&mut self, mutates: bool) -> Result<FnDecl, Diagnostic> {
         let start = self.expect(TokenKind::KwFn, "`fn`")?.span;
         let name = self.ident("fn name")?;
         self.expect(TokenKind::LParen, "`(`")?;
@@ -190,6 +202,7 @@ impl Parser {
 
         Ok(FnDecl {
             name,
+            mutates,
             params,
             ret,
             errors,
@@ -663,6 +676,20 @@ mod tests {
         assert_eq!(f.errors[1].name, "not_found");
         assert_eq!(f.body.len(), 1);
         assert!(f.body[0].sql.contains("RETURNING *"));
+    }
+
+    #[test]
+    fn parses_polarity_markers() {
+        let file = parse_ok(
+            "mut fn rename(user: user, name: text) -> user { unchecked sql(\"S\") }\n\
+             fn find(name: text) -> user? { unchecked sql(\"S\") }",
+        );
+        assert!(file.fns[0].mutates);
+        assert!(!file.fns[1].mutates);
+        // `mut` marks fns only
+        let d = parse_err("mut table user { key id: uuid = auto }");
+        assert_eq!(d.code, "L010");
+        assert!(d.message.contains("only a fn"), "{}", d.message);
     }
 
     #[test]

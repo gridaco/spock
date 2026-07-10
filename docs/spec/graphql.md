@@ -20,12 +20,13 @@ shapes everything below: **every derivation rule must be total** — defined
 for all legal contracts, with collisions failing at startup, never at
 request time.
 
-**Two write layers, one root.** The auto-CRUD mutations specified here are
-the *borrowed floor*: generic per-table writes for prototyping velocity.
-The *deliberate surface* — named `fn` mutations carrying product meaning
-(`publish`, `follow`, `claim_username`) — lands on the same `Mutation`
-root when the language grows `fn` (the analogue of Hasura Actions
-alongside Hasura's generated mutations). Auto-CRUD is the floor, not the
+**Two write layers, shared roots.** The auto-CRUD mutations specified here
+are the *borrowed floor*: generic per-table writes for prototyping
+velocity. The *deliberate surface* — named `fn`s carrying product meaning
+(`publish`, `follow`, `claim_username`) — lands on the root its polarity
+names (§5.1): `mut` fns on the same `Mutation` root (the analogue of
+Hasura Actions alongside Hasura's generated mutations), read fns on
+`Query` beside the derived list roots. Auto-CRUD is the floor, not the
 ceiling; nothing in this document is the reason Spock exists.
 
 **Introspection is the contract's metadata.** The schema is
@@ -146,12 +147,14 @@ Write semantics (mirroring spec v0 §7.2):
 
 ### 5.1 Functions — the deliberate surface
 
-Declared `fn`s (spec v0 §7.4) land on the same `Mutation` root as the
-derived CRUD — the Hasura-Actions analogue promised in §1. All fns are
-Mutation fields in v0 (read-only fns on `Query` wait for a purity
-marker):
+Declared `fn`s (spec v0 §7.4) land on the root their **polarity** names
+(RFD 0012): unmarked (read) fns are `Query` fields next to the derived
+list/by-pk roots; `mut` fns land on the `Mutation` root beside the
+derived CRUD — the Hasura-Actions analogue promised in §1. The purity
+marker §1 waited for is the *absence* of `mut`, and it is
+engine-enforced, not asserted:
 
-- `Mutation.<fn>` — the fn's name, verbatim; one argument per declared
+- `<Root>.<fn>` — the fn's name, verbatim; one argument per declared
   parameter (the parameter's value type: a table ref binds the target
   key's scalar), nullable iff the parameter is optional. For fn arguments
   `null` means *absent* — there is no `_set` carve-out, so the
@@ -170,10 +173,13 @@ marker):
   the failure surface, introspectable before any call. Codes the SQL can
   produce but the signature does not declare still surface truthfully at
   runtime, routed cross-table to the owning table's derived error.
-- **Mutation-root names are claimed**: derived CRUD names and fn names
-  live in one namespace, and exactly what is registered is claimed (a
-  pure-key table claims no update). A fn named `insert_user_one` fails
-  at startup, never at request time.
+- **Root names are claimed, per root**: on `Mutation`, derived CRUD
+  names and `mut` fn names live in one namespace, and exactly what is
+  registered is claimed (a pure-key table claims no update) — a `mut`
+  fn named `insert_user_one` fails at startup, never at request time.
+  On `Query`, read fn names are claimed next to the derived `<t>` and
+  `<t>_by_pk` fields — a read fn named exactly like a table fails the
+  same way. Polarity moves the collision surface with the fn.
 
 ## 6. Errors
 

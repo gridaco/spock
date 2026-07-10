@@ -122,6 +122,16 @@ fn validate_fns(contract: &Contract, conn: &Connection) -> Result<(), EngineErro
                 Ok(Some(stmt)) => stmt,
             };
 
+            // polarity (§7.4, RFD 0012): an unmarked fn is a read, and the
+            // engine can see what the checker cannot — a statement that
+            // may write fails the load, loudly, not the request
+            if f.readonly && !stmt.readonly() {
+                return Err(at(
+                    "the statement may write, but the fn is not marked `mut` (an unmarked fn is a read)"
+                        .into(),
+                ));
+            }
+
             // placeholders: every SQL parameter is a declared param
             for i in 1..=stmt.parameter_count() {
                 let Some(name) = stmt.parameter_name(i) else {
@@ -311,7 +321,7 @@ mod tests {
         // trailing semicolon and comment are tolerated (Batch skips them)
         open_ok("fn find(username: text) -> user? { unchecked sql(\"SELECT * FROM user WHERE username = :username; -- done\") }");
         // DML with RETURNING *
-        open_ok("fn rename(user: user, username: text) -> user ! user_username_taken { unchecked sql(\"UPDATE user SET username = :username WHERE id = :user RETURNING *\") }");
+        open_ok("mut fn rename(user: user, username: text) -> user ! user_username_taken { unchecked sql(\"UPDATE user SET username = :username WHERE id = :user RETURNING *\") }");
         // a CTE is one statement
         open_ok("fn all() -> [user] { unchecked sql(\"WITH x AS (SELECT * FROM user) SELECT * FROM x\") }");
     }
@@ -330,7 +340,7 @@ mod tests {
                pinned: bool = false\n\
                at: timestamp = now\n\
              }\n\
-             fn add(body: text) -> note {\n\
+             mut fn add(body: text) -> note {\n\
                unchecked sql(\"INSERT INTO note (body) VALUES (:body) RETURNING *\")\n\
              }\n\
              fn stamp() -> timestamp {\n\
@@ -455,9 +465,29 @@ mod tests {
                 .contains("duplicate column")
         );
         assert!(open_err(
-            "fn f(username: text) -> user { unchecked sql(\"UPDATE user SET username = :username\") }"
+            "mut fn f(username: text) -> user { unchecked sql(\"UPDATE user SET username = :username\") }"
         )
         .contains("RETURNING"));
+    }
+
+    #[test]
+    fn polarity_is_engine_enforced() {
+        // unmarked = read: a writing statement fails the load, loudly —
+        // the forgotten-`mut` failure is the visible one (RFD 0004)
+        assert!(open_err(
+            "fn f(username: text) -> user { unchecked sql(\"INSERT INTO user (username) VALUES (:username) RETURNING *\") }"
+        )
+        .contains("not marked `mut`"));
+        // ...caught in any statement position, not just the answering one
+        assert!(open_err(
+            "fn f(u: uuid) -> user {\n\
+               unchecked sql(\"DELETE FROM user WHERE id = :u\")\n\
+               unchecked sql(\"SELECT * FROM user WHERE id = :u\")\n\
+             }"
+        )
+        .contains("statement 1:"));
+        // `mut` grants write permission; it does not require writing
+        open_ok("mut fn f() -> [user] { unchecked sql(\"SELECT * FROM user\") }");
     }
 
     #[test]
@@ -465,14 +495,14 @@ mod tests {
         // a param may live in any statement; non-final DML needs no
         // RETURNING; only the last statement's columns are the contract's
         open_ok(
-            "fn f(u: uuid, name: text) -> user {\n\
+            "mut fn f(u: uuid, name: text) -> user {\n\
                unchecked sql(\"UPDATE user SET username = :name WHERE id = :u\")\n\
                unchecked sql(\"SELECT * FROM user WHERE id = :u\")\n\
              }",
         );
         // failures name their statement
         assert!(open_err(
-            "fn f(u: uuid) -> user {\n\
+            "mut fn f(u: uuid) -> user {\n\
                unchecked sql(\"UPDATE user SET username = 'x' WHERE id = :u\")\n\
                unchecked sql(\"SELECT * FROM user WHERE id = :ghost\")\n\
              }"
@@ -480,7 +510,7 @@ mod tests {
         .contains("statement 2:"));
         // a declared param used in NO statement still fails
         assert!(open_err(
-            "fn f(u: uuid, unused: int) -> user {\n\
+            "mut fn f(u: uuid, unused: int) -> user {\n\
                unchecked sql(\"UPDATE user SET username = 'x' WHERE id = :u\")\n\
                unchecked sql(\"SELECT * FROM user WHERE id = :u\")\n\
              }"
@@ -488,7 +518,7 @@ mod tests {
         .contains("never used"));
         // the final statement still answers: shape mismatch fails there
         assert!(open_err(
-            "fn f(u: uuid) -> user {\n\
+            "mut fn f(u: uuid) -> user {\n\
                unchecked sql(\"SELECT id FROM user WHERE id = :u\")\n\
                unchecked sql(\"UPDATE user SET username = 'x' WHERE id = :u\")\n\
              }"

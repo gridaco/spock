@@ -29,6 +29,7 @@ pub enum TokenKind {
     KwTable,
     KwRecord,
     KwFn,
+    KwMut,
     KwKey,
     KwUnique,
     KwSeed,
@@ -84,6 +85,7 @@ fn keyword_text(kind: &TokenKind) -> &'static str {
         TokenKind::KwTable => "table",
         TokenKind::KwRecord => "record",
         TokenKind::KwFn => "fn",
+        TokenKind::KwMut => "mut",
         TokenKind::KwKey => "key",
         TokenKind::KwUnique => "unique",
         TokenKind::KwSeed => "seed",
@@ -134,6 +136,7 @@ fn keyword(word: &str) -> Option<TokenKind> {
         "table" => TokenKind::KwTable,
         "record" => TokenKind::KwRecord,
         "fn" => TokenKind::KwFn,
+        "mut" => TokenKind::KwMut,
         "key" => TokenKind::KwKey,
         "unique" => TokenKind::KwUnique,
         "seed" => TokenKind::KwSeed,
@@ -483,8 +486,13 @@ mod tests {
     #[test]
     fn fn_and_record_are_active_keywords() {
         assert_eq!(
-            kinds("fn record"),
-            vec![TokenKind::KwFn, TokenKind::KwRecord, TokenKind::Eof]
+            kinds("fn record mut"),
+            vec![
+                TokenKind::KwFn,
+                TokenKind::KwRecord,
+                TokenKind::KwMut,
+                TokenKind::Eof
+            ]
         );
         // `sql` is NOT a keyword — contextual in the parser only
         assert_eq!(

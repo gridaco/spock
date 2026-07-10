@@ -132,6 +132,13 @@ pub struct RecordField {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FnDef {
     pub name: String,
+    /// True for unmarked (read) fns: the engine rejects writing
+    /// statements at load, execution uses a read transaction, and the
+    /// fn surfaces on the GraphQL Query root (§7.4, RFD 0012). Pre-v2
+    /// contract JSON has no field — `false` keeps every pre-v2 fn the
+    /// mutation it always was (§6 additive law).
+    #[serde(default)]
+    pub readonly: bool,
     pub params: Vec<FnParam>,
     pub returns: FnReturn,
     /// Declared error codes (`! a | b`) — metadata for introspection and
@@ -408,6 +415,7 @@ mod tests {
                 }],
             }],
             fns: vec![FnDef {
+                readonly: false,
                 name: "rename_user".into(),
                 params: vec![
                     FnParam {

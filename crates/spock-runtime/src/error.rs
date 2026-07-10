@@ -99,6 +99,19 @@ impl ApiError {
         }
     }
 
+    /// A `mut` fn called through a safe method (GET rpc, §7.4). Same
+    /// reserved code as other caller errors; the status says the rest.
+    pub fn method_not_allowed(message: impl Into<String>) -> Self {
+        ApiError {
+            status: 405,
+            code: "bad_request".into(),
+            kind: "bad_request",
+            table: None,
+            fields: vec![],
+            message: message.into(),
+        }
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         ApiError {
             status: 500,

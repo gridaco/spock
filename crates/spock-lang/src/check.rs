@@ -349,6 +349,7 @@ impl Checker {
 
             fns.push(FnDef {
                 name: decl.name.name.clone(),
+                readonly: !decl.mutates,
                 params,
                 returns: FnReturn {
                     arity: match decl.ret.arity {

@@ -41,7 +41,7 @@ table comment {
 
 record stats { posts: int }
 
-fn rename_user(user: user, username: text) -> user ! user_username_taken {
+mut fn rename_user(user: user, username: text) -> user ! user_username_taken {
   unchecked sql("""
     UPDATE user SET username = :username
     WHERE id = :user
@@ -321,7 +321,7 @@ async fn the_graphql_fns() {
         .contains("user_username_taken"));
 
     // -- maybe arity via variables: hit and null miss ------------------------
-    let q = "mutation($u: String!) { find_user(username: $u) { username bio } }";
+    let q = "query($u: String!) { find_user(username: $u) { username bio } }";
     let resp = gql(&base, q, json!({"u": "maya"})).await;
     assert_no_errors(&resp);
     assert_eq!(resp["data"]["find_user"]["bio"], "photographer");
@@ -332,7 +332,7 @@ async fn the_graphql_fns() {
     // -- record return: an aggregate as a declared shape ---------------------
     let resp = gql(
         &base,
-        &format!(r#"mutation {{ author_stats(author: "{maya_id}") {{ posts }} }}"#),
+        &format!(r#"query {{ author_stats(author: "{maya_id}") {{ posts }} }}"#),
         Value::Null,
     )
     .await;
@@ -340,20 +340,20 @@ async fn the_graphql_fns() {
     assert_eq!(resp["data"]["author_stats"]["posts"], 2);
 
     // -- many arity: the author owns LIMIT ------------------------------------
-    let resp = gql(&base, "mutation { recent_posts(n: 1) { caption } }", Value::Null).await;
+    let resp = gql(&base, "query { recent_posts(n: 1) { caption } }", Value::Null).await;
     assert_no_errors(&resp);
     assert_eq!(resp["data"]["recent_posts"].as_array().unwrap().len(), 1);
 
     // -- scalar returns: GraphQL leaves, no selection set ----------------------
     let resp = gql(
         &base,
-        &format!(r#"mutation {{ post_count(author: "{maya_id}") }}"#),
+        &format!(r#"query {{ post_count(author: "{maya_id}") }}"#),
         Value::Null,
     )
     .await;
     assert_no_errors(&resp);
     assert_eq!(resp["data"]["post_count"], 2);
-    let resp = gql(&base, "mutation { captions }", Value::Null).await;
+    let resp = gql(&base, "query { captions }", Value::Null).await;
     assert_no_errors(&resp);
     assert_eq!(resp["data"]["captions"], json!(["first light", "golden hour"]));
 

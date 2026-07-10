@@ -124,10 +124,13 @@ pub struct RecordDecl {
     pub span: Span,
 }
 
-/// `fn name(params) -> ret ! codes { sql("...") ... }` (§3).
+/// `[mut] fn name(params) -> ret ! codes { sql("...") ... }` (§3).
 #[derive(Clone, Debug)]
 pub struct FnDecl {
     pub name: Ident,
+    /// `mut fn` — the fn may write. Unmarked fns are reads, and the
+    /// engine enforces it per statement at load (§7.4, RFD 0012).
+    pub mutates: bool,
     pub params: Vec<ParamDecl>,
     pub ret: RetDecl,
     /// Declared error codes (the `! a | b` clause), possibly empty.

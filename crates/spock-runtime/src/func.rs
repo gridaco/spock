@@ -1,9 +1,11 @@
-//! Fn execution (docs/spec/v0.md §7.4). One call = one IMMEDIATE
-//! transaction (the serializable-by-default stance, RFD 0005); arguments
-//! bind by name (`:param`); rows map back **by column name** against the
-//! declared return shape (validated total at load, engine.rs); arity
-//! decides the result. Engine failures route cross-table to derived
-//! errors — [`crate::write::map_fn_engine_error`].
+//! Fn execution (docs/spec/v0.md §7.4). One call = one transaction —
+//! IMMEDIATE for `mut` fns (the serializable-by-default stance, RFD
+//! 0005), DEFERRED for reads — spanning every statement of the body; the
+//! last statement answers. Arguments bind by name (`:param`); rows map
+//! back **by column name** against the declared return shape (validated
+//! total at load, engine.rs); arity decides the result. Engine failures
+//! route cross-table to derived errors —
+//! [`crate::write::map_fn_engine_error`].
 
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, ToSql, TransactionBehavior};
@@ -46,8 +48,16 @@ pub fn call(
         binds.push((format!(":{}", p.name), value));
     }
 
+    // one transaction spans the whole body: IMMEDIATE for `mut` fns (the
+    // write-lock-up-front stance, RFD 0005), DEFERRED for reads — a read
+    // fn never takes the write lock
+    let behavior = if f.readonly {
+        TransactionBehavior::Deferred
+    } else {
+        TransactionBehavior::Immediate
+    };
     let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .transaction_with_behavior(behavior)
         .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
 
     let rows: Vec<Json> = {
@@ -182,7 +192,7 @@ table post {
 record stats { posts: int }
 record ratio { value: float }
 
-fn rename_user(user: user, username: text) -> user ! user_username_taken {
+mut fn rename_user(user: user, username: text) -> user ! user_username_taken {
   unchecked sql("UPDATE user SET username = :username WHERE id = :user RETURNING *")
 }
 
@@ -198,11 +208,11 @@ fn all_users() -> [user] {
   unchecked sql("SELECT * FROM user ORDER BY username")
 }
 
-fn force_post(author: uuid, caption: text?) -> post {
+mut fn force_post(author: uuid, caption: text?) -> post {
   unchecked sql("INSERT INTO post (id, author, caption) VALUES (:author, :author, :caption) RETURNING *")
 }
 
-fn clear_username(user: user) -> user {
+mut fn clear_username(user: user) -> user {
   unchecked sql("UPDATE user SET username = NULL WHERE id = :user RETURNING *")
 }
 
@@ -230,12 +240,12 @@ fn bios() -> [text] {
   unchecked sql("SELECT bio FROM user")
 }
 
-fn post_and_count(author: user, caption: text) -> int {
+mut fn post_and_count(author: user, caption: text) -> int {
   unchecked sql("INSERT INTO post (author, caption) VALUES (:author, :caption)")
   unchecked sql("SELECT count(*) FROM post WHERE author = :author")
 }
 
-fn insert_then_miss(author: user) -> post {
+mut fn insert_then_miss(author: user) -> post {
   unchecked sql("INSERT INTO post (author, caption) VALUES (:author, 'doomed')")
   unchecked sql("SELECT * FROM post WHERE caption = 'no such caption'")
 }

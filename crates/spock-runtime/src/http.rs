@@ -2,7 +2,9 @@
 //! namespace is protocol-owned: `~` is the meta surface, `/rest/v1` carries
 //! the open reads (identity views, v0 degenerate form), `/graphql/v1` the
 //! GraphQL reads and writes (§8.2). REST tables stay read-only in v0;
-//! `POST /rest/v1/rpc/{fn}` is the deliberate write surface (§7.4).
+//! `POST /rest/v1/rpc/{fn}` is the deliberate write surface, and read fns
+//! also answer `GET /rest/v1/rpc/{fn}` with query-string arguments — the
+//! PostgREST stable-function symmetry (§7.4, RFD 0012).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -49,7 +51,7 @@ pub fn router(app: Arc<App>) -> Result<Router, StartupError> {
     Ok(Router::new()
         .route("/~contract", get(contract))
         .route("/~health", get(health))
-        .route("/rest/v1/rpc/{name}", post(rpc_call))
+        .route("/rest/v1/rpc/{name}", post(rpc_call).get(rpc_get))
         .route("/rest/v1/{table}", get(list_rows))
         .route("/rest/v1/{table}/{id}", get(get_row))
         .fallback(not_found)
@@ -121,12 +123,75 @@ async fn rpc_call(
             Err(e) => return Err(ApiError::bad_request(format!("malformed JSON body: {e}"))),
         }
     };
+    run_rpc(&app, f, &args)
+}
+
+// GET /rest/v1/rpc/{fn} — call a *read* fn with query-string arguments
+// (§7.4, RFD 0012): the PostgREST stable-function symmetry. Values
+// arrive as strings and parse by the declared parameter type; a value
+// that does not parse passes through verbatim so the shared call path
+// names the canonical `type_mismatch`. A `mut` fn refuses GET with 405 —
+// a safe method must not write.
+async fn rpc_get(
+    State(app): State<Arc<App>>,
+    Path(name): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Json<JsonValue>, ApiError> {
+    let f = app
+        .contract
+        .fn_def(&name)
+        .ok_or_else(|| ApiError::not_found(format!("no fn `{name}` in this contract")))?;
+    if !f.readonly {
+        return Err(ApiError::method_not_allowed(format!(
+            "fn `{name}` is `mut`; call it with POST"
+        )));
+    }
+    let mut args: Map<String, JsonValue> = Map::new();
+    for (key, raw) in params {
+        let ty = f
+            .params
+            .iter()
+            .find(|p| p.name == key)
+            .map(|p| app.contract.value_type(&p.ty));
+        args.insert(key, query_arg_json(ty, raw));
+    }
+    run_rpc(&app, f, &args)
+}
+
+/// A query-string value as the JSON the fn call path expects. Unknown
+/// keys carry no type (the call rejects them by name); unparseable
+/// values stay strings (the call names the mismatch).
+fn query_arg_json(ty: Option<&Type>, raw: String) -> JsonValue {
+    match ty {
+        Some(Type::Int) => match raw.parse::<i64>() {
+            Ok(n) => JsonValue::from(n),
+            Err(_) => JsonValue::String(raw),
+        },
+        Some(Type::Float) => match raw.parse::<f64>() {
+            Ok(v) if v.is_finite() => json!(v),
+            _ => JsonValue::String(raw),
+        },
+        Some(Type::Bool) => match raw.as_str() {
+            "true" => JsonValue::Bool(true),
+            "false" => JsonValue::Bool(false),
+            _ => JsonValue::String(raw),
+        },
+        _ => JsonValue::String(raw),
+    }
+}
+
+/// The shared rpc execution tail: one locked call, arity-shaped envelope.
+fn run_rpc(
+    app: &App,
+    f: &spock_lang::ir::FnDef,
+    args: &Map<String, JsonValue>,
+) -> Result<Json<JsonValue>, ApiError> {
     let result = {
         let mut db = app
             .db
             .lock()
             .map_err(|_| ApiError::internal("db lock poisoned"))?;
-        func::call(&app.contract, f, &mut db, &args)?
+        func::call(&app.contract, f, &mut db, args)?
     };
     Ok(Json(match f.returns.arity {
         // list results share the REST list envelope
