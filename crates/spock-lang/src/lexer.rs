@@ -14,13 +14,20 @@ pub enum TokenKind {
     RBrace,
     LParen,
     RParen,
+    LBracket,
+    RBracket,
     Colon,
     Comma,
     Question,
     Eq,
+    Arrow,
+    Bang,
+    Pipe,
 
     // active keywords (§2.3)
     KwTable,
+    KwRecord,
+    KwFn,
     KwKey,
     KwUnique,
     KwSeed,
@@ -52,10 +59,15 @@ impl TokenKind {
             TokenKind::RBrace => "`}`".to_string(),
             TokenKind::LParen => "`(`".to_string(),
             TokenKind::RParen => "`)`".to_string(),
+            TokenKind::LBracket => "`[`".to_string(),
+            TokenKind::RBracket => "`]`".to_string(),
             TokenKind::Colon => "`:`".to_string(),
             TokenKind::Comma => "`,`".to_string(),
             TokenKind::Question => "`?`".to_string(),
             TokenKind::Eq => "`=`".to_string(),
+            TokenKind::Arrow => "`->`".to_string(),
+            TokenKind::Bang => "`!`".to_string(),
+            TokenKind::Pipe => "`|`".to_string(),
             TokenKind::Eof => "end of file".to_string(),
             kw => format!("keyword `{}`", keyword_text(kw)),
         }
@@ -65,6 +77,8 @@ impl TokenKind {
 fn keyword_text(kind: &TokenKind) -> &'static str {
     match kind {
         TokenKind::KwTable => "table",
+        TokenKind::KwRecord => "record",
+        TokenKind::KwFn => "fn",
         TokenKind::KwKey => "key",
         TokenKind::KwUnique => "unique",
         TokenKind::KwSeed => "seed",
@@ -87,13 +101,11 @@ fn keyword_text(kind: &TokenKind) -> &'static str {
 
 /// Keywords reserved for future versions (§2.3): using one is L005.
 const RESERVED: &[&str] = &[
-    "fn",
     "view",
     "role",
     "policy",
     "error",
     "state",
-    "record",
     "extern",
     "derived",
     "protected",
@@ -109,6 +121,8 @@ const RESERVED: &[&str] = &[
 fn keyword(word: &str) -> Option<TokenKind> {
     Some(match word {
         "table" => TokenKind::KwTable,
+        "record" => TokenKind::KwRecord,
+        "fn" => TokenKind::KwFn,
         "key" => TokenKind::KwKey,
         "unique" => TokenKind::KwUnique,
         "seed" => TokenKind::KwSeed,
@@ -165,16 +179,50 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             b'}' => Some(TokenKind::RBrace),
             b'(' => Some(TokenKind::LParen),
             b')' => Some(TokenKind::RParen),
+            b'[' => Some(TokenKind::LBracket),
+            b']' => Some(TokenKind::RBracket),
             b':' => Some(TokenKind::Colon),
             b',' => Some(TokenKind::Comma),
             b'?' => Some(TokenKind::Question),
             b'=' => Some(TokenKind::Eq),
+            b'!' => Some(TokenKind::Bang),
+            b'|' => Some(TokenKind::Pipe),
             _ => None,
         };
         if let Some(kind) = punct {
             i += 1;
             tokens.push(Token {
                 kind,
+                span: Span::new(start, i),
+            });
+            continue;
+        }
+
+        // triple-quoted raw string (§2.2): no escape processing, newlines
+        // legal, terminates at the first `"""` — a body needing a literal
+        // `"""` uses the single-line form
+        if bytes[i..].starts_with(b"\"\"\"") {
+            let content_start = i + 3;
+            let mut j = content_start;
+            loop {
+                if j + 3 > bytes.len() {
+                    return Err(Diagnostic::new(
+                        "L006",
+                        "unterminated triple-quoted string",
+                        Span::new(start, bytes.len()),
+                    ));
+                }
+                if &bytes[j..j + 3] == b"\"\"\"" {
+                    break;
+                }
+                j += 1;
+            }
+            // `"` (0x22) never occurs inside a multi-byte UTF-8 sequence,
+            // so both bounds land on character boundaries
+            let value = source[content_start..j].to_string();
+            i = j + 3;
+            tokens.push(Token {
+                kind: TokenKind::Str(value),
                 span: Span::new(start, i),
             });
             continue;
@@ -224,6 +272,17 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             }
             tokens.push(Token {
                 kind: TokenKind::Str(value),
+                span: Span::new(start, i),
+            });
+            continue;
+        }
+
+        // `->` (before the integer branch: `-` followed by `>` is never a
+        // negative literal)
+        if b == b'-' && bytes.get(i + 1) == Some(&b'>') {
+            i += 2;
+            tokens.push(Token {
+                kind: TokenKind::Arrow,
                 span: Span::new(start, i),
             });
             continue;
@@ -358,6 +417,80 @@ mod tests {
     #[test]
     fn rejects_reserved_keyword() {
         assert_eq!(lex("view feed {}").unwrap_err().code, "L005");
+    }
+
+    #[test]
+    fn fn_and_record_are_active_keywords() {
+        assert_eq!(
+            kinds("fn record"),
+            vec![TokenKind::KwFn, TokenKind::KwRecord, TokenKind::Eof]
+        );
+        // `sql` is NOT a keyword — contextual in the parser only
+        assert_eq!(
+            kinds("sql"),
+            vec![TokenKind::Ident("sql".into()), TokenKind::Eof]
+        );
+    }
+
+    #[test]
+    fn lexes_fn_punctuation() {
+        assert_eq!(
+            kinds("-> ! | [ ]"),
+            vec![
+                TokenKind::Arrow,
+                TokenKind::Bang,
+                TokenKind::Pipe,
+                TokenKind::LBracket,
+                TokenKind::RBracket,
+                TokenKind::Eof,
+            ]
+        );
+        // arrow between idents, and negative literals unbroken
+        assert_eq!(
+            kinds("x->y -42"),
+            vec![
+                TokenKind::Ident("x".into()),
+                TokenKind::Arrow,
+                TokenKind::Ident("y".into()),
+                TokenKind::Int(-42),
+                TokenKind::Eof,
+            ]
+        );
+        // a bare `-` is still unexpected
+        assert_eq!(lex("a - b").unwrap_err().code, "L001");
+    }
+
+    #[test]
+    fn lexes_triple_quoted_strings() {
+        // multi-line, raw: escapes are inert, quotes and `""` are content
+        assert_eq!(
+            kinds("\"\"\"\nSELECT 'a\"b' AS x, \"\"\n  FROM t\\n\n\"\"\""),
+            vec![
+                TokenKind::Str("\nSELECT 'a\"b' AS x, \"\"\n  FROM t\\n\n".into()),
+                TokenKind::Eof,
+            ]
+        );
+        // empty triple string
+        assert_eq!(
+            kinds("\"\"\"\"\"\""),
+            vec![TokenKind::Str("".into()), TokenKind::Eof]
+        );
+        // the empty single-line string still lexes
+        assert_eq!(
+            kinds("\"\" x"),
+            vec![
+                TokenKind::Str("".into()),
+                TokenKind::Ident("x".into()),
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_unterminated_triple_string() {
+        assert_eq!(lex("\"\"\"abc").unwrap_err().code, "L006");
+        // four quotes: opener + a lone `"` of content, never terminated
+        assert_eq!(lex("\"\"\"\"").unwrap_err().code, "L006");
     }
 
     #[test]
