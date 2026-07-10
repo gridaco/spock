@@ -136,9 +136,12 @@ with the rules, not the sequence:
   Recommendation: revisit the flip alongside `policy`/v1, where RLS is
   Postgres-native and the differential-testing payoff (RFD 0005, 0006)
   compounds.
-- **Client posture.** Recommendation: borrow codegen now (track 2); build
-  `spock-js` only when REST writes exist to wrap. A package before then
-  would wrap a read-only surface and re-wrap what codegen already types.
+- **Client posture.** ~~Recommendation: borrow codegen now (track 2);
+  build `spock-js` only when REST writes exist to wrap.~~ **Resolved —
+  RFD 0010**: three artifacts (in-binary `spock gen` generator, generic
+  hand-written `spock` npm client after REST writes, per-app generated
+  types); generate types, never the client; the GraphQL path stays
+  borrowed.
 - **Filter dialect.** Recommendation: one predicate IR, two mirrored
   frontends (Hasura `bool_exp`, PostgREST operators) — doctrine applied,
   but it is contract surface, so it is recorded here until ratified.
