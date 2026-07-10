@@ -62,7 +62,7 @@ to app-usable.
 language: they are a thin HTTP skin over the shared write path, shippable
 any time after track 1. Only filtered/bulk REST writes wait on track 3.
 
-**6. `fn`, minimal.** The deliberate surface next to the borrowed floor —
+**6. `fn`, minimal — SHIPPED.** The deliberate surface next to the borrowed floor —
 the two-layer story that distinguishes the language from a generic
 auto-CRUD gateway. Minimal shape: named, typed signature, SQL-escape body
 (per the escape-hatch doctrine and RFD 0008's sketch: the escape may replace

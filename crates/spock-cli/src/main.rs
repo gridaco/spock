@@ -65,8 +65,10 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             };
             println!(
-                "ok: {} table(s), {} seed row(s)",
+                "ok: {} table(s), {} record(s), {} fn(s), {} seed row(s)",
                 contract.tables.len(),
+                contract.records.len(),
+                contract.fns.len(),
                 contract.seed.len()
             );
             ExitCode::SUCCESS
@@ -184,8 +186,9 @@ fn load(path: &PathBuf) -> Option<Contract> {
 fn run(contract: Contract, port: u16, db: Option<PathBuf>) -> anyhow::Result<()> {
     let conn = spock_runtime::engine::open(&contract, db.as_deref())?;
     println!(
-        "spock v0 — contract loaded: {} table(s), {} seed row(s) replayed",
+        "spock v0 — contract loaded: {} table(s), {} fn(s), {} seed row(s) replayed",
         contract.tables.len(),
+        contract.fns.len(),
         contract.seed.len()
     );
 
@@ -196,6 +199,7 @@ fn run(contract: Contract, port: u16, db: Option<PathBuf>) -> anyhow::Result<()>
         println!("listening on http://127.0.0.1:{port}");
         println!("  GET  /~contract           the contract, as data");
         println!("  GET  /rest/v1/{{table}}     open reads (identity view)");
+        println!("  POST /rest/v1/rpc/{{fn}}    call a declared fn");
         println!("  POST /graphql/v1          GraphQL reads + writes (GraphiQL in the browser)");
         tokio::select! {
             result = spock_runtime::http::serve(app, listener) => result?,

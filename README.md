@@ -289,9 +289,15 @@ view post_preview from post {
     published: .published
 }
 
-// deliberate mutation
-fn publish_post(id: uuid) -> post_preview {
-    // an explicit backend contract, not incidental glue
+// deliberate mutation — shipped v0 syntax: the signature is the
+// contract, the body is the SQL escape (it may replace the body,
+// never the contract)
+fn publish_post(post: post) -> post ! not_found {
+    sql("""
+      UPDATE post SET published = true
+      WHERE id = :post
+      RETURNING *
+    """)
 }
 ```
 

@@ -50,6 +50,39 @@ table comment {
 // restricted while posts, follows, likes, or comments reference them
 // (restrict is the default, stated here by omission).
 
+// -- the deliberate surface (§7.4): auto-CRUD is the borrowed floor,
+//    these carry product meaning. The signature is the contract; the
+//    body is the SQL escape.
+
+record engagement {
+  likes: int
+  comments: int
+}
+
+fn rename_user(user: user, username: text) -> user ! user_username_taken {
+  sql("""
+    UPDATE user SET username = :username
+    WHERE id = :user
+    RETURNING *
+  """)
+}
+
+fn unfollow(follower: user, target: user) -> follow ! not_found {
+  sql("""
+    DELETE FROM follow
+    WHERE follower = :follower AND target = :target
+    RETURNING *
+  """)
+}
+
+fn post_engagement(post: post) -> engagement {
+  sql("""
+    SELECT
+      (SELECT count(*) FROM "like"  WHERE post = :post) AS likes,
+      (SELECT count(*) FROM comment WHERE post = :post) AS comments
+  """)
+}
+
 seed {
   maya = user { username: "maya", full_name: "Maya Chen", bio: "photographer" }
   luis = user { username: "luis" }
