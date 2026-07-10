@@ -16,6 +16,40 @@ use crate::error::ApiError;
 use crate::value::{json_to_sql_scalar, sql_to_json_scalar};
 use crate::write::map_fn_engine_error;
 
+/// Route a rusqlite failure inside a fn body (§7.4). The refusal channel
+/// is checked first: `spock_refuse('<code>')` errors with a sentinel
+/// message, and the code routes **only** if this fn minted it in its `!`
+/// clause — a derived or reserved code can only be produced by its own
+/// mechanism (raising one would let a body counterfeit evidence), and an
+/// unminted code is the body breaking its signature; both are `internal`.
+/// Everything else falls through to the cross-table constraint router.
+fn map_fn_call_error(contract: &Contract, f: &FnDef, e: rusqlite::Error) -> ApiError {
+    if let rusqlite::Error::SqliteFailure(_, Some(msg)) = &e {
+        if let Some(code) = msg.split(crate::engine::REFUSE_SENTINEL).nth(1) {
+            let code = code.trim();
+            if f.refusals.iter().any(|r| r == code) {
+                return ApiError::refused(code, &f.name);
+            }
+            let known = contract
+                .tables
+                .iter()
+                .any(|t| t.errors.iter().any(|d| d.code == code))
+                || ["not_found", "type_mismatch", "unknown_field", "bad_request", "internal"]
+                    .contains(&code);
+            let reason = if known {
+                "a derived or reserved code can only be produced by its own mechanism, never raised"
+            } else {
+                "it is not a refusal declared in the `!` clause"
+            };
+            return ApiError::internal(format!(
+                "fn `{}` raised `{code}`, which it cannot: {reason}",
+                f.name
+            ));
+        }
+    }
+    map_fn_engine_error(contract, e)
+}
+
 /// Call a declared fn with JSON arguments; returns the row / row-or-null /
 /// rows its signature declares. For fn arguments `null` and absence mean
 /// the same thing — there is no update carve-out here.
@@ -74,7 +108,7 @@ pub fn call(
         for (index, sql) in f.sql.iter().enumerate() {
             let mut stmt = tx
                 .prepare(sql)
-                .map_err(|e| map_fn_engine_error(contract, e))?;
+                .map_err(|e| map_fn_call_error(contract, f, e))?;
             let columns: Vec<String> =
                 stmt.column_names().iter().map(|c| c.to_string()).collect();
             // each statement binds only the params it names (validated
@@ -86,19 +120,19 @@ pub fn call(
                 .collect();
             let mut rows = stmt
                 .query(params.as_slice())
-                .map_err(|e| map_fn_engine_error(contract, e))?;
+                .map_err(|e| map_fn_call_error(contract, f, e))?;
             if index < last_index {
                 // a guard or an effect: run it to completion (a guard's
                 // refusal fires while stepping), discard its rows
                 while rows
                     .next()
-                    .map_err(|e| map_fn_engine_error(contract, e))?
+                    .map_err(|e| map_fn_call_error(contract, f, e))?
                     .is_some()
                 {}
                 continue;
             }
             // the last statement answers
-            while let Some(row) = rows.next().map_err(|e| map_fn_engine_error(contract, e))? {
+            while let Some(row) = rows.next().map_err(|e| map_fn_call_error(contract, f, e))? {
             if let Some(ty) = &scalar_ty {
                 let value = row
                     .get_ref(0)
@@ -248,6 +282,32 @@ mut fn post_and_count(author: user, caption: text) -> int {
 mut fn insert_then_miss(author: user) -> post {
   unchecked sql("INSERT INTO post (author, caption) VALUES (:author, 'doomed')")
   unchecked sql("SELECT * FROM post WHERE caption = 'no such caption'")
+}
+
+mut fn guarded_rename(user: user, username: text) -> user ! name_reserved | user_username_taken {
+  unchecked sql("SELECT spock_refuse('name_reserved') WHERE :username = 'admin'")
+  unchecked sql("UPDATE user SET username = :username WHERE id = :user RETURNING *")
+}
+
+fn checked_bio(username: text) -> text ! bio_missing {
+  unchecked sql("SELECT spock_refuse('bio_missing') WHERE NOT EXISTS (SELECT 1 FROM user WHERE username = :username AND bio IS NOT NULL)")
+  unchecked sql("SELECT bio FROM user WHERE username = :username")
+}
+
+mut fn rogue(author: user) -> [post] {
+  unchecked sql("SELECT spock_refuse('never_declared') WHERE :author IS NOT NULL")
+  unchecked sql("SELECT * FROM post WHERE author = :author")
+}
+
+mut fn counterfeit(author: user) -> [post] ! user_username_taken {
+  unchecked sql("SELECT spock_refuse('user_username_taken') WHERE :author IS NOT NULL")
+  unchecked sql("SELECT * FROM post WHERE author = :author")
+}
+
+mut fn post_then_refuse(author: user) -> post ! always_no {
+  unchecked sql("INSERT INTO post (author, caption) VALUES (:author, 'ghost')")
+  unchecked sql("SELECT spock_refuse('always_no') WHERE :author IS NOT NULL")
+  unchecked sql("SELECT * FROM post WHERE caption = 'ghost'")
 }
 
 seed {
@@ -429,6 +489,62 @@ seed {
         )
         .unwrap();
         assert_eq!(n, 3); // 'doomed' never landed
+    }
+
+    #[test]
+    fn refusals_route_by_declaration() {
+        let (contract, mut conn) = setup();
+        let maya = user_id(&contract, &mut conn, "maya");
+        // a read fn refuses too — SELECT + spock_refuse stays readonly,
+        // proven by the engine accepting checked_bio at open()
+        let f = contract.fn_def("checked_bio").unwrap();
+        let err = call(&contract, f, &mut conn, &args(&[("username", "luis".into())])).unwrap_err();
+        assert_eq!((err.code.as_str(), err.kind, err.status), ("bio_missing", "refused", 409));
+        let hit = call(&contract, f, &mut conn, &args(&[("username", "maya".into())])).unwrap();
+        assert_eq!(hit, "photographer");
+        // a minted refusal fires with its own name — no more collapsed
+        // not_found lies (v0-FEEDBACK G2)
+        let f = contract.fn_def("guarded_rename").unwrap();
+        let err = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("user", maya.clone().into()), ("username", "admin".into())]),
+        )
+        .unwrap_err();
+        assert_eq!((err.code.as_str(), err.kind), ("name_reserved", "refused"));
+        // guard passes → the write lands
+        let row = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("user", maya.clone().into()), ("username", "maya_ok".into())]),
+        )
+        .unwrap();
+        assert_eq!(row["username"], "maya_ok");
+        // an unminted raise is the body breaking its signature
+        let f = contract.fn_def("rogue").unwrap();
+        let err = call(&contract, f, &mut conn, &args(&[("author", maya.clone().into())])).unwrap_err();
+        assert_eq!(err.code, "internal");
+        assert!(err.message.contains("never_declared"), "{}", err.message);
+        // a derived code cannot be raised — evidence is not borrowable
+        let f = contract.fn_def("counterfeit").unwrap();
+        let err = call(&contract, f, &mut conn, &args(&[("author", maya.clone().into())])).unwrap_err();
+        assert_eq!(err.code, "internal");
+        assert!(err.message.contains("own mechanism"), "{}", err.message);
+        // a refusal rolls back everything before it — one transaction
+        let f = contract.fn_def("post_then_refuse").unwrap();
+        let err = call(&contract, f, &mut conn, &args(&[("author", maya.clone().into())])).unwrap_err();
+        assert_eq!(err.code, "always_no");
+        let f = contract.fn_def("post_and_count").unwrap();
+        let n = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("author", maya.into()), ("caption", "after".into())]),
+        )
+        .unwrap();
+        assert_eq!(n, 2); // seed post + this one; 'ghost' never landed
     }
 
     #[test]

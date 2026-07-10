@@ -143,7 +143,15 @@ pub struct FnDef {
     pub returns: FnReturn,
     /// Declared error codes (`! a | b`) — metadata for introspection and
     /// clients; the runtime surfaces undeclared errors truthfully too.
+    /// Refusals (see below) are included: `errors` is the full declared
+    /// failure surface.
     pub errors: Vec<String>,
+    /// The subset of `errors` this fn *mints* (RFD 0012 §2.3): codes
+    /// backed by no constraint, raised from the body via
+    /// `spock_refuse('<code>')` and routed only if declared here. Pre-v2
+    /// JSON has no field; empty is correct — nothing was minted.
+    #[serde(default)]
+    pub refusals: Vec<String>,
     /// The escape body: SQL statements in execution order, each exactly
     /// one statement; the last produces the return value (§7.4). Pre-v2
     /// contract JSON carried a single bare string — the deserializer
@@ -438,6 +446,7 @@ mod tests {
                     scalar: false,
                 },
                 errors: vec!["user_username_taken".into()],
+                refusals: vec![],
                 sql: vec!["UPDATE user SET username = :name WHERE id = :user RETURNING *".into()],
             }],
             seed: vec![SeedRow {
@@ -499,5 +508,8 @@ mod tests {
         let contract: Contract = serde_json::from_str(pre_scalar).unwrap();
         assert!(!contract.fns[0].returns.scalar);
         assert_eq!(contract.fns[0].sql, vec!["S"]);
+        // pre-v2 fns: never a read, nothing minted
+        assert!(!contract.fns[0].readonly);
+        assert!(contract.fns[0].refusals.is_empty());
     }
 }

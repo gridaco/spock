@@ -173,6 +173,11 @@ engine-enforced, not asserted:
   the failure surface, introspectable before any call. Codes the SQL can
   produce but the signature does not declare still surface truthfully at
   runtime, routed cross-table to the owning table's derived error.
+- Declared codes include **minted refusals** (spec v0 §7.4, RFD 0012):
+  a fn's own product-rule codes, raised from the body, carried in
+  `errors[].extensions` with `kind: "refused"` and `table: null` —
+  distinct names for distinct rules, where v1 collapsed every guard
+  into `not_found`.
 - **Root names are claimed, per root**: on `Mutation`, derived CRUD
   names and `mut` fn names live in one namespace, and exactly what is
   registered is claimed (a pure-key table claims no update) — a `mut`

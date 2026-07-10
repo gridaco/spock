@@ -326,16 +326,16 @@ impl Checker {
                 }
             };
 
+            // the `!` clause has two populations (RFD 0012 §2.3): a code
+            // in the vocabulary is a *reference* to a derived or reserved
+            // code; a code in neither is a *refusal minted by this fn* —
+            // raised from the body via spock_refuse(), routed at runtime.
+            // (The cost: a misspelled derived code now mints instead of
+            // erroring — dead metadata, never wrong behavior, since the
+            // real constraint still routes to the true code.)
             let mut errors: Vec<String> = Vec::new();
+            let mut refusals: Vec<String> = Vec::new();
             for code in &decl.errors {
-                if !vocabulary.contains(code.name.as_str()) {
-                    self.error(
-                        "E039",
-                        format!("unknown error code `{}` (not derived by any table, not a reserved code)", code.name),
-                        code.span,
-                    );
-                    continue;
-                }
                 if errors.contains(&code.name) {
                     self.error(
                         "E039",
@@ -343,6 +343,9 @@ impl Checker {
                         code.span,
                     );
                     continue;
+                }
+                if !vocabulary.contains(code.name.as_str()) {
+                    refusals.push(code.name.clone());
                 }
                 errors.push(code.name.clone());
             }
@@ -361,6 +364,7 @@ impl Checker {
                     scalar,
                 },
                 errors,
+                refusals,
                 sql: decl.body.iter().map(|e| e.sql.clone()).collect(),
             });
         }
@@ -1452,20 +1456,29 @@ mod tests {
     }
 
     #[test]
-    fn e039_bad_error_codes() {
-        // unknown code
-        assert_eq!(
-            codes(&format!(
-                "{USER}fn f() -> user ! user_exploded {{ unchecked sql(\"S\") }}"
-            )),
-            vec!["E039"]
-        );
-        // duplicate code
+    fn e039_duplicate_error_codes() {
         assert_eq!(
             codes(&format!(
                 "{USER}fn f() -> user ! not_found | not_found {{ unchecked sql(\"S\") }}"
             )),
             vec!["E039"]
         );
+    }
+
+    #[test]
+    fn unknown_error_codes_mint_refusals() {
+        // RFD 0012 §2.3: a code in the vocabulary is a reference; a code
+        // in neither population is a refusal minted by this fn
+        let contract = compile(&format!(
+            "{USER}fn f(name: text) -> user ! account_private | user_username_taken | not_found {{ unchecked sql(\"SELECT * FROM user WHERE username = :name\") }}"
+        ))
+        .expect("mints, not errors");
+        let f = &contract.fns[0];
+        assert_eq!(
+            f.errors,
+            vec!["account_private", "user_username_taken", "not_found"]
+        );
+        // only the unbacked code is minted — references are not refusals
+        assert_eq!(f.refusals, vec!["account_private"]);
     }
 }

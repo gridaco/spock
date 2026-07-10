@@ -63,11 +63,17 @@ pub fn open(contract: &Contract, path: Option<&Path>) -> Result<Connection, Engi
     Ok(conn)
 }
 
-/// The engine builtins (§7.1): `spock_uuid()` and `spock_now()` — the
-/// same mints the write path uses for `= auto` and `= now`, so a value
-/// generated inside an escape body is indistinguishable from one the
-/// engine generated. Registered before DDL: the emitted DEFAULT clauses
-/// reference them.
+/// The message prefix `spock_refuse` errors with — the raise channel's
+/// wire inside the engine (§7.4, RFD 0012). func.rs parses it back out.
+pub(crate) const REFUSE_SENTINEL: &str = "SPOCK_REFUSE:";
+
+/// The engine builtins (§7.1, §7.4): `spock_uuid()` and `spock_now()` —
+/// the same mints the write path uses for `= auto` and `= now`, so a
+/// value generated inside an escape body is indistinguishable from one
+/// the engine generated — and `spock_refuse(code)`, the refusal raise
+/// channel: it always errors when evaluated, so a guard that selects
+/// zero rows never fires it. Registered before DDL: the emitted DEFAULT
+/// clauses reference the mints.
 fn register_builtins(conn: &Connection) -> Result<(), EngineError> {
     use rusqlite::functions::FunctionFlags;
     // non-deterministic by nature: neither DETERMINISTIC (they change per
@@ -78,6 +84,21 @@ fn register_builtins(conn: &Connection) -> Result<(), EngineError> {
     conn.create_scalar_function("spock_now", 0, FunctionFlags::SQLITE_UTF8, |_| {
         Ok(crate::value::now_utc())
     })?;
+    // DIRECTONLY: a refusal is a fn-body statement speaking; nothing
+    // indirect (a DEFAULT, a future trigger or view) may raise one
+    conn.create_scalar_function(
+        "spock_refuse",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DIRECTONLY,
+        |ctx| -> rusqlite::Result<String> {
+            let code: String = ctx.get(0).map_err(|_| {
+                rusqlite::Error::UserFunctionError("spock_refuse expects a text code".into())
+            })?;
+            Err(rusqlite::Error::UserFunctionError(
+                format!("{REFUSE_SENTINEL}{code}").into(),
+            ))
+        },
+    )?;
     Ok(())
 }
 

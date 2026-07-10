@@ -99,6 +99,21 @@ impl ApiError {
         }
     }
 
+    /// A refusal the fn minted in its `!` clause and raised from the
+    /// body via `spock_refuse` (§7.4, RFD 0012). The conflict family —
+    /// a product rule said no — beside the derived constraint
+    /// violations.
+    pub fn refused(code: &str, fn_name: &str) -> Self {
+        ApiError {
+            status: 409,
+            code: code.into(),
+            kind: "refused",
+            table: None,
+            fields: vec![],
+            message: format!("fn `{fn_name}` refused: {code}"),
+        }
+    }
+
     /// A `mut` fn called through a safe method (GET rpc, §7.4). Same
     /// reserved code as other caller errors; the status says the rest.
     pub fn method_not_allowed(message: impl Into<String>) -> Self {
