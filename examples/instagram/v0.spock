@@ -5,24 +5,82 @@
 //
 //   spock run examples/instagram/v0.spock
 //
-// v0 is the table slice (RFD 0008): durable state, keys, uniqueness,
-// references, defaults, and a seed — no fn, no view, no auth yet. The full
-// product contract this is a slice of lives in v1.spock (a design draft).
+// It covers as much of PRD.md as today's language can say: the durable
+// entities, and a deliberate surface of fns over them. What it cannot say —
+// and every workaround it leans on — is recorded in v0-FEEDBACK.md; the
+// feedback numbers cited below (G1, W1, …) point there. The full product
+// contract this approximates lives in v1.spock (a design draft).
+//
+// Deliberately absent, with reasons:
+//   - accounts, sessions, recovery, actor identity — blocked on auth
+//     (RFD 0009); every fn below takes its actor as a client-asserted
+//     parameter (G12)
+//   - notification *writers* — a like cannot also insert a notification
+//     in a one-statement body (G3); rows come from the seed only
+//   - media upload/processing pipeline — storage is out of v0's scope;
+//     the `media` table models the resulting state
+//   - moderation review flows (claim, action) — report_post records;
+//     nothing consumes
+//   - profile avatar and the tag/mention/comment permission fields — the
+//     avatar needs the media pipeline, and permissions are meaningless
+//     until a real viewer identity can be checked against them (G12)
+//   - edit-profile / edit-post / create-collection fns — on the open
+//     tier they would duplicate the floor (`update_user_by_pk`,
+//     `update_post_by_pk`, `insert_collection_one`) guard-for-guard;
+//     they become deliberate the day guards exist
+//   - an add-media-tag fn — tag *permissions* (PRD) need the permission
+//     fields above; until then `insert_media_tag_one` on the floor is
+//     the same contract
+
+// ---------------------------------------------------------------------------
+// people and places
+// ---------------------------------------------------------------------------
 
 table user {
   key id: uuid = auto
   username: text unique
   full_name: text?
   bio: text?
+  private: bool = false
   joined_at: timestamp = now
 }
+
+table location {
+  key id: uuid = auto
+  name: text
+  place_id: text unique
+}
+
+// ---------------------------------------------------------------------------
+// content
+// ---------------------------------------------------------------------------
 
 table post {
   key id: uuid = auto
   author: user
   caption: text?
+  location: location?
+  archived_at: timestamp?      // archive keeps likes/comments; delete cascades them
   published_at: timestamp = now
 }
+
+// a carousel is ordered media under one post; "a post needs at least one
+// media" is not sayable (G14), and kind/status are open text (G1)
+table media {
+  key id: uuid = auto
+  post: post on delete cascade
+  position: int
+  kind: text                   // "image" | "video"
+  width: int?
+  height: int?
+  duration_ms: int?
+  status: text = "pending"     // "pending" | "ready" | "failed"
+  unique (post, position)
+}
+
+// ---------------------------------------------------------------------------
+// the graph
+// ---------------------------------------------------------------------------
 
 table follow {
   key (follower, target)
@@ -30,6 +88,33 @@ table follow {
   target: user
   since: timestamp = now
 }
+
+table follow_request {
+  key (requester, target)
+  requester: user
+  target: user
+  status: text = "pending"     // "pending" | "approved" | "denied" (G1)
+  requested_at: timestamp = now
+  responded_at: timestamp?
+}
+
+table block {
+  key (blocker, blocked)
+  blocker: user
+  blocked: user
+  at: timestamp = now
+}
+
+table restriction {
+  key (restricting, restricted)
+  restricting: user
+  restricted: user
+  at: timestamp = now
+}
+
+// ---------------------------------------------------------------------------
+// interactions
+// ---------------------------------------------------------------------------
 
 table like {
   key (post, user)
@@ -41,33 +126,157 @@ table like {
 table comment {
   key id: uuid = auto
   post: post on delete cascade
+  // the PRD wants deleted parents to not break replies — that is
+  // `set null` or soft delete, and v0 has neither (G7); cascade is the
+  // least-wrong option and deviates from the PRD
+  parent: comment? on delete cascade
   author: user
   body: text
+  status: text = "visible"     // "visible" | "held" (G1)
   at: timestamp = now
 }
 
-// Deleting a post cascades its likes and comments; deleting a user is
-// restricted while posts, follows, likes, or comments reference them
-// (restrict is the default, stated here by omission).
-
-// -- the deliberate surface (§7.4): auto-CRUD is the borrowed floor,
-//    these carry product meaning. The signature is the contract; the
-//    body is the SQL escape.
-
-record engagement {
-  likes: int
-  comments: int
+// a structured mention: the ref survives renames (C2). Exactly one of
+// post/comment should be set — not sayable (G5)
+table mention {
+  key id: uuid = auto
+  profile: user                // the mentioned profile
+  post: post? on delete cascade
+  comment: comment? on delete cascade
+  display: text                // what the author typed
+  at: timestamp = now
 }
 
-fn rename_user(user: user, username: text) -> user ! user_username_taken {
+// positions are per-mille-free ints because v0 has no float (G10);
+// unique(media, tagged) + removed_at means a removed tag can never be
+// re-applied — partial uniqueness again (G6)
+table media_tag {
+  key id: uuid = auto
+  media: media on delete cascade
+  tagged: user
+  x_pct: int
+  y_pct: int
+  at: timestamp = now
+  removed_at: timestamp?
+  unique (media, tagged)
+}
+
+// ---------------------------------------------------------------------------
+// the library
+// ---------------------------------------------------------------------------
+
+table save {
+  key (user, post)
+  user: user
+  post: post on delete cascade
+  at: timestamp = now
+}
+
+table collection {
+  key id: uuid = auto
+  owner: user
+  name: text
+  created_at: timestamp = now
+  unique (owner, name)
+}
+
+// "a collection entry must also be a save" is a cross-table invariant v0
+// cannot state (G14)
+table collection_post {
+  key (collection, post)
+  collection: collection on delete cascade
+  post: post on delete cascade
+  at: timestamp = now
+}
+
+// ---------------------------------------------------------------------------
+// discovery
+// ---------------------------------------------------------------------------
+
+table hashtag {
+  key tag: text                // the normalized form is the identity (C6)
+}
+
+table post_hashtag {
+  key (post, tag)
+  post: post on delete cascade
+  tag: hashtag
+}
+
+// ---------------------------------------------------------------------------
+// safety and activity
+// ---------------------------------------------------------------------------
+
+// exactly one of post/comment/profile (G5); "no unbounded duplicates per
+// reporter and target" wants uniqueness over that one-of (G5, G6).
+// cascade erases the audit trail with the target — soft delete is the
+// real answer (G7)
+table report {
+  key id: uuid = auto
+  reporter: user
+  post: post? on delete cascade
+  comment: comment? on delete cascade
+  profile: user?
+  reason: text
+  status: text = "open"        // "open" | "reviewed" | "actioned" (G1)
+  at: timestamp = now
+}
+
+table notification {
+  key id: uuid = auto
+  recipient: user
+  actor: user
+  kind: text                   // "follow" | "follow_request" | "like" | "comment" | "mention" | "tag" (G1)
+  post: post? on delete cascade
+  comment: comment? on delete cascade
+  at: timestamp = now
+  read_at: timestamp?
+}
+
+// ---------------------------------------------------------------------------
+// the deliberate surface — profiles and the graph
+//
+// auto-CRUD is the borrowed floor; these carry product meaning. The
+// signature is the contract; the body is the SQL escape. Guard failures
+// inside a body can only surface as the arity miss — `not_found` is
+// carrying several refusals it doesn't name (G2).
+// ---------------------------------------------------------------------------
+
+// the PRD's "invalid usernames are rejected" — length and charset guards;
+// an invalid name and a missing user share the same `not_found` (G2)
+fn rename_user(user: user, username: text) -> user ! user_username_taken | not_found {
   unchecked sql("""
     UPDATE user SET username = :username
     WHERE id = :user
+      AND length(:username) BETWEEN 1 AND 30
+      AND :username NOT GLOB '*[^a-z0-9._]*'
     RETURNING *
   """)
 }
 
-fn unfollow(follower: user, target: user) -> follow ! not_found {
+// follow, public profiles only. Three distinct refusals — self-follow,
+// private target, blocked pair — all collapse into `not_found` (G2).
+// Idempotent re-follow needs the leading already-exists escape: without
+// it, an existing edge whose target later went private would be refused
+// by its own guards instead of returned (W1)
+fn follow(follower: user, target: user) -> follow ! not_found {
+  unchecked sql("""
+    INSERT INTO follow (follower, target, since)
+    SELECT :follower, :target, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE EXISTS (SELECT 1 FROM follow
+                  WHERE follower = :follower AND target = :target)
+       OR (:follower <> :target
+           AND (SELECT NOT private FROM user WHERE id = :target)
+           AND NOT EXISTS (SELECT 1 FROM block
+                           WHERE (blocker = :target AND blocked = :follower)
+                              OR (blocker = :follower AND blocked = :target)))
+    ON CONFLICT (follower, target) DO UPDATE SET since = since
+    RETURNING *
+  """)
+}
+
+fn unfollow(follower: user, target: user) -> follow? {
+  // idempotent by arity: miss = null = already unfollowed (C1)
   unchecked sql("""
     DELETE FROM follow
     WHERE follower = :follower AND target = :target
@@ -75,30 +284,582 @@ fn unfollow(follower: user, target: user) -> follow ! not_found {
   """)
 }
 
+// follow a private profile: request. A denied request revives to pending —
+// a policy the PRD leaves open, adopted from the answer sheet (pg.sql;
+// v1-B1) — and saying so takes a CASE per column (W1). An `approved` row
+// is returned as-is: with approve unable to create the follow edge (G3),
+// approved-but-not-following is this contract's permanent limbo
+fn request_follow(requester: user, target: user) -> follow_request ! not_found {
+  unchecked sql("""
+    INSERT INTO follow_request (requester, target, status, requested_at)
+    SELECT :requester, :target, 'pending', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE :requester <> :target
+      AND (SELECT private FROM user WHERE id = :target)
+      AND NOT EXISTS (SELECT 1 FROM block
+                      WHERE (blocker = :target AND blocked = :requester)
+                         OR (blocker = :requester AND blocked = :target))
+    ON CONFLICT (requester, target) DO UPDATE SET
+      status       = CASE follow_request.status WHEN 'denied' THEN 'pending' ELSE follow_request.status END,
+      requested_at = CASE follow_request.status WHEN 'denied' THEN excluded.requested_at ELSE follow_request.requested_at END,
+      responded_at = CASE follow_request.status WHEN 'denied' THEN NULL ELSE follow_request.responded_at END
+    RETURNING *
+  """)
+}
+
+// BROKEN BY CONSTRUCTION (G3): approving must also create the follow row,
+// and a one-statement body writes one table. The deliberate surface cannot
+// repair it — `follow` refuses private targets. The only way out is the
+// raw floor (`insert_follow_one`), which bypasses every guard this file
+// wrote: the flow's logic leaks to the client (G3, G13).
+// Idempotent per the PRD: re-approving an approved request returns it.
+fn approve_follow_request(requester: user, target: user) -> follow_request ! not_found {
+  unchecked sql("""
+    UPDATE follow_request
+    SET status = 'approved',
+        responded_at = coalesce(responded_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    WHERE requester = :requester AND target = :target
+      AND status IN ('pending', 'approved')
+    RETURNING *
+  """)
+}
+
+fn deny_follow_request(requester: user, target: user) -> follow_request ! not_found {
+  unchecked sql("""
+    UPDATE follow_request
+    SET status = 'denied',
+        responded_at = coalesce(responded_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    WHERE requester = :requester AND target = :target
+      AND status IN ('pending', 'denied')
+    RETURNING *
+  """)
+}
+
+// blocking should also sever follows both ways (PRD) — second table,
+// second statement, not sayable (G3)
+fn block_user(blocker: user, blocked: user) -> block ! not_found {
+  unchecked sql("""
+    INSERT INTO block (blocker, blocked, at)
+    SELECT :blocker, :blocked, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE :blocker <> :blocked
+    ON CONFLICT (blocker, blocked) DO UPDATE SET at = at
+    RETURNING *
+  """)
+}
+
+fn unblock(blocker: user, blocked: user) -> block? {
+  unchecked sql("""
+    DELETE FROM block
+    WHERE blocker = :blocker AND blocked = :blocked
+    RETURNING *
+  """)
+}
+
+fn restrict_user(restricting: user, restricted: user) -> restriction ! not_found {
+  unchecked sql("""
+    INSERT INTO restriction (restricting, restricted, at)
+    SELECT :restricting, :restricted, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE :restricting <> :restricted
+    ON CONFLICT (restricting, restricted) DO UPDATE SET at = at
+    RETURNING *
+  """)
+}
+
+fn unrestrict_user(restricting: user, restricted: user) -> restriction? {
+  unchecked sql("""
+    DELETE FROM restriction
+    WHERE restricting = :restricting AND restricted = :restricted
+    RETURNING *
+  """)
+}
+
+// ---------------------------------------------------------------------------
+// the deliberate surface — content and interactions
+// ---------------------------------------------------------------------------
+
+// the PRD's interaction rules: no liking across a block, no liking a
+// private author you don't follow (self exempt). Both guards fit one
+// statement — the wall for these fns is the notification and the counter
+// they cannot also write (G3, G15), not the policy. Unlike follow, the
+// already-liked escape is omitted: a pre-existing like beaten by a later
+// block is refused rather than returned (the W1 wrinkle, unhandled).
+fn like_post(user: user, post: post) -> like ! not_found {
+  unchecked sql("""
+    INSERT INTO "like" (post, user, at)
+    SELECT p.id, :user, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    FROM post p
+    WHERE p.id = :post
+      AND NOT EXISTS (SELECT 1 FROM block
+                      WHERE (blocker = p.author AND blocked = :user)
+                         OR (blocker = :user AND blocked = p.author))
+      AND ((SELECT NOT private FROM user WHERE id = p.author)
+           OR p.author = :user
+           OR EXISTS (SELECT 1 FROM follow WHERE follower = :user AND target = p.author))
+    ON CONFLICT (post, user) DO UPDATE SET at = at
+    RETURNING *
+  """)
+}
+
+fn unlike_post(user: user, post: post) -> like? {
+  unchecked sql("""
+    DELETE FROM "like"
+    WHERE post = :post AND user = :user
+    RETURNING *
+  """)
+}
+
+// same visibility guards as like_post: saving implies seeing
+fn save_post(user: user, post: post) -> save ! not_found {
+  unchecked sql("""
+    INSERT INTO save (user, post, at)
+    SELECT :user, p.id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    FROM post p
+    WHERE p.id = :post
+      AND NOT EXISTS (SELECT 1 FROM block
+                      WHERE (blocker = p.author AND blocked = :user)
+                         OR (blocker = :user AND blocked = p.author))
+      AND ((SELECT NOT private FROM user WHERE id = p.author)
+           OR p.author = :user
+           OR EXISTS (SELECT 1 FROM follow WHERE follower = :user AND target = p.author))
+    ON CONFLICT (user, post) DO UPDATE SET at = at
+    RETURNING *
+  """)
+}
+
+// unsaving should also drop the post from the user's collections (PRD) —
+// second table (G3); collection_post rows go stale
+fn unsave_post(user: user, post: post) -> save? {
+  unchecked sql("""
+    DELETE FROM save
+    WHERE user = :user AND post = :post
+    RETURNING *
+  """)
+}
+
+// guards: non-empty body (trim needs the explicit whitespace set — bare
+// trim() strips spaces only), length cap, reply stays on the same post,
+// no commenting across a block, private authors take comments only from
+// followers (self exempt); a comment from a restricted user lands held
+// instead of visible — one statement carries all of it (W2). The uuid is
+// hand-rolled because the table's own `= auto` cannot reach the escape
+// (G4). Mention parsing is not attempted (multi-table, multi-row — G3).
+fn add_comment(author: user, post: post, body: text, parent: comment?) -> comment ! not_found {
+  unchecked sql("""
+    INSERT INTO comment (id, post, author, parent, body, status, at)
+    SELECT
+      lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2)))
+        || '-4' || substr(lower(hex(randomblob(2))), 2)
+        || '-' || substr('89ab', (abs(random()) % 4) + 1, 1) || substr(lower(hex(randomblob(2))), 2)
+        || '-' || lower(hex(randomblob(6))),
+      p.id, :author, :parent, :body,
+      CASE WHEN EXISTS (SELECT 1 FROM restriction
+                        WHERE restricting = p.author AND restricted = :author)
+           THEN 'held' ELSE 'visible' END,
+      strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    FROM post p
+    WHERE p.id = :post
+      AND length(trim(:body, ' ' || char(9, 10, 13))) > 0
+      AND length(:body) <= 2200
+      AND (:parent IS NULL OR EXISTS (SELECT 1 FROM comment WHERE id = :parent AND post = :post))
+      AND NOT EXISTS (SELECT 1 FROM block
+                      WHERE (blocker = p.author AND blocked = :author)
+                         OR (blocker = :author AND blocked = p.author))
+      AND ((SELECT NOT private FROM user WHERE id = p.author)
+           OR p.author = :author
+           OR EXISTS (SELECT 1 FROM follow WHERE follower = :author AND target = p.author))
+    RETURNING *
+  """)
+}
+
+// the post author releases a held comment (the restriction flow's other half)
+fn approve_comment(comment: comment, actor: user) -> comment? {
+  unchecked sql("""
+    UPDATE comment SET status = 'visible'
+    WHERE id = :comment AND status = 'held'
+      AND :actor = (SELECT author FROM post WHERE id = comment.post)
+    RETURNING *
+  """)
+}
+
+// the author or the post owner may delete; `actor` is client-asserted (G12).
+// Hard delete — the PRD wants audit-preserving soft delete (G7)
+fn delete_comment(comment: comment, actor: user) -> comment? {
+  unchecked sql("""
+    DELETE FROM comment
+    WHERE id = :comment
+      AND (author = :actor OR :actor = (SELECT author FROM post WHERE id = comment.post))
+    RETURNING *
+  """)
+}
+
+// idempotent self-removal from a tag; the tombstoned row then blocks any
+// re-tag forever via unique(media, tagged) (G6)
+fn remove_media_tag(tag: media_tag, actor: user) -> media_tag? {
+  unchecked sql("""
+    UPDATE media_tag
+    SET removed_at = coalesce(removed_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    WHERE id = :tag AND tagged = :actor
+    RETURNING *
+  """)
+}
+
+fn archive_post(post: post, author: user) -> post? {
+  unchecked sql("""
+    UPDATE post
+    SET archived_at = coalesce(archived_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    WHERE id = :post AND author = :author
+    RETURNING *
+  """)
+}
+
+fn unarchive_post(post: post, author: user) -> post? {
+  unchecked sql("""
+    UPDATE post SET archived_at = NULL
+    WHERE id = :post AND author = :author
+    RETURNING *
+  """)
+}
+
+// hard delete, idempotent by arity; the declared cascades take media,
+// likes, comments, saves, collection entries, hashtag links, mentions,
+// tags, notifications — and the reports (the audit trail, G7)
+fn delete_post(post: post, author: user) -> post? {
+  unchecked sql("""
+    DELETE FROM post
+    WHERE id = :post AND author = :author
+    RETURNING *
+  """)
+}
+
+// the same v4 hand-roll as add_comment — the disease spreads by
+// copy-paste (G4). "No unbounded duplicates per reporter and target"
+// stays unsaid (G5, G6)
+fn report_post(reporter: user, post: post, reason: text) -> report {
+  unchecked sql("""
+    INSERT INTO report (id, reporter, post, reason, status, at)
+    SELECT
+      lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2)))
+        || '-4' || substr(lower(hex(randomblob(2))), 2)
+        || '-' || substr('89ab', (abs(random()) % 4) + 1, 1) || substr(lower(hex(randomblob(2))), 2)
+        || '-' || lower(hex(randomblob(6))),
+      :reporter, :post, :reason, 'open', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE length(trim(:reason, ' ' || char(9, 10, 13))) > 0
+    RETURNING *
+  """)
+}
+
+// the owner files a saved post into a collection; "must already be
+// saved" is a cross-table rule no table can declare (G14) but a write
+// guard can enforce — until the floor writes around it (G13)
+fn add_to_collection(collection: collection, post: post, actor: user) -> collection_post ! not_found {
+  unchecked sql("""
+    INSERT INTO collection_post (collection, post, at)
+    SELECT :collection, :post, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE (SELECT owner FROM collection WHERE id = :collection) = :actor
+      AND EXISTS (SELECT 1 FROM save WHERE user = :actor AND post = :post)
+    ON CONFLICT (collection, post) DO UPDATE SET at = at
+    RETURNING *
+  """)
+}
+
+fn remove_from_collection(collection: collection, post: post, actor: user) -> collection_post? {
+  unchecked sql("""
+    DELETE FROM collection_post
+    WHERE collection = :collection AND post = :post
+      AND (SELECT owner FROM collection WHERE id = :collection) = :actor
+    RETURNING *
+  """)
+}
+
+fn mark_notifications_read(user: user) -> [notification] {
+  unchecked sql("""
+    UPDATE notification
+    SET read_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE recipient = :user AND read_at IS NULL
+    RETURNING *
+  """)
+}
+
+// ---------------------------------------------------------------------------
+// the deliberate surface — reads
+//
+// all of these are pure reads served from the Mutation root (G11), and
+// every count() here recounts rows the PRD says to materialize (G15)
+// ---------------------------------------------------------------------------
+
+record engagement {
+  likes: int
+  comments: int
+}
+
+record feed_item {
+  post: uuid
+  author: text
+  caption: text?
+  published_at: timestamp
+  likes: int
+  comments: int
+  viewer_liked: bool
+  viewer_saved: bool
+}
+
+record profile_page {
+  id: uuid
+  username: text
+  full_name: text?
+  bio: text?
+  private: bool
+  followers: int
+  following: int
+  posts: int
+  viewer_follows: bool
+}
+
+record profile_card {
+  id: uuid
+  username: text
+  full_name: text?
+  followers: int
+}
+
+// one integer still needs a named wrapper shape (G9)
+record unread {
+  count: int
+}
+
+// followed authors plus own posts, newest first, cursor on published_at
+// with an id tiebreaker — rows tied exactly on a boundary timestamp can
+// still be skipped by the single-column cursor; real keyset pagination
+// wants a compound cursor the protocol should own (G16). The flat record
+// is the ceiling: no nested author object, no media list — the client
+// hydrates via the floor (G8)
+fn home_feed(viewer: user, before: timestamp?) -> [feed_item] {
+  unchecked sql("""
+    SELECT
+      p.id AS post,
+      u.username AS author,
+      p.caption AS caption,
+      p.published_at AS published_at,
+      (SELECT count(*) FROM "like" WHERE post = p.id) AS likes,
+      (SELECT count(*) FROM comment WHERE post = p.id AND status = 'visible') AS comments,
+      EXISTS(SELECT 1 FROM "like" WHERE post = p.id AND user = :viewer) AS viewer_liked,
+      EXISTS(SELECT 1 FROM save WHERE post = p.id AND user = :viewer) AS viewer_saved
+    FROM post p
+    JOIN user u ON u.id = p.author
+    WHERE (p.author = :viewer
+           OR EXISTS (SELECT 1 FROM follow WHERE follower = :viewer AND target = p.author))
+      AND NOT EXISTS (SELECT 1 FROM block
+                      WHERE (blocker = :viewer AND blocked = p.author)
+                         OR (blocker = p.author AND blocked = :viewer))
+      AND p.archived_at IS NULL
+      AND (:before IS NULL OR p.published_at < :before)
+    ORDER BY p.published_at DESC, p.id DESC
+    LIMIT 20
+  """)
+}
+
+fn profile(username: text, viewer: user?) -> profile_page ! not_found {
+  unchecked sql("""
+    SELECT
+      u.id AS id,
+      u.username AS username,
+      u.full_name AS full_name,
+      u.bio AS bio,
+      u.private AS private,
+      (SELECT count(*) FROM follow WHERE target = u.id) AS followers,
+      (SELECT count(*) FROM follow WHERE follower = u.id) AS following,
+      (SELECT count(*) FROM post WHERE author = u.id AND archived_at IS NULL) AS posts,
+      EXISTS(SELECT 1 FROM follow WHERE follower = :viewer AND target = u.id) AS viewer_follows
+    FROM user u
+    WHERE u.username = :username
+  """)
+}
+
+// substring match, shortest-username-first as a crude relevance; the
+// LIKE metacharacters must be escaped by hand or :q becomes a wildcard
+// language (G16); excluding blocked/disabled profiles needs viewer
+// context this signature lacks (G12)
+fn search_profiles(q: text) -> [profile_card] {
+  unchecked sql("""
+    SELECT
+      u.id AS id,
+      u.username AS username,
+      u.full_name AS full_name,
+      (SELECT count(*) FROM follow WHERE target = u.id) AS followers
+    FROM user u
+    WHERE u.username LIKE '%' || replace(replace(replace(:q, '\', '\\'), '%', '\%'), '_', '\_') || '%' ESCAPE '\'
+       OR u.full_name LIKE '%' || replace(replace(replace(:q, '\', '\\'), '%', '\%'), '_', '\_') || '%' ESCAPE '\'
+    ORDER BY length(u.username), u.username
+    LIMIT 20
+  """)
+}
+
 fn post_engagement(post: post) -> engagement {
   unchecked sql("""
     SELECT
       (SELECT count(*) FROM "like"  WHERE post = :post) AS likes,
-      (SELECT count(*) FROM comment WHERE post = :post) AS comments
+      (SELECT count(*) FROM comment WHERE post = :post AND status = 'visible') AS comments
   """)
 }
 
+fn post_media(post: post) -> [media] {
+  unchecked sql("""
+    SELECT * FROM media WHERE post = :post ORDER BY position
+  """)
+}
+
+// held comments are hidden even from their own author here — saying
+// "visible, or held-and-mine" wants a viewer param on every read (G12)
+fn post_comments(post: post, before: timestamp?) -> [comment] {
+  unchecked sql("""
+    SELECT * FROM comment
+    WHERE post = :post AND status = 'visible'
+      AND (:before IS NULL OR at < :before)
+    ORDER BY at DESC, id DESC
+    LIMIT 20
+  """)
+}
+
+// public discovery: archived posts and private authors are excluded here —
+// but the borrowed floor (`GET /rest/v1/post`) still serves them, because
+// the floor cannot filter (G13)
+fn hashtag_page(tag: hashtag, before: timestamp?) -> [post] {
+  unchecked sql("""
+    SELECT p.* FROM post p
+    JOIN post_hashtag ph ON ph.post = p.id
+    JOIN user u ON u.id = p.author
+    WHERE ph.tag = :tag AND p.archived_at IS NULL AND NOT u.private
+      AND (:before IS NULL OR p.published_at < :before)
+    ORDER BY p.published_at DESC, p.id DESC
+    LIMIT 30
+  """)
+}
+
+fn location_page(place: location, before: timestamp?) -> [post] {
+  unchecked sql("""
+    SELECT p.* FROM post p
+    JOIN user u ON u.id = p.author
+    WHERE p.location = :place AND p.archived_at IS NULL AND NOT u.private
+      AND (:before IS NULL OR p.published_at < :before)
+    ORDER BY p.published_at DESC, p.id DESC
+    LIMIT 30
+  """)
+}
+
+// the saved-posts library (private to the saver by convention the open
+// tier cannot enforce — G12/G13); cursor rides published_at because the
+// save time is not in the returned shape (G8)
+fn saved_posts(user: user, before: timestamp?) -> [post] {
+  unchecked sql("""
+    SELECT p.* FROM post p
+    JOIN save s ON s.post = p.id
+    WHERE s.user = :user
+      AND (:before IS NULL OR p.published_at < :before)
+    ORDER BY p.published_at DESC, p.id DESC
+    LIMIT 20
+  """)
+}
+
+// the tagged-posts surface: live tags only, archived posts excluded
+fn tagged_posts(user: user, before: timestamp?) -> [post] {
+  unchecked sql("""
+    SELECT DISTINCT p.* FROM post p
+    JOIN media m ON m.post = p.id
+    JOIN media_tag t ON t.media = m.id
+    WHERE t.tagged = :user AND t.removed_at IS NULL
+      AND p.archived_at IS NULL
+      AND (:before IS NULL OR p.published_at < :before)
+    ORDER BY p.published_at DESC, p.id DESC
+    LIMIT 20
+  """)
+}
+
+fn notifications(user: user, before: timestamp?) -> [notification] {
+  unchecked sql("""
+    SELECT * FROM notification
+    WHERE recipient = :user AND (:before IS NULL OR at < :before)
+    ORDER BY at DESC, id DESC
+    LIMIT 50
+  """)
+}
+
+fn unread_count(user: user) -> unread {
+  unchecked sql("""
+    SELECT count(*) AS count FROM notification
+    WHERE recipient = :user AND read_at IS NULL
+  """)
+}
+
+// ---------------------------------------------------------------------------
+// seed — a small world exercising every table
+// ---------------------------------------------------------------------------
+
 seed {
+  // people; noor is private, rex is blocked by maya
   maya = user { username: "maya", full_name: "Maya Chen", bio: "photographer" }
   luis = user { username: "luis" }
   vera = user { username: "vera", bio: "coffee, mostly" }
+  noor = user { username: "noor", full_name: "Noor Haddad", private: true }
+  rex  = user { username: "rex" }
 
-  p1 = post { author: maya, caption: "first light" }
-  p2 = post { author: luis }
+  cafe = location { name: "Blue Bottle, Hayes Valley", place_id: "bb-hayes-1" }
 
+  // posts; p1 is a two-image carousel, p2 a video, p3 private-authored
+  p1 = post { author: maya, caption: "first light #sunset", location: cafe }
+  p2 = post { author: luis, caption: "steady hands" }
+  p3 = post { author: noor, caption: "the garden, gated" }
+
+  media { post: p1, position: 0, kind: "image", width: 3024, height: 4032, status: "ready" }
+  media { post: p1, position: 1, kind: "image", width: 3024, height: 4032, status: "ready" }
+  m3 = media { post: p2, position: 0, kind: "video", width: 1920, height: 1080, duration_ms: 12500, status: "ready" }
+  // "ready" because p3 is published — nothing in the schema gates publish
+  // on processing state (G1: no state machine; G14: no cross-table rule)
+  media { post: p3, position: 0, kind: "image", width: 3024, height: 4032, status: "ready" }
+
+  // the graph; maya is an approved follower of the private profile
   follow { follower: luis, target: maya }
   follow { follower: vera, target: maya }
   follow { follower: maya, target: vera }
+  follow { follower: maya, target: noor }
+
+  // one pending request, one denied (request_follow will revive it);
+  // requested_at is stated so the response can't precede the request —
+  // the `= now` default would land after the literal responded_at
+  follow_request { requester: vera, target: noor }
+  follow_request { requester: luis, target: noor, status: "denied",
+                   requested_at: "2026-07-07T20:00:00Z",
+                   responded_at: "2026-07-08T09:00:00Z" }
+
+  block { blocker: maya, blocked: rex }
+  restriction { restricting: luis, restricted: vera }
 
   like { post: p1, user: luis }
   like { post: p1, user: vera }
   like { post: p2, user: maya }
 
-  comment { post: p1, author: luis, body: "great shot" }
-  comment { post: p1, author: vera, body: "where is this?" }
+  c1 = comment { post: p1, author: luis, body: "great shot" }
+  c2 = comment { post: p1, author: vera, body: "@maya where is this?", parent: c1 }
+  // vera is restricted by luis, so her comment on his post lands held
+  comment { post: p2, author: vera, body: "trying not to spill", status: "held" }
+
+  mention { profile: maya, comment: c2, display: "@maya" }
+
+  media_tag { media: m3, tagged: maya, x_pct: 50, y_pct: 40 }
+  media_tag { media: m3, tagged: vera, x_pct: 12, y_pct: 80,
+              at: "2026-07-09T08:00:00Z", removed_at: "2026-07-09T18:00:00Z" }
+
+  save { user: vera, post: p1 }
+  shoots = collection { owner: vera, name: "places to shoot" }
+  collection_post { collection: shoots, post: p1 }
+
+  report { reporter: vera, post: p2, reason: "spam" }
+
+  sunset = hashtag { tag: "sunset" }
+  post_hashtag { post: p1, tag: sunset }
+
+  // written by the seed only: no fn can create these alongside the act
+  // they describe (G3)
+  notification { recipient: maya, actor: luis, kind: "like", post: p1 }
+  notification { recipient: maya, actor: vera, kind: "comment", post: p1,
+                 at: "2026-07-09T11:30:00Z", read_at: "2026-07-09T12:00:00Z" }
+  notification { recipient: noor, actor: vera, kind: "follow_request" }
 }

@@ -9,6 +9,7 @@ export type User_Insert_Input = {
   full_name?: string | null | undefined;
   id?: string | null | undefined;
   joined_at?: string | null | undefined;
+  private?: boolean | null | undefined;
   username?: string | null | undefined;
 };
 
@@ -16,6 +17,7 @@ export type User_Set_Input = {
   bio?: string | null | undefined;
   full_name?: string | null | undefined;
   joined_at?: string | null | undefined;
+  private?: boolean | null | undefined;
   username?: string | null | undefined;
 };
 
