@@ -1,11 +1,11 @@
 # The GraphQL surface — dialect specification
 
-Status: **normative target** ("to-be"). This document specifies the GraphQL
-dialect Spock derives, independent of what any given toolchain version has
-implemented so far. The implementation tracks it tier by tier (§7); the
-deltas between the current v0 runtime and Tier 1 are enumerated in §9.
-Where this document and `docs/spec/v0.md` §8.2 disagree, this document is
-the destination and §8.2 is the snapshot.
+Status: **normative**. This document specifies the GraphQL dialect Spock
+derives, independent of what any given toolchain version has implemented.
+The v0 runtime implements **Tier 1** (§7); higher tiers are the target.
+`docs/spec/v0.md` §8.2 records the v0 protocol binding (mount, page
+discipline, error envelope); §9 here records the executed migration from
+the pre-dialect surface.
 
 ---
 
@@ -123,6 +123,11 @@ Input types:
   `_set`: keys are immutable, the key is the row's identity.
 - `<t>_pk_columns_input` — the key fields, non-null.
 
+A table whose every field is a key field derives **no update mutation**:
+nothing is settable, and GraphQL forbids empty input objects. Its
+`_set_input` / `_pk_columns_input` names stay reserved (§3) regardless.
+(Hasura behaves the same way: no updatable columns, no update mutation.)
+
 Write semantics (mirroring spec v0 §7.2):
 
 - a write that did not happen — missing row, malformed key value — is an
@@ -191,10 +196,11 @@ Deviations from Hasura, each deliberate:
 | D5 | no raw FK scalar sibling for reference fields (Hasura: `author_id` column + `author` relationship) | Spock's reference field *is* the semantic name; the key is one hop away |
 | D6 | query depth bounded (32) (Hasura: unlimited unless configured) | self-references allow unbounded nesting; a prototype runtime ships safe |
 
-## 9. Migration from the v0.0 surface
+## 9. Migration from the v0.0 surface (executed)
 
-The current v0 runtime implements a Tier-1-equivalent surface with
-pre-dialect naming. Renames (breaking; acceptable pre-release):
+The first v0 runtime shipped a Tier-1-equivalent surface with pre-dialect
+naming; it has since been renamed to this specification. The mapping is
+recorded (breaking; pre-release):
 
 | v0.0 (as-is) | Tier 1 (to-be) |
 |---|---|
