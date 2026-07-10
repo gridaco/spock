@@ -38,6 +38,7 @@ pub fn ddl(contract: &Contract) -> Vec<String> {
                     let action = match on_delete {
                         crate::ir::OnDelete::Restrict => "RESTRICT",
                         crate::ir::OnDelete::Cascade => "CASCADE",
+                        crate::ir::OnDelete::SetNull => "SET NULL",
                     };
                     lines.push(format!(
                         "  FOREIGN KEY (\"{}\") REFERENCES \"{target}\" (\"{target_key}\") ON DELETE {action}",
@@ -115,5 +116,21 @@ mod tests {
         assert!(statements[2].contains("PRIMARY KEY (\"follower\", \"target\")"));
         assert!(statements[2]
             .contains("FOREIGN KEY (\"target\") REFERENCES \"user\" (\"id\") ON DELETE CASCADE"));
+    }
+
+    #[test]
+    fn emits_set_null() {
+        let contract = compile(
+            "table user { key id: uuid = auto }\n\
+             table comment {\n\
+               key id: uuid = auto\n\
+               author: user\n\
+               parent: comment? on delete set null\n\
+             }",
+        )
+        .unwrap();
+        let statements = ddl(&contract);
+        assert!(statements[1]
+            .contains("FOREIGN KEY (\"parent\") REFERENCES \"comment\" (\"id\") ON DELETE SET NULL"));
     }
 }

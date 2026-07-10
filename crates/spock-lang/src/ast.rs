@@ -102,6 +102,8 @@ impl Lit {
 pub enum OnDeleteKind {
     Restrict,
     Cascade,
+    /// `set null` — legal only on optional references (E040).
+    SetNull,
 }
 
 #[derive(Clone, Debug)]

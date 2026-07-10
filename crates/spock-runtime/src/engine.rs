@@ -248,6 +248,52 @@ mod tests {
     }
 
     #[test]
+    fn set_null_nulls_the_child_field_on_delete() {
+        let contract = spock_lang::compile(
+            "table user { key id: uuid = auto\n username: text unique }\n\
+             table comment {\n\
+               key id: uuid = auto\n\
+               author: user\n\
+               body: text\n\
+               parent: comment? on delete set null\n\
+             }\n\
+             seed {\n\
+               maya = user { username: \"maya\" }\n\
+               top = comment { author: maya, body: \"parent\" }\n\
+               comment { author: maya, body: \"reply\", parent: top }\n\
+             }",
+        )
+        .expect("compiles");
+        let mut conn = open(&contract, None).expect("loads");
+        let table = contract.table("comment").expect("declared");
+
+        let parent_id: String = conn
+            .query_row(
+                "SELECT id FROM comment WHERE body = 'parent'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        crate::write::delete_row(
+            &contract,
+            table,
+            &mut conn,
+            &[rusqlite::types::Value::Text(parent_id)],
+        )
+        .expect("set null does not restrict the delete");
+
+        // the reply survives, orphaned by design
+        let (count, orphaned): (i64, i64) = conn
+            .query_row(
+                "SELECT count(*), count(*) FILTER (WHERE parent IS NULL) FROM comment",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((count, orphaned), (1, 1));
+    }
+
+    #[test]
     fn fn_sql_failures_gate_the_load() {
         // syntax error surfaces SQLite's own message
         assert!(open_err("fn f() -> user { unchecked sql(\"SELEC *\") }").contains("does not compile"));

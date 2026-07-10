@@ -513,6 +513,7 @@ impl Checker {
                         .map(|c| match c.kind {
                             ast::OnDeleteKind::Restrict => OnDelete::Restrict,
                             ast::OnDeleteKind::Cascade => OnDelete::Cascade,
+                            ast::OnDeleteKind::SetNull => OnDelete::SetNull,
                         })
                         .unwrap_or(OnDelete::Restrict),
                 }
@@ -525,6 +526,20 @@ impl Checker {
                 self.error(
                     "E015",
                     format!("`on delete` on `{}`, which is not a reference", f.name.name),
+                    clause.span,
+                );
+            }
+            // `set null` writes NULL into this field — the field must be
+            // able to hold one. (Key fields are never optional, so a
+            // key-part ref is rejected here too.)
+            if clause.kind == ast::OnDeleteKind::SetNull && !f.optional {
+                self.error(
+                    "E040",
+                    format!(
+                        "`on delete set null` on `{}`, which is required; \
+                         only an optional reference can be nulled",
+                        f.name.name
+                    ),
                     clause.span,
                 );
             }
@@ -1106,6 +1121,36 @@ mod tests {
             codes("table a { key id: uuid = auto\n n: int on delete cascade }"),
             vec!["E015"]
         );
+    }
+
+    #[test]
+    fn e040_set_null_requires_optional() {
+        // required ref: nothing to null into
+        assert_eq!(
+            codes(&format!(
+                "{USER}table t {{ key id: uuid = auto\n u: user on delete set null }}"
+            )),
+            vec!["E040"]
+        );
+        // key-part refs are never optional, so they are rejected too
+        assert_eq!(
+            codes(&format!(
+                "{USER}table t {{ key (u, n)\n u: user on delete set null\n n: int }}"
+            )),
+            vec!["E040"]
+        );
+        // optional ref: legal, lowers to SetNull, derives no restricted error
+        let contract = compile(&format!(
+            "{USER}table t {{ key id: uuid = auto\n u: user? on delete set null }}"
+        ))
+        .unwrap();
+        let t = contract.table("t").unwrap();
+        assert!(matches!(
+            &t.field("u").unwrap().ty,
+            Type::Ref { on_delete: OnDelete::SetNull, .. }
+        ));
+        let user = contract.table("user").unwrap();
+        assert!(user.error_for(ErrorKind::Restricted, &[]).is_none());
     }
 
     #[test]

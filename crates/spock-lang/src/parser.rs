@@ -305,7 +305,7 @@ impl Parser {
     }
 
     // field_decl = ["key"] ident ":" type ["?"] ["unique"] ["=" default]
-    //              ["on" "delete" ("restrict"|"cascade")]
+    //              ["on" "delete" ("restrict"|"cascade"|"set" "null")]
     fn field_decl(&mut self) -> Result<FieldDecl, Diagnostic> {
         let is_key = if self.peek().kind == TokenKind::KwKey {
             self.bump();
@@ -351,7 +351,12 @@ impl Parser {
             let (kind, kspan) = match self.peek().kind {
                 TokenKind::KwRestrict => (OnDeleteKind::Restrict, self.bump().span),
                 TokenKind::KwCascade => (OnDeleteKind::Cascade, self.bump().span),
-                _ => return Err(self.unexpected("`restrict` or `cascade`")),
+                TokenKind::KwSet => {
+                    self.bump();
+                    let end = self.expect(TokenKind::KwNull, "`null`")?.span;
+                    (OnDeleteKind::SetNull, end)
+                }
+                _ => return Err(self.unexpected("`restrict`, `cascade`, or `set null`")),
             };
             end = kspan;
             Some(OnDeleteClause {
@@ -529,6 +534,26 @@ mod tests {
             panic!("expected field");
         };
         assert!(caption.optional);
+    }
+
+    #[test]
+    fn parses_on_delete_set_null() {
+        let file = parse_ok(
+            "table comment {\n\
+               key id: uuid = auto\n\
+               parent: comment? on delete set null\n\
+             }",
+        );
+        let TableItem::Field(parent) = &file.tables[0].items[1] else {
+            panic!("expected field");
+        };
+        assert_eq!(
+            parent.on_delete.as_ref().map(|c| c.kind),
+            Some(OnDeleteKind::SetNull)
+        );
+        // `set` must be followed by `null`
+        let d = parse_err("table t { key id: uuid = auto\n a: t? on delete set }");
+        assert!(d.message.contains("`null`"), "{}", d.message);
     }
 
     #[test]

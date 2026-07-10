@@ -64,6 +64,10 @@ pub enum Type {
 pub enum OnDelete {
     Restrict,
     Cascade,
+    /// Deleting the target nulls this field. Optional references only
+    /// (E040); never derives a `restricted` error — it blocks nothing.
+    #[serde(rename = "set_null")]
+    SetNull,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
