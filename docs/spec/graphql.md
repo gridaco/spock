@@ -143,6 +143,34 @@ Write semantics (mirroring spec v0 §7.2):
 - deletes check inbound `restrict` references (→ `<t>_restricted`);
   `cascade` delegates to the engine.
 
+### 5.1 Functions — the deliberate surface
+
+Declared `fn`s (spec v0 §7.4) land on the same `Mutation` root as the
+derived CRUD — the Hasura-Actions analogue promised in §1. All fns are
+Mutation fields in v0 (read-only fns on `Query` wait for a purity
+marker):
+
+- `Mutation.<fn>` — the fn's name, verbatim; one argument per declared
+  parameter (the parameter's value type: a table ref binds the target
+  key's scalar), nullable iff the parameter is optional. For fn arguments
+  `null` means *absent* — there is no `_set` carve-out, so the
+  unprovided-variable correction is unnecessary here by construction.
+- The return type follows the declared arity: `-> t` is `t!` (a miss is
+  an **error**, `not_found` — deviation D1 applies to fns too), `-> t?`
+  is `t` (miss = `null`), `-> [t]` is `[t!]!` — **uncapped**: the author
+  owns `LIMIT` (a companion to D2, not a deviation from Hasura — the
+  page cap governs derived lists, not authored SQL).
+- `record` shapes register as object types under the §3 naming laws
+  (bare name only; records derive no support types).
+- The field description carries the declared error codes (`! a | b`) —
+  the failure surface, introspectable before any call. Codes the SQL can
+  produce but the signature does not declare still surface truthfully at
+  runtime, routed cross-table to the owning table's derived error.
+- **Mutation-root names are claimed**: derived CRUD names and fn names
+  live in one namespace, and exactly what is registered is claimed (a
+  pure-key table claims no update). A fn named `insert_user_one` fails
+  at startup, never at request time.
+
 ## 6. Errors
 
 Errors render as GraphQL's own `errors[]` over HTTP 200. The mechanism

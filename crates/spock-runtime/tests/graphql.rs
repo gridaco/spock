@@ -39,6 +39,28 @@ table comment {
   at: timestamp = now
 }
 
+record stats { posts: int }
+
+fn rename_user(user: user, username: text) -> user ! user_username_taken {
+  sql("""
+    UPDATE user SET username = :username
+    WHERE id = :user
+    RETURNING *
+  """)
+}
+
+fn find_user(username: text) -> user? {
+  sql("""SELECT * FROM user WHERE username = :username""")
+}
+
+fn author_stats(author: user) -> stats {
+  sql("""SELECT count(*) AS posts FROM post WHERE author = :author""")
+}
+
+fn recent_posts(n: int) -> [post] {
+  sql("""SELECT * FROM post ORDER BY published_at DESC LIMIT :n""")
+}
+
 seed {
   maya = user { username: "maya", bio: "photographer" }
   luis = user { username: "luis", invited_by: maya }
@@ -257,6 +279,108 @@ async fn the_graphql_surface() {
 
 fn extensions(response: &Value) -> &Value {
     &response["errors"][0]["extensions"]
+}
+
+#[tokio::test]
+async fn the_graphql_fns() {
+    let base = start().await;
+
+    // ids for the write cases
+    let resp = gql(&base, "{ user { id username } }", Value::Null).await;
+    let users = resp["data"]["user"].as_array().unwrap().clone();
+    let id_of = |name: &str| {
+        users.iter().find(|u| u["username"] == name).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let (maya_id, luis_id) = (id_of("maya"), id_of("luis"));
+
+    // -- introspection: declared codes reach the description ----------------
+    let resp = gql(
+        &base,
+        "{ __schema { mutationType { fields { name description } } } }",
+        Value::Null,
+    )
+    .await;
+    let fields = resp["data"]["__schema"]["mutationType"]["fields"]
+        .as_array()
+        .unwrap();
+    let rename = fields.iter().find(|f| f["name"] == "rename_user").unwrap();
+    assert!(rename["description"]
+        .as_str()
+        .unwrap()
+        .contains("user_username_taken"));
+
+    // -- maybe arity via variables: hit and null miss ------------------------
+    let q = "mutation($u: String!) { find_user(username: $u) { username bio } }";
+    let resp = gql(&base, q, json!({"u": "maya"})).await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["find_user"]["bio"], "photographer");
+    let resp = gql(&base, q, json!({"u": "ghost"})).await;
+    assert_no_errors(&resp);
+    assert!(resp["data"]["find_user"].is_null());
+
+    // -- record return: an aggregate as a declared shape ---------------------
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ author_stats(author: "{maya_id}") {{ posts }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["author_stats"]["posts"], 2);
+
+    // -- many arity: the author owns LIMIT ------------------------------------
+    let resp = gql(&base, "mutation { recent_posts(n: 1) { caption } }", Value::Null).await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["recent_posts"].as_array().unwrap().len(), 1);
+
+    // -- one arity: the write returns the row ---------------------------------
+    let resp = gql(
+        &base,
+        &format!(
+            r#"mutation {{ rename_user(user: "{luis_id}", username: "luis_x") {{ username }} }}"#
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["rename_user"]["username"], "luis_x");
+
+    // -- a constraint tripped inside the escape routes to the derived code ----
+    let resp = gql(
+        &base,
+        &format!(
+            r#"mutation {{ rename_user(user: "{luis_id}", username: "maya") {{ username }} }}"#
+        ),
+        Value::Null,
+    )
+    .await;
+    let ext = extensions(&resp);
+    assert_eq!(ext["code"], "user_username_taken");
+    assert_eq!(ext["kind"], "unique");
+    assert_eq!(ext["table"], "user");
+    assert_eq!(ext["fields"], json!(["username"]));
+
+    // -- -> t with no matching row shouts (write-miss, D1) --------------------
+    let ghost = uuid::Uuid::now_v7().to_string();
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ rename_user(user: "{ghost}", username: "x") {{ username }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(extensions(&resp)["code"], "not_found");
+
+    // -- malformed ref arg is a type mismatch ----------------------------------
+    let resp = gql(
+        &base,
+        r#"mutation { rename_user(user: "not-a-uuid", username: "x") { username } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(extensions(&resp)["code"], "type_mismatch");
 }
 
 #[tokio::test]

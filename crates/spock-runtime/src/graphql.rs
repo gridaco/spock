@@ -36,10 +36,13 @@ use async_graphql::Value as GqlValue;
 use async_graphql_value::Value as AstValue;
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Map, Value as Json};
-use spock_lang::ir::{Contract, DerivedError, ErrorKind, Field as IrField, Table, Type};
+use spock_lang::ir::{
+    Contract, DerivedError, ErrorKind, Field as IrField, FnArity, FnDef, Table, Type,
+};
 use time::format_description::well_known::Rfc3339;
 
 use crate::error::ApiError;
+use crate::func;
 use crate::value::json_to_sql;
 use crate::write;
 use crate::App;
@@ -80,6 +83,8 @@ pub enum SchemaBuildError {
     DuplicateTypeName { a: String, b: String, name: String },
     #[error("query fields for tables `{a}` and `{b}` collide on `{name}`")]
     DuplicateQueryField { a: String, b: String, name: String },
+    #[error("mutation fields for {a} and {b} collide on `{name}`")]
+    DuplicateMutationField { a: String, b: String, name: String },
     #[error("on type `{type_name}`: generated field `{name}` collides with {other}")]
     DuplicateObjectField {
         type_name: String,
@@ -123,9 +128,24 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
         }
     }
 
+    // Pass 1a′ — records join the type name space: the bare name only
+    // (records derive no support types), against the same reserved list.
+    for record in &contract.records {
+        if RESERVED_TABLE_NAMES.contains(&record.name.as_str()) {
+            return Err(SchemaBuildError::ReservedTableName {
+                table: record.name.clone(),
+            });
+        }
+        if let Some(other) = claimed_types.insert(record.name.clone(), record.name.clone()) {
+            return Err(SchemaBuildError::DuplicateTypeName {
+                a: other,
+                b: record.name.clone(),
+                name: record.name.clone(),
+            });
+        }
+    }
+
     // Pass 1b — query-root field names: the bare list root and `_by_pk`.
-    // (Mutation-root names cannot collide: three distinct prefixes and
-    // fixed suffixes over unique table names.)
     let mut claimed_roots: HashMap<String, String> = HashMap::new(); // field -> table
     for table in &contract.tables {
         for name in [table.name.clone(), format!("{}_by_pk", table.name)] {
@@ -136,6 +156,35 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
                     name,
                 });
             }
+        }
+    }
+
+    // Pass 1c — mutation-root field names. Derived CRUD names could once
+    // not collide by construction; fn names break the construction, so
+    // everything registered on the root is claimed — exactly what is
+    // registered (a pure-key table claims no update).
+    let mut claimed_mutations: HashMap<String, String> = HashMap::new(); // field -> owner
+    {
+        let mut claim = |name: String, owner: String| -> Result<(), SchemaBuildError> {
+            if let Some(other) = claimed_mutations.insert(name.clone(), owner.clone()) {
+                return Err(SchemaBuildError::DuplicateMutationField {
+                    a: other,
+                    b: owner,
+                    name,
+                });
+            }
+            Ok(())
+        };
+        for table in &contract.tables {
+            let owner = format!("table `{}`", table.name);
+            claim(format!("insert_{}_one", table.name), owner.clone())?;
+            if has_settable_fields(table) {
+                claim(format!("update_{}_by_pk", table.name), owner.clone())?;
+            }
+            claim(format!("delete_{}_by_pk", table.name), owner)?;
+        }
+        for f in &contract.fns {
+            claim(f.name.clone(), format!("fn `{}`", f.name))?;
         }
     }
 
@@ -196,6 +245,18 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
         }
     }
 
+    // Pass 2c — record object types: scalar fields, no relations.
+    for record in &contract.records {
+        let mut obj = Object::new(record.name.clone());
+        for f in &record.fields {
+            obj = obj.field(scalar_field(
+                f.name.clone(),
+                scalar_type_ref(contract, &f.ty, f.optional),
+            ));
+        }
+        objects.push(obj);
+    }
+
     // Pass 3 — the Query root. By-pk fields take the key fields as args,
     // so composite-key tables are addressable too.
     let mut query = Object::new("Query");
@@ -213,6 +274,13 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
             mutation = mutation.field(update_by_pk_field(table));
         }
         mutation = mutation.field(delete_by_pk_field(contract, table));
+    }
+
+    // Pass 3c — fn mutation fields: the deliberate surface, on the same
+    // root as the borrowed floor (the Hasura-Actions analogue,
+    // graphql.md §1). All fns land on Mutation in v0.
+    for f in &contract.fns {
+        mutation = mutation.field(fn_field(contract, f));
     }
 
     // Pass 4 — register and finish. Introspection stays enabled.
@@ -870,6 +938,76 @@ fn delete_by_pk_field(contract: &Contract, table: &Table) -> Field {
     field
 }
 
+/// `Mutation.<fn>(<params>): <ret>` — a declared fn on the same root as
+/// the derived CRUD (graphql.md §1: the deliberate surface next to the
+/// borrowed floor). One argument per param, nullable iff optional; for fn
+/// arguments `null` means absent, so the `_set`-style unprovided-variable
+/// machinery is unnecessary here. The description carries the declared
+/// error codes.
+fn fn_field(contract: &Contract, f: &FnDef) -> Field {
+    let fn_name = f.name.clone();
+    let ret = match f.returns.arity {
+        FnArity::One => TypeRef::named_nn(f.returns.of.clone()),
+        FnArity::Maybe => TypeRef::named(f.returns.of.clone()),
+        FnArity::Many => TypeRef::named_nn_list_nn(f.returns.of.clone()),
+    };
+    let mut field = Field::new(f.name.clone(), ret, move |ctx| {
+        let fn_name = fn_name.clone();
+        FieldFuture::new(async move {
+            let app = app_of(&ctx)?;
+            let contract = &app.contract;
+            let f = contract
+                .fn_def(&fn_name)
+                .ok_or_else(|| gql("schema/contract drift: fn"))?;
+            let mut args = Map::new();
+            for p in &f.params {
+                let Some(v) = ctx.args.get(&p.name) else {
+                    continue;
+                };
+                if v.is_null() {
+                    continue; // null == absent for fn args
+                }
+                args.insert(p.name.clone(), v.deserialize::<Json>()?);
+            }
+            let result = {
+                let mut db = app.db.lock().map_err(|_| gql("db lock poisoned"))?;
+                func::call(contract, f, &mut db, &args).map_err(api_error_to_gql)?
+            };
+            Ok(match f.returns.arity {
+                FnArity::One => Some(FieldValue::owned_any(result)),
+                FnArity::Maybe => {
+                    if result.is_null() {
+                        None
+                    } else {
+                        Some(FieldValue::owned_any(result))
+                    }
+                }
+                FnArity::Many => {
+                    let Json::Array(rows) = result else {
+                        return Err(gql("fn execution drift: expected rows"));
+                    };
+                    Some(FieldValue::list(rows.into_iter().map(FieldValue::owned_any)))
+                }
+            })
+        })
+    });
+    for p in &f.params {
+        let scalar = scalar_name(contract, &p.ty);
+        let ty = if p.optional {
+            TypeRef::named(scalar)
+        } else {
+            TypeRef::named_nn(scalar)
+        };
+        field = field.argument(InputValue::new(p.name.clone(), ty));
+    }
+    let description = if f.errors.is_empty() {
+        format!("Call fn `{}`.", f.name)
+    } else {
+        format!("Call fn `{}`. Errors: {}.", f.name, f.errors.join(", "))
+    };
+    field.description(description)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1042,6 +1180,84 @@ mod tests {
         .unwrap_err();
         assert!(
             matches!(err, SchemaBuildError::DuplicateQueryField { .. }),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn fn_and_record_derivation_laws() {
+        let schema = build(
+            "table user { key id: uuid = auto\n username: text unique\n bio: text? }\n\
+             record stats { posts: int\n latest: timestamp? }\n\
+             fn rename_user(user: user, username: text, note: text?) -> user ! user_username_taken { sql(\"UPDATE user SET username = :username, bio = :note WHERE id = :user RETURNING *\") }\n\
+             fn find_user(username: text) -> user? { sql(\"SELECT * FROM user WHERE username = :username\") }\n\
+             fn tally(n: int) -> [stats] { sql(\"SELECT count(*) AS posts, NULL AS latest FROM user LIMIT :n\") }",
+        )
+        .unwrap();
+        let sdl = schema.sdl();
+        // record object type, scalar fields, nullability from `?`
+        assert!(sdl.contains("type stats"), "{sdl}");
+        assert!(sdl.contains("latest: timestamp"), "{sdl}");
+        // fn fields: args (ref param = target key scalar; optional nullable),
+        // return per arity
+        let rename = sdl_line(&sdl, "rename_user(");
+        assert!(rename.contains("user: uuid!"), "{rename}");
+        assert!(rename.contains("username: String!"), "{rename}");
+        assert!(rename.contains("note: String)"), "{rename}");
+        assert!(rename.contains(": user!"), "{rename}");
+        let find = sdl_line(&sdl, "find_user(");
+        assert!(find.contains("): user"), "{find}");
+        assert!(!find.contains("): user!"), "{find}");
+        let tally = sdl_line(&sdl, "tally(");
+        assert!(tally.contains("): [stats!]!"), "{tally}");
+        // description lists declared codes
+        assert!(sdl.contains("Errors: user_username_taken."), "{sdl}");
+    }
+
+    #[test]
+    fn fn_mutation_collision_fails_startup() {
+        // a fn named like a derived CRUD mutation dies in the claim pass
+        let err = build(
+            "table user { key id: uuid = auto\n a: int }\n\
+             fn insert_user_one() -> user { sql(\"SELECT * FROM user\") }",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, SchemaBuildError::DuplicateMutationField { .. }),
+            "{err}"
+        );
+        // a fn named `update_follow_by_pk` on a PURE-KEY follow builds:
+        // the claim pass claims exactly what is registered
+        let schema = build(
+            "table user { key id: uuid = auto\n a: int }\n\
+             table follow { key (follower, target)\n follower: user\n target: user }\n\
+             fn update_follow_by_pk() -> [follow] { sql(\"SELECT * FROM follow\") }",
+        );
+        assert!(schema.is_ok(), "{:?}", schema.err());
+    }
+
+    #[test]
+    fn record_collisions_fail_startup() {
+        // record named like a reserved root
+        let err = build(
+            "table user { key id: uuid = auto\n a: int }\n\
+             record query { x: int }\n\
+             fn q() -> query { sql(\"SELECT 1 AS x\") }",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, SchemaBuildError::ReservedTableName { .. }),
+            "{err}"
+        );
+        // record named like a table's derived input type
+        let err = build(
+            "table user { key id: uuid = auto\n a: int }\n\
+             record user_insert_input { x: int }\n\
+             fn q() -> user_insert_input { sql(\"SELECT 1 AS x\") }",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, SchemaBuildError::DuplicateTypeName { .. }),
             "{err}"
         );
     }
