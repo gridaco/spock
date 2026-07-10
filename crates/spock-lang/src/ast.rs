@@ -11,6 +11,8 @@ pub struct Ident {
 #[derive(Clone, Debug)]
 pub struct File {
     pub tables: Vec<TableDecl>,
+    pub records: Vec<RecordDecl>,
+    pub fns: Vec<FnDecl>,
     pub seeds: Vec<SeedBlock>,
 }
 
@@ -106,6 +108,57 @@ pub enum OnDeleteKind {
 pub struct OnDeleteClause {
     pub kind: OnDeleteKind,
     pub span: Span,
+}
+
+/// `record name { field: type ... }` — a named wire shape (§3). Items
+/// reuse the table grammar so the checker can reject table-only syntax
+/// (keys, uniques, defaults, on delete) with precise spans.
+#[derive(Clone, Debug)]
+pub struct RecordDecl {
+    pub name: Ident,
+    pub items: Vec<TableItem>,
+    pub span: Span,
+}
+
+/// `fn name(params) -> ret ! codes { sql("...") }` (§3).
+#[derive(Clone, Debug)]
+pub struct FnDecl {
+    pub name: Ident,
+    pub params: Vec<ParamDecl>,
+    pub ret: RetDecl,
+    /// Declared error codes (the `! a | b` clause), possibly empty.
+    pub errors: Vec<Ident>,
+    /// The escape body: one SQL statement, verbatim.
+    pub sql: String,
+    pub sql_span: Span,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct ParamDecl {
+    pub name: Ident,
+    pub ty: TypeExpr,
+    pub optional: bool,
+    pub span: Span,
+}
+
+/// A fn return: `t`, `t?`, or `[t]` where the name resolves to a table
+/// or record.
+#[derive(Clone, Debug)]
+pub struct RetDecl {
+    pub arity: RetArity,
+    pub name: Ident,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetArity {
+    /// `-> t`: exactly one row.
+    One,
+    /// `-> t?`: zero or one row.
+    Maybe,
+    /// `-> [t]`: any number of rows.
+    Many,
 }
 
 #[derive(Clone, Debug)]

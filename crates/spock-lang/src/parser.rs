@@ -65,19 +65,28 @@ impl Parser {
         }
     }
 
-    // file = { table_decl | seed_block }
+    // file = { table_decl | record_decl | fn_decl | seed_block }
     fn file(&mut self) -> Result<File, Diagnostic> {
         let mut tables = Vec::new();
+        let mut records = Vec::new();
+        let mut fns = Vec::new();
         let mut seeds = Vec::new();
         loop {
             match self.peek().kind {
                 TokenKind::KwTable => tables.push(self.table_decl()?),
+                TokenKind::KwRecord => records.push(self.record_decl()?),
+                TokenKind::KwFn => fns.push(self.fn_decl()?),
                 TokenKind::KwSeed => seeds.push(self.seed_block()?),
                 TokenKind::Eof => break,
-                _ => return Err(self.unexpected("`table` or `seed`")),
+                _ => return Err(self.unexpected("`table`, `record`, `fn`, or `seed`")),
             }
         }
-        Ok(File { tables, seeds })
+        Ok(File {
+            tables,
+            records,
+            fns,
+            seeds,
+        })
     }
 
     // table_decl = "table" ident "{" { table_item } "}"
@@ -97,6 +106,142 @@ impl Parser {
             name,
             items,
             span: start.to(end),
+        })
+    }
+
+    // record_decl = "record" ident "{" { table_item } "}"
+    // (items reuse the table grammar; the checker rejects table-only
+    // constructs with precise spans — E033)
+    fn record_decl(&mut self) -> Result<RecordDecl, Diagnostic> {
+        let start = self.expect(TokenKind::KwRecord, "`record`")?.span;
+        let name = self.ident("record name")?;
+        self.expect(TokenKind::LBrace, "`{`")?;
+        let mut items = Vec::new();
+        let end = loop {
+            match self.peek().kind {
+                TokenKind::RBrace => break self.bump().span,
+                TokenKind::Eof => return Err(self.unexpected("`}`")),
+                _ => items.push(self.table_item()?),
+            }
+        };
+        Ok(RecordDecl {
+            name,
+            items,
+            span: start.to(end),
+        })
+    }
+
+    // fn_decl = "fn" ident "(" [param {"," param} [","]] ")" "->" ret
+    //           ["!" ident {"|" ident}] "{" "sql" "(" string ")" "}"
+    fn fn_decl(&mut self) -> Result<FnDecl, Diagnostic> {
+        let start = self.expect(TokenKind::KwFn, "`fn`")?.span;
+        let name = self.ident("fn name")?;
+        self.expect(TokenKind::LParen, "`(`")?;
+        let mut params = Vec::new();
+        while self.peek().kind != TokenKind::RParen {
+            let pname = self.ident("parameter name")?;
+            let pstart = pname.span;
+            self.expect(TokenKind::Colon, "`:`")?;
+            let ty = self.type_expr()?;
+            let mut pend = ty.span;
+            let optional = if self.peek().kind == TokenKind::Question {
+                pend = self.bump().span;
+                true
+            } else {
+                false
+            };
+            params.push(ParamDecl {
+                name: pname,
+                ty,
+                optional,
+                span: pstart.to(pend),
+            });
+            match self.peek().kind {
+                TokenKind::Comma => {
+                    self.bump();
+                }
+                TokenKind::RParen => {}
+                _ => return Err(self.unexpected("`,` or `)`")),
+            }
+        }
+        self.expect(TokenKind::RParen, "`)`")?;
+        self.expect(TokenKind::Arrow, "`->`")?;
+        let ret = self.ret_decl()?;
+
+        let mut errors = Vec::new();
+        if self.peek().kind == TokenKind::Bang {
+            self.bump();
+            errors.push(self.ident("an error code")?);
+            while self.peek().kind == TokenKind::Pipe {
+                self.bump();
+                errors.push(self.ident("an error code")?);
+            }
+        }
+
+        self.expect(TokenKind::LBrace, "`{`")?;
+        // `sql` is contextual: a keyword only here, an identifier everywhere
+        let escape = self.ident("`sql`")?;
+        if escape.name != "sql" {
+            return Err(Diagnostic::new(
+                "L010",
+                format!(
+                    "expected `sql`, found identifier `{}` (a v0 fn body is a single sql(\"...\") call)",
+                    escape.name
+                ),
+                escape.span,
+            ));
+        }
+        self.expect(TokenKind::LParen, "`(`")?;
+        let tok = self.peek().clone();
+        let (sql, sql_span) = match tok.kind {
+            TokenKind::Str(s) => {
+                self.bump();
+                (s, tok.span)
+            }
+            _ => return Err(self.unexpected("a string literal (the SQL body)")),
+        };
+        self.expect(TokenKind::RParen, "`)`")?;
+        let end = self.expect(TokenKind::RBrace, "`}`")?.span;
+
+        Ok(FnDecl {
+            name,
+            params,
+            ret,
+            errors,
+            sql,
+            sql_span,
+            span: start.to(end),
+        })
+    }
+
+    // ret = "[" ident "]" | ident ["?"]  — a table or record name; scalar
+    // returns are a v0 restriction (§9), so builtin type keywords are
+    // rejected here with the name expectation
+    fn ret_decl(&mut self) -> Result<RetDecl, Diagnostic> {
+        if self.peek().kind == TokenKind::LBracket {
+            let start = self.bump().span;
+            let name = self.ident("a table or record name")?;
+            let end = self.expect(TokenKind::RBracket, "`]`")?.span;
+            return Ok(RetDecl {
+                arity: RetArity::Many,
+                name,
+                span: start.to(end),
+            });
+        }
+        let name = self.ident("a table or record name")?;
+        let start = name.span;
+        if self.peek().kind == TokenKind::Question {
+            let end = self.bump().span;
+            return Ok(RetDecl {
+                arity: RetArity::Maybe,
+                name,
+                span: start.to(end),
+            });
+        }
+        Ok(RetDecl {
+            arity: RetArity::One,
+            span: start,
+            name,
         })
     }
 
@@ -410,6 +555,75 @@ mod tests {
         assert_eq!(seed.stmts[0].binding.as_ref().unwrap().name, "maya");
         assert!(seed.stmts[1].binding.is_none());
         assert!(matches!(&seed.stmts[1].fields[0].1, SeedValue::Binding(b) if b.name == "maya"));
+    }
+
+    #[test]
+    fn parses_full_fn() {
+        let file = parse_ok(
+            "fn rename_user(user: user, name: text, note: text?) -> user ! user_username_taken | not_found {\n\
+               sql(\"\"\"\n\
+                 UPDATE user SET username = :name WHERE id = :user RETURNING *\n\
+               \"\"\")\n\
+             }",
+        );
+        assert_eq!(file.fns.len(), 1);
+        let f = &file.fns[0];
+        assert_eq!(f.name.name, "rename_user");
+        assert_eq!(f.params.len(), 3);
+        assert!(matches!(&f.params[0].ty.kind, TypeExprKind::Named(n) if n == "user"));
+        assert!(!f.params[1].optional);
+        assert!(f.params[2].optional);
+        assert_eq!(f.ret.arity, RetArity::One);
+        assert_eq!(f.ret.name.name, "user");
+        assert_eq!(f.errors.len(), 2);
+        assert_eq!(f.errors[1].name, "not_found");
+        assert!(f.sql.contains("RETURNING *"));
+    }
+
+    #[test]
+    fn parses_fn_arities_and_zero_params() {
+        let file = parse_ok(
+            "fn find(name: text) -> user? { sql(\"x\") }\n\
+             fn recent(n: int) -> [post] { sql(\"x\") }\n\
+             fn hello() -> greeting { sql(\"x\") }\n\
+             fn trailing(a: int,) -> t { sql(\"x\") }",
+        );
+        assert_eq!(file.fns[0].ret.arity, RetArity::Maybe);
+        assert_eq!(file.fns[1].ret.arity, RetArity::Many);
+        assert_eq!(file.fns[1].ret.name.name, "post");
+        assert!(file.fns[2].params.is_empty());
+        assert!(file.fns[2].errors.is_empty());
+        assert_eq!(file.fns[3].params.len(), 1); // trailing comma
+    }
+
+    #[test]
+    fn parses_record_declaration() {
+        let file = parse_ok("record stats { posts: int\n latest: timestamp? }");
+        assert_eq!(file.records.len(), 1);
+        assert_eq!(file.records[0].name.name, "stats");
+        assert_eq!(file.records[0].items.len(), 2);
+    }
+
+    #[test]
+    fn sql_stays_an_identifier_outside_fn_bodies() {
+        let file = parse_ok("table sql { key id: uuid = auto\n sql: text }");
+        assert_eq!(file.tables[0].name.name, "sql");
+    }
+
+    #[test]
+    fn rejects_malformed_fns() {
+        // missing arrow
+        assert_eq!(parse_err("fn f() user { sql(\"x\") }").code, "L010");
+        // builtin scalar as return type
+        let d = parse_err("fn f() -> text { sql(\"x\") }");
+        assert!(d.message.contains("table or record name"), "{}", d.message);
+        // body must be sql(...)
+        let d = parse_err("fn f() -> t { nosql(\"x\") }");
+        assert!(d.message.contains("expected `sql`"), "{}", d.message);
+        // body must carry a string
+        assert_eq!(parse_err("fn f() -> t { sql(42) }").code, "L010");
+        // unclosed body
+        assert_eq!(parse_err("fn f() -> t { sql(\"x\")").code, "L010");
     }
 
     #[test]
