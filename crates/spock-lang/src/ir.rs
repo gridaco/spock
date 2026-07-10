@@ -11,6 +11,14 @@ pub struct Contract {
     /// Language version tag; `"v0"`.
     pub spock: String,
     pub tables: Vec<Table>,
+    /// Named wire shapes (fn returns). Additive under `spock: "v0"` —
+    /// `default` keeps pre-record contract JSON deserializable.
+    #[serde(default)]
+    pub records: Vec<Record>,
+    /// The deliberate surface: declared functions with SQL-escape bodies.
+    /// Additive under `spock: "v0"`.
+    #[serde(default)]
+    pub fns: Vec<FnDef>,
     pub seed: Vec<SeedRow>,
 }
 
@@ -94,6 +102,65 @@ pub enum ErrorKind {
     Restricted,
 }
 
+/// A named wire shape (§3): scalar fields only — SQL result columns are
+/// scalars, so this is a fact, not a restriction.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Record {
+    pub name: String,
+    pub fields: Vec<RecordField>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecordField {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: Type,
+    pub optional: bool,
+}
+
+/// A declared function (§7.4): the contract half is the language's
+/// (name, params, return shape, declared errors); the body is the SQL
+/// escape, carried verbatim and validated by the engine at load.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FnDef {
+    pub name: String,
+    pub params: Vec<FnParam>,
+    pub returns: FnReturn,
+    /// Declared error codes (`! a | b`) — metadata for introspection and
+    /// clients; the runtime surfaces undeclared errors truthfully too.
+    pub errors: Vec<String>,
+    /// The escape body: exactly one SQL statement.
+    pub sql: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FnParam {
+    pub name: String,
+    /// Reuses [`Type`]; a ref param binds the target key's scalar. The
+    /// `on_delete` a ref carries is inert here (params delete nothing).
+    #[serde(rename = "type")]
+    pub ty: Type,
+    pub optional: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FnReturn {
+    pub arity: FnArity,
+    /// A table or record name.
+    pub of: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FnArity {
+    /// `-> t`: exactly one row; zero is `not_found`, more is `internal`.
+    One,
+    /// `-> t?`: zero or one row; zero is `null`.
+    Maybe,
+    /// `-> [t]`: any number of rows; the author owns `LIMIT`.
+    Many,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SeedRow {
     pub table: String,
@@ -119,6 +186,36 @@ pub enum SeedValue {
 impl Contract {
     pub fn table(&self, name: &str) -> Option<&Table> {
         self.tables.iter().find(|t| t.name == name)
+    }
+
+    pub fn record(&self, name: &str) -> Option<&Record> {
+        self.records.iter().find(|r| r.name == name)
+    }
+
+    pub fn fn_def(&self, name: &str) -> Option<&FnDef> {
+        self.fns.iter().find(|f| f.name == name)
+    }
+
+    /// The normalized `(name, type, optional)` field list of a fn output
+    /// shape — a table or a record. One lookup shared by engine
+    /// validation, execution row mapping, GraphQL, and the TS emission.
+    pub fn output_fields(&self, of: &str) -> Option<Vec<(&str, &Type, bool)>> {
+        if let Some(table) = self.table(of) {
+            return Some(
+                table
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.as_str(), &f.ty, f.optional))
+                    .collect(),
+            );
+        }
+        self.record(of).map(|record| {
+            record
+                .fields
+                .iter()
+                .map(|f| (f.name.as_str(), &f.ty, f.optional))
+                .collect()
+        })
     }
 
     /// Reference fields across the contract that point at `target`,
@@ -238,6 +335,38 @@ mod tests {
                     status: 409,
                 }],
             }],
+            records: vec![Record {
+                name: "stats".into(),
+                fields: vec![RecordField {
+                    name: "posts".into(),
+                    ty: Type::Int,
+                    optional: false,
+                }],
+            }],
+            fns: vec![FnDef {
+                name: "rename_user".into(),
+                params: vec![
+                    FnParam {
+                        name: "user".into(),
+                        ty: Type::Ref {
+                            table: "user".into(),
+                            on_delete: OnDelete::Restrict,
+                        },
+                        optional: false,
+                    },
+                    FnParam {
+                        name: "name".into(),
+                        ty: Type::Text,
+                        optional: false,
+                    },
+                ],
+                returns: FnReturn {
+                    arity: FnArity::One,
+                    of: "user".into(),
+                },
+                errors: vec!["user_username_taken".into()],
+                sql: "UPDATE user SET username = :name WHERE id = :user RETURNING *".into(),
+            }],
             seed: vec![SeedRow {
                 table: "user".into(),
                 binding: Some("maya".into()),
@@ -260,9 +389,13 @@ mod tests {
         assert!(json.contains("\"on_delete\": \"restrict\""));
         assert!(json.contains("\"kind\": \"auto\""));
         assert!(json.contains("\"ref\": \"luis\""));
+        assert!(json.contains("\"arity\": \"one\""));
+        assert!(json.contains("\"sql\": \"UPDATE user"));
 
         let back: Contract = serde_json::from_str(&json).unwrap();
         assert_eq!(back.tables[0].name, "user");
+        assert_eq!(back.fns[0].errors, vec!["user_username_taken"]);
+        assert_eq!(back.records[0].fields[0].name, "posts");
         assert!(matches!(
             back.seed[0].fields.get("invited_by"),
             Some(SeedValue::Ref { binding }) if binding == "luis"
@@ -271,5 +404,15 @@ mod tests {
             back.seed[0].fields.get("username"),
             Some(SeedValue::Str(s)) if s == "maya"
         ));
+    }
+
+    /// A contract serialized before `fns`/`records` existed still loads —
+    /// the §6 additive-only freeze, proven.
+    #[test]
+    fn legacy_contract_json_deserializes() {
+        let legacy = r#"{ "spock": "v0", "tables": [], "seed": [] }"#;
+        let contract: Contract = serde_json::from_str(legacy).unwrap();
+        assert!(contract.fns.is_empty());
+        assert!(contract.records.is_empty());
     }
 }

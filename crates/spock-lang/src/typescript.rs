@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use crate::ir::{Contract, Field, Table, Type};
+use crate::ir::{Contract, FnArity, FnDef, Record, Table, Type};
 
 /// Names the emission may never assign to a table: JavaScript reserved
 /// words (invalid as type names), TypeScript's predeclared type names,
@@ -85,9 +85,11 @@ const RESERVED_TS_NAMES: &[&str] = &[
     "infer",
     "keyof",
     "readonly",
-    // the emission's own top-level names
+    // the emission's own top-level names ("fns" is the contract map's
+    // property, claimed so a table or record named `fns` fails stated)
     "contract",
     "error_code",
+    "fns",
     "reserved_error",
     "timestamp",
     "uuid",
@@ -111,11 +113,11 @@ impl std::fmt::Display for TsGenError {
         match self {
             TsGenError::ReservedName { table, name } => write!(
                 f,
-                "table `{table}` collides with the reserved TypeScript name `{name}`"
+                "`{table}` collides with the reserved TypeScript name `{name}`"
             ),
             TsGenError::DuplicateTypeName { a, b, name } => write!(
                 f,
-                "tables `{a}` and `{b}` both derive a TypeScript type named `{name}`"
+                "`{a}` and `{b}` both derive a TypeScript type named `{name}`"
             ),
         }
     }
@@ -154,6 +156,40 @@ pub fn typescript(contract: &Contract) -> Result<String, TsGenError> {
             }
         }
     }
+    // records claim their bare name; fns claim `<fn>_args` (the fn name
+    // itself is a map key, not a type — a fn named `contract` is fine)
+    for record in &contract.records {
+        let name = record.name.clone();
+        if RESERVED_TS_NAMES.contains(&name.as_str()) {
+            return Err(TsGenError::ReservedName {
+                table: record.name.clone(),
+                name,
+            });
+        }
+        if let Some(other) = claimed.insert(name.clone(), record.name.clone()) {
+            return Err(TsGenError::DuplicateTypeName {
+                a: other,
+                b: record.name.clone(),
+                name,
+            });
+        }
+    }
+    for f in &contract.fns {
+        let name = format!("{}_args", f.name);
+        if RESERVED_TS_NAMES.contains(&name.as_str()) {
+            return Err(TsGenError::ReservedName {
+                table: f.name.clone(),
+                name,
+            });
+        }
+        if let Some(other) = claimed.insert(name.clone(), f.name.clone()) {
+            return Err(TsGenError::DuplicateTypeName {
+                a: other,
+                b: f.name.clone(),
+                name,
+            });
+        }
+    }
 
     // Pass 2 — emit.
     let mut out = String::new();
@@ -171,6 +207,13 @@ pub fn typescript(contract: &Contract) -> Result<String, TsGenError> {
             emit_update(&mut out, contract, table);
         }
         emit_error_union(&mut out, table);
+    }
+
+    for record in &contract.records {
+        emit_record(&mut out, contract, record);
+    }
+    for f in &contract.fns {
+        emit_fn_args(&mut out, contract, f);
     }
 
     out.push_str("\n/** Reserved non-derived codes (docs/spec/v0.md §6.1). */\n");
@@ -204,6 +247,33 @@ pub fn typescript(contract: &Contract) -> Result<String, TsGenError> {
             "  {t}: {{ row: {t}; insert: {t}_insert; update: {update}; error: {t}_error }};"
         );
     }
+    if contract.fns.is_empty() {
+        out.push_str("  fns: {};\n");
+    } else {
+        out.push_str("  fns: {\n");
+        for f in &contract.fns {
+            let returns = match f.returns.arity {
+                FnArity::One => f.returns.of.clone(),
+                FnArity::Maybe => format!("{} | null", f.returns.of),
+                FnArity::Many => format!("{}[]", f.returns.of),
+            };
+            let error = if f.errors.is_empty() {
+                "never".to_string()
+            } else {
+                f.errors
+                    .iter()
+                    .map(|c| format!("\"{c}\""))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            };
+            let _ = writeln!(
+                out,
+                "    {}: {{ args: {}_args; returns: {returns}; error: {error} }};",
+                f.name, f.name
+            );
+        }
+        out.push_str("  };\n");
+    }
     out.push_str("}\n");
 
     Ok(out)
@@ -218,8 +288,39 @@ fn has_settable_fields(table: &Table) -> bool {
 /// The TypeScript type of a field's value. A reference renders as the
 /// target key's type via indexed access (`user["id"]`) — structurally a
 /// scalar, semantically a pointer the reader can follow.
-fn value_ts(contract: &Contract, field: &Field) -> String {
-    match &field.ty {
+/// `interface <record>` — a named wire shape (fn return).
+fn emit_record(out: &mut String, contract: &Contract, record: &Record) {
+    let _ = writeln!(
+        out,
+        "\n/** The `{}` record — a fn return shape. */",
+        record.name
+    );
+    let _ = writeln!(out, "export interface {} {{", record.name);
+    for f in &record.fields {
+        let null = if f.optional { " | null" } else { "" };
+        let _ = writeln!(out, "  {}: {}{null};", f.name, value_ts(contract, &f.ty));
+    }
+    out.push_str("}\n");
+}
+
+/// `interface <fn>_args` — what a fn call takes. Optional params admit
+/// `null`: for fn arguments null and absence mean the same thing.
+fn emit_fn_args(out: &mut String, contract: &Contract, f: &FnDef) {
+    let _ = writeln!(out, "\n/** Arguments of fn `{}`. */", f.name);
+    let _ = writeln!(out, "export interface {}_args {{", f.name);
+    for p in &f.params {
+        let ty = value_ts(contract, &p.ty);
+        if p.optional {
+            let _ = writeln!(out, "  {}?: {ty} | null;", p.name);
+        } else {
+            let _ = writeln!(out, "  {}: {ty};", p.name);
+        }
+    }
+    out.push_str("}\n");
+}
+
+fn value_ts(contract: &Contract, ty: &Type) -> String {
+    match ty {
         Type::Text => "string".into(),
         Type::Int => "number".into(),
         Type::Bool => "boolean".into(),
@@ -239,7 +340,7 @@ fn emit_row(out: &mut String, contract: &Contract, table: &Table) {
     let _ = writeln!(out, "export interface {} {{", table.name);
     for f in &table.fields {
         let null = if f.optional { " | null" } else { "" };
-        let _ = writeln!(out, "  {}: {}{null};", f.name, value_ts(contract, f));
+        let _ = writeln!(out, "  {}: {}{null};", f.name, value_ts(contract, &f.ty));
     }
     out.push_str("}\n");
 }
@@ -255,7 +356,7 @@ fn emit_insert(out: &mut String, contract: &Contract, table: &Table) {
     );
     let _ = writeln!(out, "export interface {}_insert {{", table.name);
     for f in &table.fields {
-        let ty = value_ts(contract, f);
+        let ty = value_ts(contract, &f.ty);
         if !f.optional && f.default.is_none() {
             let _ = writeln!(out, "  {}: {ty};", f.name);
         } else {
@@ -281,7 +382,7 @@ fn emit_update(out: &mut String, contract: &Contract, table: &Table) {
             continue;
         }
         let null = if f.optional { " | null" } else { "" };
-        let _ = writeln!(out, "  {}?: {}{null};", f.name, value_ts(contract, f));
+        let _ = writeln!(out, "  {}?: {}{null};", f.name, value_ts(contract, &f.ty));
     }
     out.push_str("}\n");
 }
@@ -450,9 +551,62 @@ export type error_code =
 /** The compiled surface, one entry per table — the generic parameter a client takes. */
 export interface contract {
   user: { row: user; insert: user_insert; update: user_update; error: user_error };
+  fns: {};
 }
 "#;
         assert_eq!(ts, golden);
+    }
+
+    #[test]
+    fn emits_records_and_fns() {
+        let ts = emit(
+            "table user { key id: uuid = auto\n username: text unique }\n\
+             record stats { posts: int\n latest: timestamp? }\n\
+             fn rename_user(user: user, name: text, note: text?) -> user ! user_username_taken { sql(\"S\") }\n\
+             fn find_user(name: text) -> user? { sql(\"S\") }\n\
+             fn tally() -> [stats] { sql(\"S\") }",
+        )
+        .unwrap();
+        // record interface
+        assert!(ts.contains("export interface stats {\n  posts: number;\n  latest: timestamp | null;\n}"), "{ts}");
+        // args: required, ref-as-target-key, optional-with-null
+        assert!(ts.contains("export interface rename_user_args {\n  user: user[\"id\"];\n  name: string;\n  note?: string | null;\n}"), "{ts}");
+        // zero-param fn still gets an (empty) args interface
+        assert!(ts.contains("export interface tally_args {\n}"), "{ts}");
+        // the fns map: arity rendering and error unions
+        assert!(
+            ts.contains("    rename_user: { args: rename_user_args; returns: user; error: \"user_username_taken\" };"),
+            "{ts}"
+        );
+        assert!(
+            ts.contains("    find_user: { args: find_user_args; returns: user | null; error: never };"),
+            "{ts}"
+        );
+        assert!(
+            ts.contains("    tally: { args: tally_args; returns: stats[]; error: never };"),
+            "{ts}"
+        );
+    }
+
+    #[test]
+    fn record_and_fn_name_collisions_fail_generation() {
+        // a table named `fns` collides with the contract map property
+        let err = emit("table fns { key id: uuid = auto\n a: int }").unwrap_err();
+        assert!(matches!(err, TsGenError::ReservedName { .. }), "{err}");
+        // a record named like a table's derived name
+        let err = emit(
+            "table user { key id: uuid = auto\n a: int }\n\
+             record user_insert { x: int }",
+        )
+        .unwrap_err();
+        assert!(matches!(err, TsGenError::DuplicateTypeName { .. }), "{err}");
+        // a table named like a fn's args interface
+        let err = emit(
+            "table hello_args { key id: uuid = auto\n a: int }\n\
+             fn hello() -> hello_args { sql(\"S\") }",
+        )
+        .unwrap_err();
+        assert!(matches!(err, TsGenError::DuplicateTypeName { .. }), "{err}");
     }
 
     #[test]

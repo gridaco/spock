@@ -69,11 +69,281 @@ impl Checker {
         // Seed (§4 E020–E028), against the lowered tables.
         let seed = self.check_seed(file, &tables);
 
+        // Phase C: records and fns (§4 E030–E039). Runs after derived
+        // errors are attached — the `!` clause validates against them.
+        let records = self.check_records(file, &table_names);
+        let fns = self.check_fns(file, &tables, &records, &table_names);
+
         Contract {
             spock: "v0".into(),
             tables,
+            records,
+            fns,
             seed,
         }
+    }
+
+    /// Records (§3): named wire shapes. Scalar fields only; table-only
+    /// syntax is rejected with the offending span (E033); records share
+    /// the type namespace with tables (E031).
+    fn check_records(&mut self, file: &ast::File, table_names: &HashSet<&str>) -> Vec<Record> {
+        let mut names: HashMap<&str, Span> = HashMap::new();
+        let mut records = Vec::new();
+        for decl in &file.records {
+            let rname = decl.name.name.as_str();
+            if names.contains_key(rname) {
+                self.error(
+                    "E030",
+                    format!("duplicate record name `{rname}`"),
+                    decl.name.span,
+                );
+                continue;
+            }
+            names.insert(rname, decl.name.span);
+            if table_names.contains(rname) {
+                self.error(
+                    "E031",
+                    format!("record `{rname}` collides with a table of the same name (tables and records share one type namespace)"),
+                    decl.name.span,
+                );
+                continue;
+            }
+
+            let mut fields: Vec<RecordField> = Vec::new();
+            let mut field_spans: HashMap<String, Span> = HashMap::new();
+            let mut declared = 0usize;
+            for item in &decl.items {
+                let f = match item {
+                    ast::TableItem::Key { span, .. } | ast::TableItem::Unique { span, .. } => {
+                        self.error(
+                            "E033",
+                            format!("record `{rname}` cannot declare a key or unique group (records are wire shapes, not storage)"),
+                            *span,
+                        );
+                        continue;
+                    }
+                    ast::TableItem::Field(f) => f,
+                };
+                declared += 1;
+                if field_spans.contains_key(&f.name.name) {
+                    self.error(
+                        "E002",
+                        format!("duplicate field `{}` in record `{rname}`", f.name.name),
+                        f.name.span,
+                    );
+                    continue;
+                }
+                field_spans.insert(f.name.name.clone(), f.name.span);
+                // table-only modifiers (anti-cascade: report, keep lowering)
+                if f.is_key {
+                    self.error(
+                        "E033",
+                        format!("`key` on record field `{}` (records have no keys)", f.name.name),
+                        f.name.span,
+                    );
+                }
+                if f.unique {
+                    self.error(
+                        "E033",
+                        format!("`unique` on record field `{}` (records are not stored)", f.name.name),
+                        f.name.span,
+                    );
+                }
+                if let Some(d) = &f.default {
+                    self.error(
+                        "E033",
+                        format!("default on record field `{}` (records are read shapes)", f.name.name),
+                        d.span(),
+                    );
+                }
+                if let Some(c) = &f.on_delete {
+                    self.error(
+                        "E033",
+                        format!("`on delete` on record field `{}` (records hold no references)", f.name.name),
+                        c.span,
+                    );
+                }
+                let ty = match &f.ty.kind {
+                    ast::TypeExprKind::Text => Type::Text,
+                    ast::TypeExprKind::Int => Type::Int,
+                    ast::TypeExprKind::Bool => Type::Bool,
+                    ast::TypeExprKind::Timestamp => Type::Timestamp,
+                    ast::TypeExprKind::Uuid => Type::Uuid,
+                    ast::TypeExprKind::Named(other) => {
+                        self.error(
+                            "E034",
+                            format!("record field `{}` must be a builtin scalar; `{other}` is not permitted (SQL result columns are scalars)", f.name.name),
+                            f.ty.span,
+                        );
+                        continue;
+                    }
+                };
+                fields.push(RecordField {
+                    name: f.name.name.clone(),
+                    ty,
+                    optional: f.optional,
+                });
+            }
+            if declared == 0 {
+                self.error(
+                    "E032",
+                    format!("record `{rname}` has no fields"),
+                    decl.name.span,
+                );
+                continue;
+            }
+            records.push(Record {
+                name: decl.name.name.clone(),
+                fields,
+            });
+        }
+        records
+    }
+
+    /// Fns (§3, §7.4): the contract half. The SQL body is deliberately
+    /// not inspected here — it is opaque to the language and validated by
+    /// the engine at load.
+    fn check_fns(
+        &mut self,
+        file: &ast::File,
+        tables: &[Table],
+        records: &[Record],
+        table_names: &HashSet<&str>,
+    ) -> Vec<FnDef> {
+        // the `!` clause vocabulary: every derived code + the reserved five
+        let mut vocabulary: HashSet<&str> = tables
+            .iter()
+            .flat_map(|t| t.errors.iter().map(|e| e.code.as_str()))
+            .collect();
+        vocabulary.extend([
+            "not_found",
+            "type_mismatch",
+            "unknown_field",
+            "bad_request",
+            "internal",
+        ]);
+        let record_names: HashSet<&str> = records.iter().map(|r| r.name.as_str()).collect();
+
+        let mut names: HashMap<&str, Span> = HashMap::new();
+        let mut fns = Vec::new();
+        for decl in &file.fns {
+            let fname = decl.name.name.as_str();
+            if names.contains_key(fname) {
+                self.error(
+                    "E035",
+                    format!("duplicate fn name `{fname}`"),
+                    decl.name.span,
+                );
+                continue;
+            }
+            names.insert(fname, decl.name.span);
+
+            let mut params: Vec<FnParam> = Vec::new();
+            let mut param_spans: HashMap<&str, Span> = HashMap::new();
+            for p in &decl.params {
+                if param_spans.contains_key(p.name.name.as_str()) {
+                    self.error(
+                        "E038",
+                        format!("duplicate parameter `{}` in fn `{fname}`", p.name.name),
+                        p.name.span,
+                    );
+                    continue;
+                }
+                param_spans.insert(&p.name.name, p.name.span);
+                let ty = match &p.ty.kind {
+                    ast::TypeExprKind::Text => Type::Text,
+                    ast::TypeExprKind::Int => Type::Int,
+                    ast::TypeExprKind::Bool => Type::Bool,
+                    ast::TypeExprKind::Timestamp => Type::Timestamp,
+                    ast::TypeExprKind::Uuid => Type::Uuid,
+                    ast::TypeExprKind::Named(t) => {
+                        if record_names.contains(t.as_str()) {
+                            self.error(
+                                "E036",
+                                format!("fn parameter `{}` cannot be a record (`{t}`); records are return shapes in v0", p.name.name),
+                                p.ty.span,
+                            );
+                            continue;
+                        }
+                        if !table_names.contains(t.as_str()) {
+                            self.error(
+                                "E036",
+                                format!("unknown parameter type `{t}` (not a builtin, not a declared table)"),
+                                p.ty.span,
+                            );
+                            continue;
+                        }
+                        // a param bound to a table binds ONE key scalar —
+                        // composite-key targets have no such scalar
+                        if tables.iter().any(|tb| tb.name == *t && tb.key.len() > 1) {
+                            self.error(
+                                "E036",
+                                format!("fn parameter `{}` references `{t}`, whose key is composite; parameters bind a single key scalar", p.name.name),
+                                p.ty.span,
+                            );
+                            continue;
+                        }
+                        Type::Ref {
+                            table: t.clone(),
+                            // inert: params delete nothing
+                            on_delete: OnDelete::Restrict,
+                        }
+                    }
+                };
+                params.push(FnParam {
+                    name: p.name.name.clone(),
+                    ty,
+                    optional: p.optional,
+                });
+            }
+
+            let of = decl.ret.name.name.as_str();
+            if !table_names.contains(of) && !record_names.contains(of) {
+                self.error(
+                    "E037",
+                    format!("fn `{fname}` returns unknown shape `{of}` (not a declared table or record)"),
+                    decl.ret.name.span,
+                );
+                continue;
+            }
+
+            let mut errors: Vec<String> = Vec::new();
+            for code in &decl.errors {
+                if !vocabulary.contains(code.name.as_str()) {
+                    self.error(
+                        "E039",
+                        format!("unknown error code `{}` (not derived by any table, not a reserved code)", code.name),
+                        code.span,
+                    );
+                    continue;
+                }
+                if errors.contains(&code.name) {
+                    self.error(
+                        "E039",
+                        format!("duplicate error code `{}` in the `!` clause", code.name),
+                        code.span,
+                    );
+                    continue;
+                }
+                errors.push(code.name.clone());
+            }
+
+            fns.push(FnDef {
+                name: decl.name.name.clone(),
+                params,
+                returns: FnReturn {
+                    arity: match decl.ret.arity {
+                        ast::RetArity::One => FnArity::One,
+                        ast::RetArity::Maybe => FnArity::Maybe,
+                        ast::RetArity::Many => FnArity::Many,
+                    },
+                    of: of.to_string(),
+                },
+                errors,
+                sql: decl.sql.clone(),
+            });
+        }
+        fns
     }
 
     fn lower_table(&mut self, decl: &ast::TableDecl, table_names: &HashSet<&str>) -> Option<Table> {
@@ -961,6 +1231,145 @@ mod tests {
         assert!(
             compile("table comment { key id: uuid = auto\n body: text\n reply_to: comment? }")
                 .is_ok()
+        );
+    }
+
+    // -- records and fns (E030–E039) ----------------------------------------
+
+    #[test]
+    fn accepts_records_and_fns() {
+        let contract = compile(&format!(
+            "{USER}\
+             record stats {{ posts: int\n latest: timestamp? }}\n\
+             fn rename_user(user: user, name: text) -> user ! user_username_taken | not_found {{ sql(\"S\") }}\n\
+             fn find_user(name: text) -> user? {{ sql(\"S\") }}\n\
+             fn tally() -> [stats] {{ sql(\"S\") }}"
+        ))
+        .unwrap();
+        assert_eq!(contract.records.len(), 1);
+        assert_eq!(contract.fns.len(), 3);
+        let rename = contract.fn_def("rename_user").unwrap();
+        assert!(matches!(&rename.params[0].ty, Type::Ref { table, .. } if table == "user"));
+        assert_eq!(rename.errors, vec!["user_username_taken", "not_found"]);
+        assert_eq!(rename.returns.arity, FnArity::One);
+        assert_eq!(contract.fn_def("tally").unwrap().returns.arity, FnArity::Many);
+        // a fn may share a table's name — separate namespaces
+        assert!(compile(&format!(
+            "{USER}\
+             fn user(name: text) -> user? {{ sql(\"S\") }}"
+        ))
+        .is_ok());
+    }
+
+    #[test]
+    fn e030_duplicate_record() {
+        assert_eq!(
+            codes("record a { x: int }\nrecord a { y: int }"),
+            vec!["E030"]
+        );
+    }
+
+    #[test]
+    fn e031_record_collides_with_table() {
+        assert_eq!(
+            codes(&format!("{USER}record user {{ x: int }}")),
+            vec!["E031"]
+        );
+    }
+
+    #[test]
+    fn e032_empty_record() {
+        assert_eq!(codes("record a { }"), vec!["E032"]);
+    }
+
+    #[test]
+    fn e033_table_only_syntax_in_record() {
+        assert_eq!(codes("record a { key x: int }"), vec!["E033"]);
+        assert_eq!(codes("record a { x: int unique }"), vec!["E033"]);
+        assert_eq!(codes("record a { x: int = 3 }"), vec!["E033"]);
+        assert_eq!(
+            codes("record a { x: int\n y: int\n unique (x, y) }"),
+            vec!["E033"]
+        );
+    }
+
+    #[test]
+    fn e034_non_scalar_record_field() {
+        assert_eq!(
+            codes(&format!("{USER}record a {{ who: user }}")),
+            vec!["E034"]
+        );
+    }
+
+    #[test]
+    fn e035_duplicate_fn() {
+        assert_eq!(
+            codes(&format!(
+                "{USER}\
+                 fn f() -> user {{ sql(\"S\") }}\nfn f() -> user {{ sql(\"S\") }}"
+            )),
+            vec!["E035"]
+        );
+    }
+
+    #[test]
+    fn e036_bad_param_types() {
+        // unknown type
+        assert_eq!(
+            codes(&format!("{USER}fn f(x: ghost) -> user {{ sql(\"S\") }}")),
+            vec!["E036"]
+        );
+        // record as param
+        assert_eq!(
+            codes(&format!(
+                "{USER}record r {{ x: int }}\nfn f(x: r) -> user {{ sql(\"S\") }}"
+            )),
+            vec!["E036"]
+        );
+        // composite-key table as param: no single key scalar to bind
+        assert_eq!(
+            codes(&format!(
+                "{USER}\
+                 table follow {{ key (follower, target)\n follower: user\n target: user }}\n\
+                 fn f(x: follow) -> user {{ sql(\"S\") }}"
+            )),
+            vec!["E036"]
+        );
+    }
+
+    #[test]
+    fn e037_unknown_return_shape() {
+        assert_eq!(
+            codes(&format!("{USER}fn f() -> ghost {{ sql(\"S\") }}")),
+            vec!["E037"]
+        );
+    }
+
+    #[test]
+    fn e038_duplicate_param() {
+        assert_eq!(
+            codes(&format!(
+                "{USER}fn f(a: int, a: text) -> user {{ sql(\"S\") }}"
+            )),
+            vec!["E038"]
+        );
+    }
+
+    #[test]
+    fn e039_bad_error_codes() {
+        // unknown code
+        assert_eq!(
+            codes(&format!(
+                "{USER}fn f() -> user ! user_exploded {{ sql(\"S\") }}"
+            )),
+            vec!["E039"]
+        );
+        // duplicate code
+        assert_eq!(
+            codes(&format!(
+                "{USER}fn f() -> user ! not_found | not_found {{ sql(\"S\") }}"
+            )),
+            vec!["E039"]
         );
     }
 }
