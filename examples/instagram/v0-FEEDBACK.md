@@ -25,8 +25,12 @@ defaults), G7's set-null half, G9 (scalar returns), G10 (float) are
 marked *taken* below, and W3 dissolved with G4 as predicted. G1 and the
 column-validation half of the story are deferred behind a deliberate
 design question — a `format` concept (SQL `DOMAIN`/CHECK family) that
-would subsume both; recorded in RFD 0009 §4. The fn-v2 items (G2, G3,
-G11) and everything else remain open.
+would subsume both; recorded in RFD 0009 §4. **fn v2 followed (RFD
+0012)**: G2, G3, and G11 are *taken* — the example now mints its
+refusals, spans tables, and files its reads under Query — W1 softened
+with them, and the upgrade surfaced one new wall (G17: statements
+cannot pass values). Pagination (G16) was *deliberately deferred* to
+the universal query layer by decision, not omission.
 
 ---
 
@@ -65,6 +69,13 @@ the contract half is now less expressive than the escape half.
 (design needed — a reserved error-column convention, a `CASE`-to-code
 mapping, whatever survives prepare()-validation). Highest-leverage
 single feature for fn honesty; pairs with G3 as one RFD.
+*Taken* (RFD 0012). The `!` clause mints: a code that is neither
+derived nor reserved is the fn's own refusal, raised via the engine
+builtin `spock_refuse('<code>')` — and routed only if minted by that
+fn, so derived codes stay evidence (the fake-violation trick this
+entry feared is now structurally dead). `follow`'s three refusals
+carry three names; the file mints 15 distinct refusal codes across
+12 fns (23 declarations, 23 raise sites), verified live.
 
 **G3 · One statement means one table.** The hardest wall, hit four ways:
 
@@ -91,6 +102,12 @@ real policy. The wall is strictly table-count.
 envelope — each statement still individually prepare()-validated, params
 checked across the set, the *last* statement's shape is the return.
 Same RFD as G2; together they unbreak every case above.
+*Taken* (RFD 0012), exactly as proposed. All four cases repaired and
+verified live: `approve_follow_request` flips, creates the edge, and
+notifies in one transaction; `block_user` severs follows and pending
+requests; `like_post`/`add_comment` write their notifications (held
+comments stay silent); `unsave_post` clears collection entries. One
+successor wall discovered in the repair: G17.
 
 **G4 · Declared defaults don't reach the escape.** The DDL carries no
 DEFAULT clauses — `= auto` and `= now` live in the runtime's write path,
@@ -189,6 +206,11 @@ surface.
 cannot be inferred from the body — the body is unverifiable by design —
 so it must be declared and engine-enforced (reject DML at load: prepare()
 already knows `stmt.readonly()`).
+*Taken* (RFD 0012), with the polarity inverted from this entry's
+sketch: the unmarked fn is the read (the forgotten-marker failure is
+then the loud one), `mut` marks the writes, and the engine holds every
+statement of an unmarked fn to `stmt.readonly()` at load. The twelve
+reads now live on the Query root and answer `GET /rest/v1/rpc/<fn>`.
 
 **G12 · Every actor is client-asserted.** `delete_comment(comment,
 actor)` believes whoever names an actor; `post_comments` can't show
@@ -248,6 +270,27 @@ fn than the query itself.
 → v0.x: fold into the filter RFD — whatever read sub-language emerges
 should own page shape (cursor, ordering, ceiling) the way §8 already
 owns it for the floor, leaving the fn author only the predicate.
+*Deferred, by decision* (July 2026, recorded in RFD 0012 §3 and RFD
+0009 §3): fn v2 deliberately did **not** grow a per-fn cursor
+convention. A row-returning fn is conceptually a named filter —
+view-shaped — and pagination discipline belongs to the universal
+dynamic query layer, applied uniformly to tables, future views, and
+read fns. The hand-rolled cursors below stay until that layer lands.
+
+**G17 · Statements cannot pass values.** Discovered *inside* the G3
+repair: `add_comment` now writes its notification, but the
+notification cannot carry the comment it announces — the new comment's
+id exists only in the INSERT's discarded result, and the next
+statement has no way to name it. The file links the post instead and
+declines the `last_insert_rowid()` trick (real, but a rowid pun on a
+uuid-keyed table is exactly the kind of cleverness an unverifiable
+body shouldn't host). The plural form of the same wall: mention
+parsing wants one insert *per parsed row* — statement count is static,
+row fan-out is dynamic. This is the first ask that points at the
+native statement grammar (v1.spock's `let`) rather than at more escape
+plumbing.
+→ v0.x: record only. A binding form between statements is native-body
+territory; don't bolt variables onto the escape.
 
 ---
 
@@ -269,6 +312,12 @@ confirmed from the implementation side: when v0.x grows a write
 language, `upsert` must be designed, and "which key", "what happens to
 non-key columns on conflict", *and* "how guards compose with the
 conflict path" are the whole design.
+*Softened* by fn v2: the guard/conflict composition problem is now
+spelled as a visible `NOT EXISTS` exemption on each refusal guard
+(`follow` and `like_post` handle the wrinkle the same way — the
+asymmetry died), and the no-op-upsert incantation survives only as
+the return-the-existing-row idiom. The CASE-per-column revive
+stands untouched. The upsert-design ask stands in full.
 
 **W2 · One statement carries more policy than expected.** `add_comment`
 enforces three guards and routes a restricted commenter to `held` — the
@@ -320,6 +369,12 @@ rule.
 example in one number, exactly what RFD 0011 §4 wanted the ledger to be.
 Every G2/G3 disposition that moves logic from SQL to contract moves that
 number toward zero.
+*Sharpened* by fn v2: the ledger counts **escapes** now (`67 unchecked
+escapes` after the upgrade — multi-statement bodies made the honest
+unit the statement, not the body). Note the direction: taking G3 moved
+the number *up*, truthfully — the debt was always there, hidden in
+flows the language refused to express. The number still trends to zero
+the day native statements arrive.
 
 **C6 · Natural text keys work end to end.** `hashtag { key tag: text }` —
 refs bind the text key, `post_hashtag` seeds by handle, GraphQL surfaces
@@ -342,17 +397,24 @@ the next v0.x milestone, as one coherent unit:
    escape, prepare()-validation extends statement-by-statement. This
    unbreaks `approve_follow_request`, lets `block_user` sever follows,
    gives notifications a writer, and files reads under Query.
+   ***Taken*** — RFD 0012, shipped exactly as this item asked (the
+   read marker inverted to `mut`-marks-writes). The roadmap call below
+   was made: fn v2 jumped the filter RFD.
 2. **Table-tier small batch**: G1 closed text sets, G7 `set null`,
    G9 scalar returns, G10 float, G4 DDL defaults + engine builtins.
    Each is small; together they delete most of the apology comments in
-   `v0.spock`.
+   `v0.spock`. ***Taken*** except G1, deferred behind `format`.
 3. **Constraint tier 2** (after the batch): G6 partial unique, G5 one-of.
 4. Already-planned tracks, priorities re-ratified by this exercise:
    the **filter sub-language** must cover policy/row visibility (G13)
-   and own read-page discipline — cursor, ordering, ceiling (G16),
-   **auth** should lead with fn actor binding (G12), **derived fields**
-   (G15) and **nested reads** (G8) queue behind them.
+   and own read-page discipline — cursor, ordering, ceiling (G16,
+   ratified as *the* pagination owner when fn v2 declined it: one
+   discipline for tables, views, and read fns alike), **auth** should
+   lead with fn actor binding (G12), **derived fields** (G15) and
+   **nested reads** (G8) queue behind them. G17 (statement value
+   passing) waits for the native body, deliberately.
 
-Whether fn v2 lands before or after the filter RFD is a roadmap call
-(RFD 0009 §3 currently says filter next); this file's evidence says the
-fn walls are the ones a PRD-holder hits first.
+With fn v2 landed, the filter RFD is next on the plan of record
+(RFD 0009 §3) — and it inherits three riders from this file: policy
+filtering (G13), page discipline (G16), and the floor-leak closure
+both imply.

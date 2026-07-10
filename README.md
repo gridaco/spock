@@ -290,9 +290,14 @@ view post_preview from post {
 }
 
 // deliberate mutation — shipped v0 syntax: the signature is the
-// contract, the body is the SQL escape (it may replace the body,
-// never the contract)
-fn publish_post(post: post) -> post ! not_found {
+// contract (`mut` declares the polarity, `already_published` is a
+// refusal this fn mints), the body is a sequence of SQL escapes (it
+// may replace the body, never the contract)
+mut fn publish_post(post: post) -> post ! already_published | not_found {
+    unchecked sql("""
+      SELECT spock_refuse('already_published')
+      WHERE (SELECT published FROM post WHERE id = :post)
+    """)
     unchecked sql("""
       UPDATE post SET published = true
       WHERE id = :post

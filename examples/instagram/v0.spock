@@ -15,8 +15,6 @@
 //   - accounts, sessions, recovery, actor identity — blocked on auth
 //     (RFD 0009); every fn below takes its actor as a client-asserted
 //     parameter (G12)
-//   - notification *writers* — a like cannot also insert a notification
-//     in a one-statement body (G3); rows come from the seed only
 //   - media upload/processing pipeline — storage is out of v0's scope;
 //     the `media` table models the resulting state
 //   - moderation review flows (claim, action) — report_post records;
@@ -236,45 +234,61 @@ table notification {
 // the deliberate surface — profiles and the graph
 //
 // auto-CRUD is the borrowed floor; these carry product meaning. The
-// signature is the contract; the body is the SQL escape. Guard failures
-// inside a body can only surface as the arity miss — `not_found` is
-// carrying several refusals it doesn't name (G2).
+// signature is the contract; the body is a sequence of SQL escapes (RFD
+// 0012): guards refuse by name via spock_refuse, effects span tables,
+// the last statement answers. Unmarked fns are reads (engine-enforced);
+// `mut` marks the writes. G2, G3, G11 — taken.
 // ---------------------------------------------------------------------------
 
-// the PRD's "invalid usernames are rejected" — length and charset guards;
-// an invalid name and a missing user share the same `not_found` (G2)
-fn rename_user(user: user, username: text) -> user ! user_username_taken | not_found {
+// the PRD's "invalid usernames are rejected" finally has a name: the
+// guard is a minted refusal, and a bad name no longer masquerades as a
+// missing user (G2, taken). `not_found` is left meaning what it says.
+mut fn rename_user(user: user, username: text) -> user ! invalid_username | user_username_taken | not_found {
+  unchecked sql("""
+    SELECT spock_refuse('invalid_username')
+    WHERE NOT (length(:username) BETWEEN 1 AND 30
+               AND :username NOT GLOB '*[^a-z0-9._]*')
+  """)
   unchecked sql("""
     UPDATE user SET username = :username
     WHERE id = :user
-      AND length(:username) BETWEEN 1 AND 30
-      AND :username NOT GLOB '*[^a-z0-9._]*'
     RETURNING *
   """)
 }
 
-// follow, public profiles only. Three distinct refusals — self-follow,
-// private target, blocked pair — all collapse into `not_found` (G2).
-// Idempotent re-follow needs the leading already-exists escape: without
-// it, an existing edge whose target later went private would be refused
-// by its own guards instead of returned (W1)
-fn follow(follower: user, target: user) -> follow ! not_found {
+// follow, public profiles only. The three refusals G2 counted now carry
+// their own names. Idempotent re-follow still needs care — an existing
+// edge whose target later went private must be returned, not refused —
+// but the exemption is now a visible NOT EXISTS on each guard instead
+// of W1's leading already-exists escape (W1, softened). A missing
+// target falls through to the FK: `bad_request`, truthfully.
+mut fn follow(follower: user, target: user) -> follow ! self_follow | blocked | account_private {
+  unchecked sql("""
+    SELECT spock_refuse('self_follow') WHERE :follower = :target
+  """)
+  unchecked sql("""
+    SELECT spock_refuse('blocked')
+    WHERE NOT EXISTS (SELECT 1 FROM follow
+                      WHERE follower = :follower AND target = :target)
+      AND EXISTS (SELECT 1 FROM block
+                  WHERE (blocker = :target AND blocked = :follower)
+                     OR (blocker = :follower AND blocked = :target))
+  """)
+  unchecked sql("""
+    SELECT spock_refuse('account_private')
+    WHERE NOT EXISTS (SELECT 1 FROM follow
+                      WHERE follower = :follower AND target = :target)
+      AND (SELECT private FROM user WHERE id = :target)
+  """)
   unchecked sql("""
     INSERT INTO follow (follower, target)
-    SELECT :follower, :target
-    WHERE EXISTS (SELECT 1 FROM follow
-                  WHERE follower = :follower AND target = :target)
-       OR (:follower <> :target
-           AND (SELECT NOT private FROM user WHERE id = :target)
-           AND NOT EXISTS (SELECT 1 FROM block
-                           WHERE (blocker = :target AND blocked = :follower)
-                              OR (blocker = :follower AND blocked = :target)))
+    VALUES (:follower, :target)
     ON CONFLICT (follower, target) DO UPDATE SET since = since
     RETURNING *
   """)
 }
 
-fn unfollow(follower: user, target: user) -> follow? {
+mut fn unfollow(follower: user, target: user) -> follow? {
   // idempotent by arity: miss = null = already unfollowed (C1)
   unchecked sql("""
     DELETE FROM follow
@@ -285,18 +299,25 @@ fn unfollow(follower: user, target: user) -> follow? {
 
 // follow a private profile: request. A denied request revives to pending —
 // a policy the PRD leaves open, adopted from the answer sheet (pg.sql;
-// v1-B1) — and saying so takes a CASE per column (W1). An `approved` row
-// is returned as-is: with approve unable to create the follow edge (G3),
-// approved-but-not-following is this contract's permanent limbo
-fn request_follow(requester: user, target: user) -> follow_request ! not_found {
+// v1-B1) — and saying so still takes a CASE per column (W1). A public
+// target is a refusal now, not a silent miss: use `follow` instead.
+mut fn request_follow(requester: user, target: user) -> follow_request ! self_follow | blocked | account_public {
+  unchecked sql("""
+    SELECT spock_refuse('self_follow') WHERE :requester = :target
+  """)
+  unchecked sql("""
+    SELECT spock_refuse('blocked')
+    WHERE EXISTS (SELECT 1 FROM block
+                  WHERE (blocker = :target AND blocked = :requester)
+                     OR (blocker = :requester AND blocked = :target))
+  """)
+  unchecked sql("""
+    SELECT spock_refuse('account_public')
+    WHERE NOT (SELECT private FROM user WHERE id = :target)
+  """)
   unchecked sql("""
     INSERT INTO follow_request (requester, target)
-    SELECT :requester, :target
-    WHERE :requester <> :target
-      AND (SELECT private FROM user WHERE id = :target)
-      AND NOT EXISTS (SELECT 1 FROM block
-                      WHERE (blocker = :target AND blocked = :requester)
-                         OR (blocker = :requester AND blocked = :target))
+    VALUES (:requester, :target)
     ON CONFLICT (requester, target) DO UPDATE SET
       status       = CASE follow_request.status WHEN 'denied' THEN 'pending' ELSE follow_request.status END,
       requested_at = CASE follow_request.status WHEN 'denied' THEN spock_now() ELSE follow_request.requested_at END,
@@ -305,13 +326,35 @@ fn request_follow(requester: user, target: user) -> follow_request ! not_found {
   """)
 }
 
-// BROKEN BY CONSTRUCTION (G3): approving must also create the follow row,
-// and a one-statement body writes one table. The deliberate surface cannot
-// repair it — `follow` refuses private targets. The only way out is the
-// raw floor (`insert_follow_one`), which bypasses every guard this file
-// wrote: the flow's logic leaks to the client (G3, G13).
-// Idempotent per the PRD: re-approving an approved request returns it.
-fn approve_follow_request(requester: user, target: user) -> follow_request ! not_found {
+// UNBROKEN (G3, taken): approving flips the request, creates the follow
+// edge, and writes the acceptance notification — three tables, one
+// transaction, the flow the single-statement wall famously severed.
+// Statement order carries the idempotency: the notification checks
+// `status = 'pending'` BEFORE the flip, so re-approving an approved
+// request (PRD: idempotent) re-notifies no one; the edge INSERT is
+// DO NOTHING. A denied request refuses by name — revive it via
+// request_follow first.
+mut fn approve_follow_request(requester: user, target: user) -> follow_request ! request_denied | not_found {
+  unchecked sql("""
+    SELECT spock_refuse('request_denied')
+    WHERE (SELECT status FROM follow_request
+           WHERE requester = :requester AND target = :target) = 'denied'
+  """)
+  unchecked sql("""
+    INSERT INTO notification (recipient, actor, kind)
+    SELECT :requester, :target, 'follow'
+    WHERE EXISTS (SELECT 1 FROM follow_request
+                  WHERE requester = :requester AND target = :target
+                    AND status = 'pending')
+  """)
+  unchecked sql("""
+    INSERT INTO follow (follower, target)
+    SELECT :requester, :target
+    WHERE EXISTS (SELECT 1 FROM follow_request
+                  WHERE requester = :requester AND target = :target
+                    AND status IN ('pending', 'approved'))
+    ON CONFLICT (follower, target) DO NOTHING
+  """)
   unchecked sql("""
     UPDATE follow_request
     SET status = 'approved',
@@ -322,7 +365,13 @@ fn approve_follow_request(requester: user, target: user) -> follow_request ! not
   """)
 }
 
-fn deny_follow_request(requester: user, target: user) -> follow_request ! not_found {
+// denying an approved request is a named refusal, not a silent miss
+mut fn deny_follow_request(requester: user, target: user) -> follow_request ! request_approved | not_found {
+  unchecked sql("""
+    SELECT spock_refuse('request_approved')
+    WHERE (SELECT status FROM follow_request
+           WHERE requester = :requester AND target = :target) = 'approved'
+  """)
   unchecked sql("""
     UPDATE follow_request
     SET status = 'denied',
@@ -333,19 +382,31 @@ fn deny_follow_request(requester: user, target: user) -> follow_request ! not_fo
   """)
 }
 
-// blocking should also sever follows both ways (PRD) — second table,
-// second statement, not sayable (G3)
-fn block_user(blocker: user, blocked: user) -> block ! not_found {
+// blocking severs the relationship both ways (PRD): follows and pending
+// requests die in the same transaction the block lands in (G3, taken)
+mut fn block_user(blocker: user, blocked: user) -> block ! self_block {
+  unchecked sql("""
+    SELECT spock_refuse('self_block') WHERE :blocker = :blocked
+  """)
+  unchecked sql("""
+    DELETE FROM follow
+    WHERE (follower = :blocker AND target = :blocked)
+       OR (follower = :blocked AND target = :blocker)
+  """)
+  unchecked sql("""
+    DELETE FROM follow_request
+    WHERE (requester = :blocker AND target = :blocked)
+       OR (requester = :blocked AND target = :blocker)
+  """)
   unchecked sql("""
     INSERT INTO block (blocker, blocked)
-    SELECT :blocker, :blocked
-    WHERE :blocker <> :blocked
+    VALUES (:blocker, :blocked)
     ON CONFLICT (blocker, blocked) DO UPDATE SET at = at
     RETURNING *
   """)
 }
 
-fn unblock(blocker: user, blocked: user) -> block? {
+mut fn unblock(blocker: user, blocked: user) -> block? {
   unchecked sql("""
     DELETE FROM block
     WHERE blocker = :blocker AND blocked = :blocked
@@ -353,17 +414,19 @@ fn unblock(blocker: user, blocked: user) -> block? {
   """)
 }
 
-fn restrict_user(restricting: user, restricted: user) -> restriction ! not_found {
+mut fn restrict_user(restricting: user, restricted: user) -> restriction ! self_restrict {
+  unchecked sql("""
+    SELECT spock_refuse('self_restrict') WHERE :restricting = :restricted
+  """)
   unchecked sql("""
     INSERT INTO restriction (restricting, restricted)
-    SELECT :restricting, :restricted
-    WHERE :restricting <> :restricted
+    VALUES (:restricting, :restricted)
     ON CONFLICT (restricting, restricted) DO UPDATE SET at = at
     RETURNING *
   """)
 }
 
-fn unrestrict_user(restricting: user, restricted: user) -> restriction? {
+mut fn unrestrict_user(restricting: user, restricted: user) -> restriction? {
   unchecked sql("""
     DELETE FROM restriction
     WHERE restricting = :restricting AND restricted = :restricted
@@ -375,30 +438,48 @@ fn unrestrict_user(restricting: user, restricted: user) -> restriction? {
 // the deliberate surface — content and interactions
 // ---------------------------------------------------------------------------
 
-// the PRD's interaction rules: no liking across a block, no liking a
-// private author you don't follow (self exempt). Both guards fit one
-// statement — the wall for these fns is the notification and the counter
-// they cannot also write (G3, G15), not the policy. Unlike follow, the
-// already-liked escape is omitted: a pre-existing like beaten by a later
-// block is refused rather than returned (the W1 wrinkle, unhandled).
-fn like_post(user: user, post: post) -> like ! not_found {
+// the PRD's interaction rules by name: no liking across a block, no
+// liking a private author you don't follow (self exempt) — and the act
+// now writes the notification it produces (G3, taken; the counter G15
+// still recounts). The existing-like exemption on each guard keeps
+// re-likes idempotent even when a block or privacy change arrives later
+// (the W1 wrinkle, now handled); the exemption on the notification
+// keeps re-likes from re-notifying. A missing post falls to the FK:
+// `bad_request`, truthfully.
+mut fn like_post(user: user, post: post) -> like ! blocked | account_private {
+  unchecked sql("""
+    SELECT spock_refuse('blocked')
+    WHERE NOT EXISTS (SELECT 1 FROM "like" WHERE post = :post AND user = :user)
+      AND EXISTS (SELECT 1 FROM post p JOIN block b
+                  WHERE p.id = :post
+                    AND ((b.blocker = p.author AND b.blocked = :user)
+                      OR (b.blocker = :user AND b.blocked = p.author)))
+  """)
+  unchecked sql("""
+    SELECT spock_refuse('account_private')
+    WHERE NOT EXISTS (SELECT 1 FROM "like" WHERE post = :post AND user = :user)
+      AND EXISTS (SELECT 1 FROM post p JOIN user a ON a.id = p.author
+                  WHERE p.id = :post AND a.private
+                    AND p.author <> :user
+                    AND NOT EXISTS (SELECT 1 FROM follow
+                                    WHERE follower = :user AND target = p.author))
+  """)
+  unchecked sql("""
+    INSERT INTO notification (recipient, actor, kind, post)
+    SELECT p.author, :user, 'like', p.id
+    FROM post p
+    WHERE p.id = :post AND p.author <> :user
+      AND NOT EXISTS (SELECT 1 FROM "like" WHERE post = :post AND user = :user)
+  """)
   unchecked sql("""
     INSERT INTO "like" (post, user)
-    SELECT p.id, :user
-    FROM post p
-    WHERE p.id = :post
-      AND NOT EXISTS (SELECT 1 FROM block
-                      WHERE (blocker = p.author AND blocked = :user)
-                         OR (blocker = :user AND blocked = p.author))
-      AND ((SELECT NOT private FROM user WHERE id = p.author)
-           OR p.author = :user
-           OR EXISTS (SELECT 1 FROM follow WHERE follower = :user AND target = p.author))
+    VALUES (:post, :user)
     ON CONFLICT (post, user) DO UPDATE SET at = at
     RETURNING *
   """)
 }
 
-fn unlike_post(user: user, post: post) -> like? {
+mut fn unlike_post(user: user, post: post) -> like? {
   unchecked sql("""
     DELETE FROM "like"
     WHERE post = :post AND user = :user
@@ -406,27 +487,43 @@ fn unlike_post(user: user, post: post) -> like? {
   """)
 }
 
-// same visibility guards as like_post: saving implies seeing
-fn save_post(user: user, post: post) -> save ! not_found {
+// same visibility refusals as like_post: saving implies seeing. No
+// notification — saves are private.
+mut fn save_post(user: user, post: post) -> save ! blocked | account_private {
+  unchecked sql("""
+    SELECT spock_refuse('blocked')
+    WHERE NOT EXISTS (SELECT 1 FROM save WHERE user = :user AND post = :post)
+      AND EXISTS (SELECT 1 FROM post p JOIN block b
+                  WHERE p.id = :post
+                    AND ((b.blocker = p.author AND b.blocked = :user)
+                      OR (b.blocker = :user AND b.blocked = p.author)))
+  """)
+  unchecked sql("""
+    SELECT spock_refuse('account_private')
+    WHERE NOT EXISTS (SELECT 1 FROM save WHERE user = :user AND post = :post)
+      AND EXISTS (SELECT 1 FROM post p JOIN user a ON a.id = p.author
+                  WHERE p.id = :post AND a.private
+                    AND p.author <> :user
+                    AND NOT EXISTS (SELECT 1 FROM follow
+                                    WHERE follower = :user AND target = p.author))
+  """)
   unchecked sql("""
     INSERT INTO save (user, post)
-    SELECT :user, p.id
-    FROM post p
-    WHERE p.id = :post
-      AND NOT EXISTS (SELECT 1 FROM block
-                      WHERE (blocker = p.author AND blocked = :user)
-                         OR (blocker = :user AND blocked = p.author))
-      AND ((SELECT NOT private FROM user WHERE id = p.author)
-           OR p.author = :user
-           OR EXISTS (SELECT 1 FROM follow WHERE follower = :user AND target = p.author))
+    VALUES (:user, :post)
     ON CONFLICT (user, post) DO UPDATE SET at = at
     RETURNING *
   """)
 }
 
-// unsaving should also drop the post from the user's collections (PRD) —
-// second table (G3); collection_post rows go stale
-fn unsave_post(user: user, post: post) -> save? {
+// unsaving also drops the post from the user's own collections (PRD) —
+// the second table G3 used to forbid (taken); no more stale entries
+mut fn unsave_post(user: user, post: post) -> save? {
+  unchecked sql("""
+    DELETE FROM collection_post
+    WHERE post = :post
+      AND collection IN (SELECT id FROM collection WHERE owner = :user)
+      AND EXISTS (SELECT 1 FROM save WHERE user = :user AND post = :post)
+  """)
   unchecked sql("""
     DELETE FROM save
     WHERE user = :user AND post = :post
@@ -434,15 +531,50 @@ fn unsave_post(user: user, post: post) -> save? {
   """)
 }
 
-// guards: non-empty body (trim needs the explicit whitespace set — bare
-// trim() strips spaces only), length cap, reply stays on the same post,
-// no commenting across a block, private authors take comments only from
-// followers (self exempt); a comment from a restricted user lands held
-// instead of visible — one statement carries all of it (W2). The id and
-// timestamp ride the table's own defaults (G4, taken: the DDL DEFAULT
-// calls the engine's mints). Mention parsing is not attempted
-// (multi-table, multi-row — G3).
-fn add_comment(author: user, post: post, body: text, parent: comment?) -> comment ! not_found {
+// every guard is a named refusal now; the restriction rule stays policy,
+// not refusal — a comment from a restricted user lands held instead of
+// visible, one CASE in the insert (W2). The held path does not notify.
+// The id and timestamp ride the table's own defaults (G4, taken). The
+// notification cannot carry the comment it announces: statements cannot
+// pass values, so the new comment's id is unreachable from the next
+// statement (G17) — the notification links the post only. Mention
+// parsing is still not attempted (per-row fan-out — G17's plural form).
+mut fn add_comment(author: user, post: post, body: text, parent: comment?) -> comment ! empty_body | body_too_long | parent_mismatch | blocked | account_private {
+  unchecked sql("""
+    SELECT spock_refuse('empty_body')
+    WHERE length(trim(:body, ' ' || char(9, 10, 13))) = 0
+  """)
+  unchecked sql("""
+    SELECT spock_refuse('body_too_long') WHERE length(:body) > 2200
+  """)
+  unchecked sql("""
+    SELECT spock_refuse('parent_mismatch')
+    WHERE :parent IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM comment WHERE id = :parent AND post = :post)
+  """)
+  unchecked sql("""
+    SELECT spock_refuse('blocked')
+    WHERE EXISTS (SELECT 1 FROM post p JOIN block b
+                  WHERE p.id = :post
+                    AND ((b.blocker = p.author AND b.blocked = :author)
+                      OR (b.blocker = :author AND b.blocked = p.author)))
+  """)
+  unchecked sql("""
+    SELECT spock_refuse('account_private')
+    WHERE EXISTS (SELECT 1 FROM post p JOIN user a ON a.id = p.author
+                  WHERE p.id = :post AND a.private
+                    AND p.author <> :author
+                    AND NOT EXISTS (SELECT 1 FROM follow
+                                    WHERE follower = :author AND target = p.author))
+  """)
+  unchecked sql("""
+    INSERT INTO notification (recipient, actor, kind, post)
+    SELECT p.author, :author, 'comment', p.id
+    FROM post p
+    WHERE p.id = :post AND p.author <> :author
+      AND NOT EXISTS (SELECT 1 FROM restriction
+                      WHERE restricting = p.author AND restricted = :author)
+  """)
   unchecked sql("""
     INSERT INTO comment (post, author, parent, body, status)
     SELECT
@@ -452,21 +584,12 @@ fn add_comment(author: user, post: post, body: text, parent: comment?) -> commen
            THEN 'held' ELSE 'visible' END
     FROM post p
     WHERE p.id = :post
-      AND length(trim(:body, ' ' || char(9, 10, 13))) > 0
-      AND length(:body) <= 2200
-      AND (:parent IS NULL OR EXISTS (SELECT 1 FROM comment WHERE id = :parent AND post = :post))
-      AND NOT EXISTS (SELECT 1 FROM block
-                      WHERE (blocker = p.author AND blocked = :author)
-                         OR (blocker = :author AND blocked = p.author))
-      AND ((SELECT NOT private FROM user WHERE id = p.author)
-           OR p.author = :author
-           OR EXISTS (SELECT 1 FROM follow WHERE follower = :author AND target = p.author))
     RETURNING *
   """)
 }
 
 // the post author releases a held comment (the restriction flow's other half)
-fn approve_comment(comment: comment, actor: user) -> comment? {
+mut fn approve_comment(comment: comment, actor: user) -> comment? {
   unchecked sql("""
     UPDATE comment SET status = 'visible'
     WHERE id = :comment AND status = 'held'
@@ -477,7 +600,7 @@ fn approve_comment(comment: comment, actor: user) -> comment? {
 
 // the author or the post owner may delete; `actor` is client-asserted (G12).
 // Hard delete — the PRD wants audit-preserving soft delete (G7)
-fn delete_comment(comment: comment, actor: user) -> comment? {
+mut fn delete_comment(comment: comment, actor: user) -> comment? {
   unchecked sql("""
     DELETE FROM comment
     WHERE id = :comment
@@ -488,7 +611,7 @@ fn delete_comment(comment: comment, actor: user) -> comment? {
 
 // idempotent self-removal from a tag; the tombstoned row then blocks any
 // re-tag forever via unique(media, tagged) (G6)
-fn remove_media_tag(tag: media_tag, actor: user) -> media_tag? {
+mut fn remove_media_tag(tag: media_tag, actor: user) -> media_tag? {
   unchecked sql("""
     UPDATE media_tag
     SET removed_at = coalesce(removed_at, spock_now())
@@ -497,7 +620,7 @@ fn remove_media_tag(tag: media_tag, actor: user) -> media_tag? {
   """)
 }
 
-fn archive_post(post: post, author: user) -> post? {
+mut fn archive_post(post: post, author: user) -> post? {
   unchecked sql("""
     UPDATE post
     SET archived_at = coalesce(archived_at, spock_now())
@@ -506,7 +629,7 @@ fn archive_post(post: post, author: user) -> post? {
   """)
 }
 
-fn unarchive_post(post: post, author: user) -> post? {
+mut fn unarchive_post(post: post, author: user) -> post? {
   unchecked sql("""
     UPDATE post SET archived_at = NULL
     WHERE id = :post AND author = :author
@@ -518,7 +641,7 @@ fn unarchive_post(post: post, author: user) -> post? {
 // likes, comments, saves, collection entries, hashtag links, mentions,
 // tags, notifications — while reports survive with nulled links (the
 // set-null half of G7; soft delete remains the full audit answer)
-fn delete_post(post: post, author: user) -> post? {
+mut fn delete_post(post: post, author: user) -> post? {
   unchecked sql("""
     DELETE FROM post
     WHERE id = :post AND author = :author
@@ -526,32 +649,45 @@ fn delete_post(post: post, author: user) -> post? {
   """)
 }
 
-// id, status, and timestamp all ride their declared defaults (G4, taken).
+// id, status, and timestamp all ride their declared defaults (G4, taken);
+// an empty reason refuses by name instead of masquerading as not_found.
 // "No unbounded duplicates per reporter and target" stays unsaid (G5, G6)
-fn report_post(reporter: user, post: post, reason: text) -> report {
+mut fn report_post(reporter: user, post: post, reason: text) -> report ! empty_reason {
+  unchecked sql("""
+    SELECT spock_refuse('empty_reason')
+    WHERE length(trim(:reason, ' ' || char(9, 10, 13))) = 0
+  """)
   unchecked sql("""
     INSERT INTO report (reporter, post, reason)
-    SELECT :reporter, :post, :reason
-    WHERE length(trim(:reason, ' ' || char(9, 10, 13))) > 0
+    VALUES (:reporter, :post, :reason)
     RETURNING *
   """)
 }
 
 // the owner files a saved post into a collection; "must already be
 // saved" is a cross-table rule no table can declare (G14) but a write
-// guard can enforce — until the floor writes around it (G13)
-fn add_to_collection(collection: collection, post: post, actor: user) -> collection_post ! not_found {
+// guard can now refuse by name — until the floor writes around it (G13).
+// A missing collection makes the ownership subquery NULL, so neither
+// refusal fires and the FK answers `bad_request`, truthfully.
+mut fn add_to_collection(collection: collection, post: post, actor: user) -> collection_post ! not_owner | not_saved {
+  unchecked sql("""
+    SELECT spock_refuse('not_owner')
+    WHERE (SELECT owner FROM collection WHERE id = :collection) <> :actor
+  """)
+  unchecked sql("""
+    SELECT spock_refuse('not_saved')
+    WHERE EXISTS (SELECT 1 FROM collection WHERE id = :collection AND owner = :actor)
+      AND NOT EXISTS (SELECT 1 FROM save WHERE user = :actor AND post = :post)
+  """)
   unchecked sql("""
     INSERT INTO collection_post (collection, post)
-    SELECT :collection, :post
-    WHERE (SELECT owner FROM collection WHERE id = :collection) = :actor
-      AND EXISTS (SELECT 1 FROM save WHERE user = :actor AND post = :post)
+    VALUES (:collection, :post)
     ON CONFLICT (collection, post) DO UPDATE SET at = at
     RETURNING *
   """)
 }
 
-fn remove_from_collection(collection: collection, post: post, actor: user) -> collection_post? {
+mut fn remove_from_collection(collection: collection, post: post, actor: user) -> collection_post? {
   unchecked sql("""
     DELETE FROM collection_post
     WHERE collection = :collection AND post = :post
@@ -560,7 +696,7 @@ fn remove_from_collection(collection: collection, post: post, actor: user) -> co
   """)
 }
 
-fn mark_notifications_read(user: user) -> [notification] {
+mut fn mark_notifications_read(user: user) -> [notification] {
   unchecked sql("""
     UPDATE notification
     SET read_at = spock_now()
@@ -572,8 +708,11 @@ fn mark_notifications_read(user: user) -> [notification] {
 // ---------------------------------------------------------------------------
 // the deliberate surface — reads
 //
-// all of these are pure reads served from the Mutation root (G11), and
-// every count() here recounts rows the PRD says to materialize (G15)
+// unmarked = read (G11, taken): the engine holds these to
+// stmt.readonly() at load, GraphQL serves them from the Query root, and
+// REST serves them on GET /rest/v1/rpc/<fn>. Every count() here still
+// recounts rows the PRD says to materialize (G15), and every cursor is
+// still hand-rolled (G16 — deferred to the filter layer, deliberately)
 // ---------------------------------------------------------------------------
 
 record engagement {
@@ -843,8 +982,8 @@ seed {
   sunset = hashtag { tag: "sunset" }
   post_hashtag { post: p1, tag: sunset }
 
-  // written by the seed only: no fn can create these alongside the act
-  // they describe (G3)
+  // like_post, add_comment, and approve_follow_request now write these
+  // alongside the act (G3, taken); the seed still states a baseline
   notification { recipient: maya, actor: luis, kind: "like", post: p1 }
   notification { recipient: maya, actor: vera, kind: "comment", post: p1,
                  at: "2026-07-09T11:30:00Z", read_at: "2026-07-09T12:00:00Z" }
