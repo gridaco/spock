@@ -132,7 +132,9 @@ impl Parser {
     }
 
     // fn_decl = "fn" ident "(" [param {"," param} [","]] ")" "->" ret
-    //           ["!" ident {"|" ident}] "{" "unchecked" "sql" "(" string ")" "}"
+    //           ["!" ident {"|" ident}]
+    //           "{" escape { escape } "}"
+    // escape  = "unchecked" "sql" "(" string ")"
     fn fn_decl(&mut self) -> Result<FnDecl, Diagnostic> {
         let start = self.expect(TokenKind::KwFn, "`fn`")?.span;
         let name = self.ident("fn name")?;
@@ -179,10 +181,28 @@ impl Parser {
         }
 
         self.expect(TokenKind::LBrace, "`{`")?;
-        // `unchecked` and `sql` are contextual: keywords only here,
-        // identifiers everywhere else. The marker is forced — the checker
-        // cannot verify the SQL, and the language marks its own limits
-        // (RFD 0011).
+        // one or more escapes, in execution order; the last one answers
+        let mut body = vec![self.sql_escape()?];
+        while self.peek().kind != TokenKind::RBrace {
+            body.push(self.sql_escape()?);
+        }
+        let end = self.expect(TokenKind::RBrace, "`}`")?.span;
+
+        Ok(FnDecl {
+            name,
+            params,
+            ret,
+            errors,
+            body,
+            span: start.to(end),
+        })
+    }
+
+    // escape = "unchecked" "sql" "(" string ")" — `unchecked` and `sql`
+    // are contextual: keywords only here, identifiers everywhere else.
+    // The marker is forced — the checker cannot verify the SQL, and the
+    // language marks its own limits (RFD 0011).
+    fn sql_escape(&mut self) -> Result<SqlEscape, Diagnostic> {
         let marker = self.ident("`unchecked`")?;
         if marker.name == "sql" {
             return Err(Diagnostic::new(
@@ -195,7 +215,7 @@ impl Parser {
             return Err(Diagnostic::new(
                 "L010",
                 format!(
-                    "expected `unchecked`, found identifier `{}` (a v0 fn body is a single `unchecked sql(\"...\")` call)",
+                    "expected `unchecked`, found identifier `{}` (a fn body is one or more `unchecked sql(\"...\")` statements)",
                     marker.name
                 ),
                 marker.span,
@@ -206,7 +226,7 @@ impl Parser {
             return Err(Diagnostic::new(
                 "L010",
                 format!(
-                    "expected `sql`, found identifier `{}` (a v0 fn body is a single `unchecked sql(\"...\")` call)",
+                    "expected `sql`, found identifier `{}` (a fn body is one or more `unchecked sql(\"...\")` statements)",
                     escape.name
                 ),
                 escape.span,
@@ -214,24 +234,17 @@ impl Parser {
         }
         self.expect(TokenKind::LParen, "`(`")?;
         let tok = self.peek().clone();
-        let (sql, sql_span) = match tok.kind {
+        let sql = match tok.kind {
             TokenKind::Str(s) => {
                 self.bump();
-                (s, tok.span)
+                s
             }
-            _ => return Err(self.unexpected("a string literal (the SQL body)")),
+            _ => return Err(self.unexpected("a string literal (the SQL statement)")),
         };
         self.expect(TokenKind::RParen, "`)`")?;
-        let end = self.expect(TokenKind::RBrace, "`}`")?.span;
-
-        Ok(FnDecl {
-            name,
-            params,
-            ret,
-            errors,
+        Ok(SqlEscape {
             sql,
-            sql_span,
-            span: start.to(end),
+            span: marker.span.to(tok.span),
         })
     }
 
@@ -648,7 +661,31 @@ mod tests {
         assert!(matches!(&f.ret.target, RetTarget::Named(n) if n.name == "user"));
         assert_eq!(f.errors.len(), 2);
         assert_eq!(f.errors[1].name, "not_found");
-        assert!(f.sql.contains("RETURNING *"));
+        assert_eq!(f.body.len(), 1);
+        assert!(f.body[0].sql.contains("RETURNING *"));
+    }
+
+    #[test]
+    fn parses_multi_statement_bodies() {
+        let file = parse_ok(
+            "fn approve(request: uuid) -> follow_request {\n\
+               unchecked sql(\"UPDATE follow_request SET status = 'approved' WHERE id = :request\")\n\
+               unchecked sql(\"SELECT * FROM follow_request WHERE id = :request\")\n\
+             }",
+        );
+        let f = &file.fns[0];
+        assert_eq!(f.body.len(), 2);
+        assert!(f.body[0].sql.starts_with("UPDATE"));
+        assert!(f.body[1].sql.starts_with("SELECT"));
+        // every escape carries its own marker: a bare second sql(...) fails
+        let d = parse_err(
+            "fn f() -> t {\n\
+               unchecked sql(\"UPDATE x SET a = 1\")\n\
+               sql(\"SELECT * FROM x\")\n\
+             }",
+        );
+        assert_eq!(d.code, "L010");
+        assert!(d.message.contains("unchecked"));
     }
 
     #[test]

@@ -64,16 +64,16 @@ fn main() -> ExitCode {
             let Some(contract) = load(&file) else {
                 return ExitCode::FAILURE;
             };
-            // every v0 fn body is the SQL escape — the unchecked count is
-            // the ledger (RFD 0011 §4), trending to zero as native bodies
-            // arrive
+            // every v0 fn statement is an SQL escape — the unchecked count
+            // is the ledger (RFD 0011 §4), trending to zero as native
+            // bodies arrive
             let fns = if contract.fns.is_empty() {
                 "0 fn(s)".to_string()
             } else {
                 format!(
-                    "{} fn(s) ({} unchecked bodies)",
+                    "{} fn(s) ({} unchecked escapes)",
                     contract.fns.len(),
-                    contract.fns.len()
+                    contract.fns.iter().map(|f| f.sql.len()).sum::<usize>()
                 )
             };
             println!(

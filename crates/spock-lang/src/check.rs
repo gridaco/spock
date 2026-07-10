@@ -360,7 +360,7 @@ impl Checker {
                     scalar,
                 },
                 errors,
-                sql: decl.sql.clone(),
+                sql: decl.body.iter().map(|e| e.sql.clone()).collect(),
             });
         }
         fns

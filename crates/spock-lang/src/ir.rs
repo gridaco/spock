@@ -137,8 +137,29 @@ pub struct FnDef {
     /// Declared error codes (`! a | b`) — metadata for introspection and
     /// clients; the runtime surfaces undeclared errors truthfully too.
     pub errors: Vec<String>,
-    /// The escape body: exactly one SQL statement.
-    pub sql: String,
+    /// The escape body: SQL statements in execution order, each exactly
+    /// one statement; the last produces the return value (§7.4). Pre-v2
+    /// contract JSON carried a single bare string — the deserializer
+    /// accepts it as a one-statement body (§6 additive law).
+    #[serde(deserialize_with = "sql_one_or_many")]
+    pub sql: Vec<String>,
+}
+
+/// Accept `"sql": "..."` (pre-multi-statement JSON) as `["..."]`.
+fn sql_one_or_many<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match OneOrMany::deserialize(deserializer)? {
+        OneOrMany::One(s) => vec![s],
+        OneOrMany::Many(v) => v,
+    })
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -409,7 +430,7 @@ mod tests {
                     scalar: false,
                 },
                 errors: vec!["user_username_taken".into()],
-                sql: "UPDATE user SET username = :name WHERE id = :user RETURNING *".into(),
+                sql: vec!["UPDATE user SET username = :name WHERE id = :user RETURNING *".into()],
             }],
             seed: vec![SeedRow {
                 table: "user".into(),
@@ -434,7 +455,9 @@ mod tests {
         assert!(json.contains("\"kind\": \"auto\""));
         assert!(json.contains("\"ref\": \"luis\""));
         assert!(json.contains("\"arity\": \"one\""));
-        assert!(json.contains("\"sql\": \"UPDATE user"));
+        // the body serializes as a statement array (§6: pre-v2 JSON
+        // carried a bare string; see legacy_contract_json_deserializes)
+        assert!(json.contains("\"UPDATE user"));
 
         let back: Contract = serde_json::from_str(&json).unwrap();
         assert_eq!(back.tables[0].name, "user");
@@ -459,12 +482,14 @@ mod tests {
         assert!(contract.fns.is_empty());
         assert!(contract.records.is_empty());
 
-        // pre-scalar fn JSON (no `returns.scalar` key) still loads too
+        // pre-scalar fn JSON (no `returns.scalar` key, bare-string `sql`)
+        // still loads too — the string becomes a one-statement body
         let pre_scalar = r#"{ "spock": "v0", "tables": [], "seed": [], "fns": [
             { "name": "f", "params": [],
               "returns": { "arity": "one", "of": "user" },
               "errors": [], "sql": "S" } ] }"#;
         let contract: Contract = serde_json::from_str(pre_scalar).unwrap();
         assert!(!contract.fns[0].returns.scalar);
+        assert_eq!(contract.fns[0].sql, vec!["S"]);
     }
 }

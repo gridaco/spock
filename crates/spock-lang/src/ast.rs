@@ -124,7 +124,7 @@ pub struct RecordDecl {
     pub span: Span,
 }
 
-/// `fn name(params) -> ret ! codes { sql("...") }` (§3).
+/// `fn name(params) -> ret ! codes { sql("...") ... }` (§3).
 #[derive(Clone, Debug)]
 pub struct FnDecl {
     pub name: Ident,
@@ -132,9 +132,16 @@ pub struct FnDecl {
     pub ret: RetDecl,
     /// Declared error codes (the `! a | b` clause), possibly empty.
     pub errors: Vec<Ident>,
-    /// The escape body: one SQL statement, verbatim.
+    /// The escape body: one or more `unchecked sql(...)` statements in
+    /// execution order; the last produces the return value (§7.4).
+    pub body: Vec<SqlEscape>,
+    pub span: Span,
+}
+
+/// One `unchecked sql("...")` escape: exactly one SQL statement, verbatim.
+#[derive(Clone, Debug)]
+pub struct SqlEscape {
     pub sql: String,
-    pub sql_span: Span,
     pub span: Span,
 }
 

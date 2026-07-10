@@ -29,7 +29,7 @@ fn check_accepts_a_valid_program() {
         .success()
         // the unchecked-body count is the ledger (RFD 0011 §4)
         .stdout(predicate::str::contains(
-            "ok: 1 table(s), 0 record(s), 1 fn(s) (1 unchecked bodies), 1 seed row(s)",
+            "ok: 1 table(s), 0 record(s), 1 fn(s) (1 unchecked escapes), 1 seed row(s)",
         ));
 }
 

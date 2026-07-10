@@ -51,10 +51,6 @@ pub fn call(
         .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
 
     let rows: Vec<Json> = {
-        let mut stmt = tx
-            .prepare(&f.sql)
-            .map_err(|e| map_fn_engine_error(contract, e))?;
-        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
         // scalar returns map column 0 as a bare value; shapes map by name
         let scalar_ty = f.returns.scalar_type();
         let declared = match &scalar_ty {
@@ -63,15 +59,36 @@ pub fn call(
                 .output_fields(&f.returns.of)
                 .ok_or_else(|| ApiError::internal("contract drift: fn return shape"))?,
         };
-        let params: Vec<(&str, &dyn ToSql)> = binds
-            .iter()
-            .map(|(n, v)| (n.as_str(), v as &dyn ToSql))
-            .collect();
-        let mut rows = stmt
-            .query(params.as_slice())
-            .map_err(|e| map_fn_engine_error(contract, e))?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next().map_err(|e| map_fn_engine_error(contract, e))? {
+        let last_index = f.sql.len().saturating_sub(1);
+        for (index, sql) in f.sql.iter().enumerate() {
+            let mut stmt = tx
+                .prepare(sql)
+                .map_err(|e| map_fn_engine_error(contract, e))?;
+            let columns: Vec<String> =
+                stmt.column_names().iter().map(|c| c.to_string()).collect();
+            // each statement binds only the params it names (validated
+            // total across the body at load)
+            let params: Vec<(&str, &dyn ToSql)> = binds
+                .iter()
+                .filter(|(n, _)| matches!(stmt.parameter_index(n), Ok(Some(_))))
+                .map(|(n, v)| (n.as_str(), v as &dyn ToSql))
+                .collect();
+            let mut rows = stmt
+                .query(params.as_slice())
+                .map_err(|e| map_fn_engine_error(contract, e))?;
+            if index < last_index {
+                // a guard or an effect: run it to completion (a guard's
+                // refusal fires while stepping), discard its rows
+                while rows
+                    .next()
+                    .map_err(|e| map_fn_engine_error(contract, e))?
+                    .is_some()
+                {}
+                continue;
+            }
+            // the last statement answers
+            while let Some(row) = rows.next().map_err(|e| map_fn_engine_error(contract, e))? {
             if let Some(ty) = &scalar_ty {
                 let value = row
                     .get_ref(0)
@@ -101,7 +118,8 @@ pub fn call(
                     .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
                 obj.insert(col.clone(), sql_to_json_scalar(contract.value_type(ty), value));
             }
-            out.push(Json::Object(obj));
+                out.push(Json::Object(obj));
+            }
         }
         out
     };
@@ -210,6 +228,16 @@ fn lying_count() -> int {
 
 fn bios() -> [text] {
   unchecked sql("SELECT bio FROM user")
+}
+
+fn post_and_count(author: user, caption: text) -> int {
+  unchecked sql("INSERT INTO post (author, caption) VALUES (:author, :caption)")
+  unchecked sql("SELECT count(*) FROM post WHERE author = :author")
+}
+
+fn insert_then_miss(author: user) -> post {
+  unchecked sql("INSERT INTO post (author, caption) VALUES (:author, 'doomed')")
+  unchecked sql("SELECT * FROM post WHERE caption = 'no such caption'")
 }
 
 seed {
@@ -360,6 +388,37 @@ seed {
         )
         .unwrap();
         assert!(row["caption"].is_null());
+    }
+
+    #[test]
+    fn multi_statement_bodies() {
+        let (contract, mut conn) = setup();
+        let maya = user_id(&contract, &mut conn, "maya");
+        // earlier statements are effects, the last statement answers:
+        // the count the fn returns already sees its own INSERT
+        let f = contract.fn_def("post_and_count").unwrap();
+        let n = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("author", maya.clone().into()), ("caption", "second".into())]),
+        )
+        .unwrap();
+        assert_eq!(n, 2); // the seed post + this one
+        // one transaction: a violated `-> t` arity rolls EVERY statement
+        // back, including earlier effects
+        let f = contract.fn_def("insert_then_miss").unwrap();
+        let err = call(&contract, f, &mut conn, &args(&[("author", maya.clone().into())])).unwrap_err();
+        assert_eq!(err.code, "not_found");
+        let f = contract.fn_def("post_and_count").unwrap();
+        let n = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("author", maya.into()), ("caption", "third".into())]),
+        )
+        .unwrap();
+        assert_eq!(n, 3); // 'doomed' never landed
     }
 
     #[test]
