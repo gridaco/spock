@@ -25,6 +25,8 @@ pub enum EngineError {
         table: String,
         source: Box<ApiError>,
     },
+    #[error("fn `{name}`: {message}")]
+    Fn { name: String, message: String },
 }
 
 /// Open the database (in-memory when `path` is `None`), materialize the
@@ -55,8 +57,118 @@ pub fn open(contract: &Contract, path: Option<&Path>) -> Result<Connection, Engi
     for statement in ddl(contract) {
         conn.execute_batch(&statement)?;
     }
+    validate_fns(contract, &conn)?;
     seed(contract, &mut conn)?;
     Ok(conn)
+}
+
+/// Validate every fn's SQL escape at load (§7.4), after DDL (tables must
+/// exist) and before seed replay (a broken fn fails before any data
+/// moves). `prepare` compiles without executing, so this checks syntax
+/// and table/column resolution; the statement's own metadata checks the
+/// placeholders (both directions) and the result columns against the
+/// declared return shape. Total derivation, extended into the escape.
+fn validate_fns(contract: &Contract, conn: &Connection) -> Result<(), EngineError> {
+    for f in &contract.fns {
+        let fail = |message: String| EngineError::Fn {
+            name: f.name.clone(),
+            message,
+        };
+
+        // exactly one statement: Batch skips comment/whitespace-only
+        // segments, so trailing `;` and comments are tolerated
+        let mut batch = rusqlite::Batch::new(conn, &f.sql);
+        let stmt = match batch.next() {
+            Err(e) => return Err(fail(format!("does not compile: {e}"))),
+            Ok(None) => return Err(fail("body contains no SQL statement".into())),
+            Ok(Some(stmt)) => stmt,
+        };
+
+        // placeholders, both directions: every SQL parameter is a declared
+        // param, every declared param appears in the SQL
+        let mut seen: Vec<String> = Vec::new();
+        for i in 1..=stmt.parameter_count() {
+            let Some(name) = stmt.parameter_name(i) else {
+                return Err(fail(
+                    "positional parameters are not allowed; use `:param`".into(),
+                ));
+            };
+            let Some(bare) = name.strip_prefix(':') else {
+                return Err(fail(format!(
+                    "parameter `{name}` must use the `:param` form"
+                )));
+            };
+            if f.params.iter().all(|p| p.name != bare) {
+                return Err(fail(format!(
+                    "the SQL names `{name}`, which is not a parameter of this fn"
+                )));
+            }
+            seen.push(bare.to_string());
+        }
+        for p in &f.params {
+            if !seen.contains(&p.name) {
+                return Err(fail(format!(
+                    "parameter `{}` is declared but never used in the SQL",
+                    p.name
+                )));
+            }
+        }
+
+        // result columns must equal the declared shape's fields, by name —
+        // known at prepare time for SELECT and RETURNING alike. An empty
+        // column set also rejects DML without RETURNING: every fn returns
+        // rows.
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        if columns.is_empty() {
+            return Err(fail(format!(
+                "the SQL returns no columns, but the fn returns `{}` (DML needs RETURNING)",
+                f.returns.of
+            )));
+        }
+        let mut dedup = columns.clone();
+        dedup.sort();
+        dedup.dedup();
+        if dedup.len() != columns.len() {
+            return Err(fail(
+                "the SQL returns duplicate column names; row mapping is by name".into(),
+            ));
+        }
+        let declared = contract
+            .output_fields(&f.returns.of)
+            .expect("checked: fn return shape exists");
+        let missing: Vec<&str> = declared
+            .iter()
+            .map(|(n, _, _)| *n)
+            .filter(|n| !columns.iter().any(|c| c == n))
+            .collect();
+        let extra: Vec<&String> = columns
+            .iter()
+            .filter(|c| !declared.iter().any(|(n, _, _)| n == &c.as_str()))
+            .collect();
+        if !missing.is_empty() || !extra.is_empty() {
+            return Err(fail(format!(
+                "the SQL's columns do not match `{}` (missing: [{}], extra: [{}])",
+                f.returns.of,
+                missing.join(", "),
+                extra
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )));
+        }
+        drop(stmt);
+
+        // a second statement is a body error
+        match batch.next() {
+            Ok(None) => {}
+            Ok(Some(_)) => {
+                return Err(fail("body must be a single SQL statement".into()));
+            }
+            Err(e) => return Err(fail(format!("does not compile: {e}"))),
+        }
+    }
+    Ok(())
 }
 
 /// Replay the seed (§7.3) through the same write path as the dev surface.
@@ -103,4 +215,81 @@ fn seed(contract: &Contract, conn: &mut Connection) -> Result<(), EngineError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE: &str = "table user { key id: uuid = auto\n username: text unique }\n";
+
+    fn open_err(fn_src: &str) -> String {
+        let contract = spock_lang::compile(&format!("{BASE}{fn_src}")).expect("compiles");
+        match open(&contract, None) {
+            Ok(_) => panic!("expected a load failure for: {fn_src}"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    fn open_ok(fn_src: &str) {
+        let contract = spock_lang::compile(&format!("{BASE}{fn_src}")).expect("compiles");
+        open(&contract, None).expect("loads");
+    }
+
+    #[test]
+    fn valid_fn_bodies_load() {
+        open_ok("fn find(username: text) -> user? { sql(\"SELECT * FROM user WHERE username = :username\") }");
+        // trailing semicolon and comment are tolerated (Batch skips them)
+        open_ok("fn find(username: text) -> user? { sql(\"SELECT * FROM user WHERE username = :username; -- done\") }");
+        // DML with RETURNING *
+        open_ok("fn rename(user: user, username: text) -> user ! user_username_taken { sql(\"UPDATE user SET username = :username WHERE id = :user RETURNING *\") }");
+        // a CTE is one statement
+        open_ok("fn all() -> [user] { sql(\"WITH x AS (SELECT * FROM user) SELECT * FROM x\") }");
+    }
+
+    #[test]
+    fn fn_sql_failures_gate_the_load() {
+        // syntax error surfaces SQLite's own message
+        assert!(open_err("fn f() -> user { sql(\"SELEC *\") }").contains("does not compile"));
+        // unknown column resolves at prepare
+        assert!(open_err("fn f() -> user { sql(\"SELECT * FROM user WHERE ghost = 1\") }")
+            .contains("does not compile"));
+        // exactly one statement
+        assert!(
+            open_err("fn f() -> user { sql(\"SELECT * FROM user; SELECT * FROM user\") }")
+                .contains("single SQL statement")
+        );
+        // empty and comment-only bodies
+        assert!(open_err("fn f() -> user { sql(\"\") }").contains("no SQL statement"));
+        assert!(open_err("fn f() -> user { sql(\"-- nothing\") }").contains("no SQL statement"));
+        // placeholder spellings: bare `?` is nameless (→ positional error);
+        // `?1` and `@a` carry their spelling as the name (→ :param error)
+        assert!(
+            open_err("fn f(a: int) -> user { sql(\"SELECT * FROM user LIMIT ?\") }")
+                .contains("positional")
+        );
+        assert!(
+            open_err("fn f(a: int) -> user { sql(\"SELECT * FROM user LIMIT ?1\") }")
+                .contains(":param")
+        );
+        assert!(open_err("fn f(a: int) -> user { sql(\"SELECT * FROM user LIMIT @a\") }")
+            .contains(":param"));
+        // both directions of the placeholder check
+        assert!(
+            open_err("fn f() -> user { sql(\"SELECT * FROM user WHERE id = :ghost\") }")
+                .contains("not a parameter")
+        );
+        assert!(open_err("fn f(a: int) -> user { sql(\"SELECT * FROM user\") }")
+            .contains("never used"));
+        // column set-equality, duplicates, and DML-without-RETURNING
+        assert!(open_err("fn f() -> user { sql(\"SELECT id FROM user\") }").contains("do not match"));
+        assert!(
+            open_err("fn f() -> user { sql(\"SELECT id AS username, username FROM user\") }")
+                .contains("duplicate column")
+        );
+        assert!(open_err(
+            "fn f(username: text) -> user { sql(\"UPDATE user SET username = :username\") }"
+        )
+        .contains("RETURNING"));
+    }
 }
