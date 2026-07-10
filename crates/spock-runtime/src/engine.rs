@@ -125,6 +125,25 @@ fn validate_fns(contract: &Contract, conn: &Connection) -> Result<(), EngineErro
                 f.returns.of
             )));
         }
+        // a scalar return is one column, any name — there is no shape to
+        // match against
+        if f.returns.scalar {
+            if columns.len() != 1 {
+                return Err(fail(format!(
+                    "the SQL returns {} columns, but the fn returns the scalar `{}` (exactly one column)",
+                    columns.len(),
+                    f.returns.of
+                )));
+            }
+            drop(stmt);
+            match batch.next() {
+                Ok(None) => continue,
+                Ok(Some(_)) => {
+                    return Err(fail("body must be a single SQL statement".into()));
+                }
+                Err(e) => return Err(fail(format!("does not compile: {e}"))),
+            }
+        }
         let mut dedup = columns.clone();
         dedup.sort();
         dedup.dedup();
@@ -330,6 +349,10 @@ mod tests {
         );
         assert!(open_err("fn f(a: int) -> user { unchecked sql(\"SELECT * FROM user\") }")
             .contains("never used"));
+        // a scalar return is exactly one column, any name
+        assert!(open_err("fn f() -> int { unchecked sql(\"SELECT 1, 2\") }")
+            .contains("exactly one column"));
+        open_ok("fn f() -> int { unchecked sql(\"SELECT count(*) FROM user\") }");
         // column set-equality, duplicates, and DML-without-RETURNING
         assert!(open_err("fn f() -> user { unchecked sql(\"SELECT id FROM user\") }").contains("do not match"));
         assert!(

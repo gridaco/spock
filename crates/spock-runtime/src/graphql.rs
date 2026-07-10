@@ -948,10 +948,18 @@ fn delete_by_pk_field(contract: &Contract, table: &Table) -> Field {
 /// error codes.
 fn fn_field(contract: &Contract, f: &FnDef) -> Field {
     let fn_name = f.name.clone();
+    let target = match f.returns.scalar_type() {
+        Some(ty) => scalar_name(contract, &ty).to_string(),
+        None => f.returns.of.clone(),
+    };
     let ret = match f.returns.arity {
-        FnArity::One => TypeRef::named_nn(f.returns.of.clone()),
-        FnArity::Maybe => TypeRef::named(f.returns.of.clone()),
-        FnArity::Many => TypeRef::named_nn_list_nn(f.returns.of.clone()),
+        FnArity::One => TypeRef::named_nn(target),
+        FnArity::Maybe => TypeRef::named(target),
+        FnArity::Many => TypeRef::named_nn_list_nn(target),
+    };
+    // a scalar result is a GraphQL leaf: a value, not a resolvable row
+    let leaf = |v: Json| -> async_graphql::Result<FieldValue<'static>> {
+        Ok(FieldValue::value(GqlValue::from_json(v).map_err(gql)?))
     };
     let mut field = Field::new(f.name.clone(), ret, move |ctx| {
         let fn_name = fn_name.clone();
@@ -975,20 +983,28 @@ fn fn_field(contract: &Contract, f: &FnDef) -> Field {
                 let mut db = app.db.lock().map_err(|_| gql("db lock poisoned"))?;
                 func::call(contract, f, &mut db, &args).map_err(api_error_to_gql)?
             };
+            let scalar = f.returns.scalar;
+            let wrap = |v: Json| -> async_graphql::Result<FieldValue<'static>> {
+                if scalar { leaf(v) } else { Ok(FieldValue::owned_any(v)) }
+            };
             Ok(match f.returns.arity {
-                FnArity::One => Some(FieldValue::owned_any(result)),
+                FnArity::One => Some(wrap(result)?),
                 FnArity::Maybe => {
                     if result.is_null() {
                         None
                     } else {
-                        Some(FieldValue::owned_any(result))
+                        Some(wrap(result)?)
                     }
                 }
                 FnArity::Many => {
                     let Json::Array(rows) = result else {
                         return Err(gql("fn execution drift: expected rows"));
                     };
-                    Some(FieldValue::list(rows.into_iter().map(FieldValue::owned_any)))
+                    Some(FieldValue::list(
+                        rows.into_iter()
+                            .map(wrap)
+                            .collect::<async_graphql::Result<Vec<_>>>()?,
+                    ))
                 }
             })
         })

@@ -252,10 +252,15 @@ pub fn typescript(contract: &Contract) -> Result<String, TsGenError> {
     } else {
         out.push_str("  fns: {\n");
         for f in &contract.fns {
+            // scalars render as their TS value type, shapes as interfaces
+            let target = match f.returns.scalar_type() {
+                Some(ty) => value_ts(contract, &ty),
+                None => f.returns.of.clone(),
+            };
             let returns = match f.returns.arity {
-                FnArity::One => f.returns.of.clone(),
-                FnArity::Maybe => format!("{} | null", f.returns.of),
-                FnArity::Many => format!("{}[]", f.returns.of),
+                FnArity::One => target,
+                FnArity::Maybe => format!("{target} | null"),
+                FnArity::Many => format!("{target}[]"),
             };
             let error = if f.errors.is_empty() {
                 "never".to_string()
@@ -565,7 +570,9 @@ export interface contract {
              record stats { posts: int\n latest: timestamp? }\n\
              fn rename_user(user: user, name: text, note: text?) -> user ! user_username_taken { unchecked sql(\"S\") }\n\
              fn find_user(name: text) -> user? { unchecked sql(\"S\") }\n\
-             fn tally() -> [stats] { unchecked sql(\"S\") }",
+             fn tally() -> [stats] { unchecked sql(\"S\") }\n\
+             fn user_count() -> int { unchecked sql(\"S\") }\n\
+             fn last_seen() -> timestamp? { unchecked sql(\"S\") }",
         )
         .unwrap();
         // record interface
@@ -581,6 +588,15 @@ export interface contract {
         );
         assert!(
             ts.contains("    find_user: { args: find_user_args; returns: user | null; error: never };"),
+            "{ts}"
+        );
+        // scalar returns render as TS value types, not interface names
+        assert!(
+            ts.contains("    user_count: { args: user_count_args; returns: number; error: never };"),
+            "{ts}"
+        );
+        assert!(
+            ts.contains("    last_seen: { args: last_seen_args; returns: timestamp | null; error: never };"),
             "{ts}"
         );
         assert!(

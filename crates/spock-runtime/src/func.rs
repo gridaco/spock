@@ -55,9 +55,14 @@ pub fn call(
             .prepare(&f.sql)
             .map_err(|e| map_fn_engine_error(contract, e))?;
         let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
-        let declared = contract
-            .output_fields(&f.returns.of)
-            .ok_or_else(|| ApiError::internal("contract drift: fn return shape"))?;
+        // scalar returns map column 0 as a bare value; shapes map by name
+        let scalar_ty = f.returns.scalar_type();
+        let declared = match &scalar_ty {
+            Some(_) => Vec::new(),
+            None => contract
+                .output_fields(&f.returns.of)
+                .ok_or_else(|| ApiError::internal("contract drift: fn return shape"))?,
+        };
         let params: Vec<(&str, &dyn ToSql)> = binds
             .iter()
             .map(|(n, v)| (n.as_str(), v as &dyn ToSql))
@@ -67,6 +72,13 @@ pub fn call(
             .map_err(|e| map_fn_engine_error(contract, e))?;
         let mut out = Vec::new();
         while let Some(row) = rows.next().map_err(|e| map_fn_engine_error(contract, e))? {
+            if let Some(ty) = &scalar_ty {
+                let value = row
+                    .get_ref(0)
+                    .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
+                out.push(sql_to_json_scalar(ty, value));
+                continue;
+            }
             let mut obj = Map::new();
             for (i, col) in columns.iter().enumerate() {
                 let (_, ty, _) = declared
@@ -169,6 +181,18 @@ fn double(f: float) -> ratio {
   unchecked sql("SELECT :f * 2.0 AS value")
 }
 
+fn user_count() -> int {
+  unchecked sql("SELECT count(*) FROM user")
+}
+
+fn bio_of(username: text) -> text? {
+  unchecked sql("SELECT bio FROM user WHERE username = :username")
+}
+
+fn usernames() -> [text] {
+  unchecked sql("SELECT username FROM user ORDER BY username")
+}
+
 seed {
   maya = user { username: "maya", bio: "photographer" }
   luis = user { username: "luis" }
@@ -220,6 +244,27 @@ seed {
         // a whole JSON number is a legal float argument
         let row = call(&contract, f, &mut conn, &args(&[("f", 2.into())])).unwrap();
         assert_eq!(row["value"], 4.0);
+    }
+
+    #[test]
+    fn scalar_returns() {
+        let (contract, mut conn) = setup();
+        // -> int: a bare JSON number, no wrapper shape
+        let f = contract.fn_def("user_count").unwrap();
+        assert_eq!(call(&contract, f, &mut conn, &Map::new()).unwrap(), 2);
+        // -> text?: a value... (bio is a nullable column: a stored NULL and
+        // a missing row both surface as null)
+        let f = contract.fn_def("bio_of").unwrap();
+        let hit = call(&contract, f, &mut conn, &args(&[("username", "maya".into())])).unwrap();
+        assert_eq!(hit, "photographer");
+        let none = call(&contract, f, &mut conn, &args(&[("username", "luis".into())])).unwrap();
+        assert!(none.is_null());
+        let miss = call(&contract, f, &mut conn, &args(&[("username", "ghost".into())])).unwrap();
+        assert!(miss.is_null());
+        // -> [text]: bare values in order
+        let f = contract.fn_def("usernames").unwrap();
+        let rows = call(&contract, f, &mut conn, &Map::new()).unwrap();
+        assert_eq!(rows, serde_json::json!(["luis", "maya"]));
     }
 
     #[test]

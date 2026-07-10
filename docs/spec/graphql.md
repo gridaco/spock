@@ -160,6 +160,9 @@ marker):
   is `t` (miss = `null`), `-> [t]` is `[t!]!` — **uncapped**: the author
   owns `LIMIT` (a companion to D2, not a deviation from Hasura — the
   page cap governs derived lists, not authored SQL).
+- A **scalar return** maps to the builtin's GraphQL scalar under the
+  same arity scheme: `-> int` is `Int!`, `-> timestamp?` is `timestamp`,
+  `-> [text]` is `[String!]!`. The field is a leaf — no selection set.
 - `record` shapes register as object types under the §3 naming laws
   (bare name only; records derive no support types).
 - The field description carries the declared error codes (`! a | b`) —

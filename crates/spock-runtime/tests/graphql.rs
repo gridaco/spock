@@ -61,6 +61,14 @@ fn recent_posts(n: int) -> [post] {
   unchecked sql("""SELECT * FROM post ORDER BY published_at DESC LIMIT :n""")
 }
 
+fn post_count(author: user) -> int {
+  unchecked sql("""SELECT count(*) FROM post WHERE author = :author""")
+}
+
+fn captions() -> [text] {
+  unchecked sql("""SELECT caption FROM post ORDER BY caption""")
+}
+
 seed {
   maya = user { username: "maya", bio: "photographer" }
   luis = user { username: "luis", invited_by: maya }
@@ -335,6 +343,19 @@ async fn the_graphql_fns() {
     let resp = gql(&base, "mutation { recent_posts(n: 1) { caption } }", Value::Null).await;
     assert_no_errors(&resp);
     assert_eq!(resp["data"]["recent_posts"].as_array().unwrap().len(), 1);
+
+    // -- scalar returns: GraphQL leaves, no selection set ----------------------
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ post_count(author: "{maya_id}") }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["post_count"], 2);
+    let resp = gql(&base, "mutation { captions }", Value::Null).await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["captions"], json!(["first light", "golden hour"]));
 
     // -- one arity: the write returns the row ---------------------------------
     let resp = gql(

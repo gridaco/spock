@@ -146,13 +146,21 @@ pub struct ParamDecl {
     pub span: Span,
 }
 
-/// A fn return: `t`, `t?`, or `[t]` where the name resolves to a table
-/// or record.
+/// A fn return: `t`, `t?`, or `[t]` where `t` is a table or record name,
+/// or a builtin scalar type (`int`, `text`, …).
 #[derive(Clone, Debug)]
 pub struct RetDecl {
     pub arity: RetArity,
-    pub name: Ident,
+    pub target: RetTarget,
     pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum RetTarget {
+    /// A table or record name, resolved by the checker (E037).
+    Named(Ident),
+    /// A builtin scalar; the kind is never `Named` here.
+    Scalar(TypeExprKind, Span),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

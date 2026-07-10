@@ -154,8 +154,38 @@ pub struct FnParam {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FnReturn {
     pub arity: FnArity,
-    /// A table or record name.
+    /// A table or record name — or, when `scalar` is set, a builtin
+    /// scalar type name (`"int"`, `"text"`, …).
     pub of: String,
+    /// True for scalar returns (`-> int`). Additive under `spock: "v0"` —
+    /// `default` keeps pre-scalar contract JSON deserializable.
+    #[serde(default)]
+    pub scalar: bool,
+}
+
+impl FnReturn {
+    /// The scalar type of a `scalar` return, `None` for shape returns.
+    pub fn scalar_type(&self) -> Option<Type> {
+        if !self.scalar {
+            return None;
+        }
+        builtin_scalar(&self.of)
+    }
+}
+
+/// Resolve a builtin scalar type name (as `FnReturn::of` carries it).
+/// Type keywords can never name a table or record, so the namespace is
+/// collision-free.
+pub fn builtin_scalar(name: &str) -> Option<Type> {
+    Some(match name {
+        "text" => Type::Text,
+        "int" => Type::Int,
+        "float" => Type::Float,
+        "bool" => Type::Bool,
+        "timestamp" => Type::Timestamp,
+        "uuid" => Type::Uuid,
+        _ => return None,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,6 +406,7 @@ mod tests {
                 returns: FnReturn {
                     arity: FnArity::One,
                     of: "user".into(),
+                    scalar: false,
                 },
                 errors: vec!["user_username_taken".into()],
                 sql: "UPDATE user SET username = :name WHERE id = :user RETURNING *".into(),

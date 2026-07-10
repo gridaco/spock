@@ -235,35 +235,57 @@ impl Parser {
         })
     }
 
-    // ret = "[" ident "]" | ident ["?"]  — a table or record name; scalar
-    // returns are a v0 restriction (§9), so builtin type keywords are
-    // rejected here with the name expectation
+    // ret = "[" ret_target "]" | ret_target ["?"] — a table or record
+    // name, or a builtin scalar type
     fn ret_decl(&mut self) -> Result<RetDecl, Diagnostic> {
         if self.peek().kind == TokenKind::LBracket {
             let start = self.bump().span;
-            let name = self.ident("a table or record name")?;
+            let target = self.ret_target()?;
             let end = self.expect(TokenKind::RBracket, "`]`")?.span;
             return Ok(RetDecl {
                 arity: RetArity::Many,
-                name,
+                target,
                 span: start.to(end),
             });
         }
-        let name = self.ident("a table or record name")?;
-        let start = name.span;
+        let target = self.ret_target()?;
+        let start = match &target {
+            RetTarget::Named(ident) => ident.span,
+            RetTarget::Scalar(_, span) => *span,
+        };
         if self.peek().kind == TokenKind::Question {
             let end = self.bump().span;
             return Ok(RetDecl {
                 arity: RetArity::Maybe,
-                name,
+                target,
                 span: start.to(end),
             });
         }
         Ok(RetDecl {
             arity: RetArity::One,
             span: start,
-            name,
+            target,
         })
+    }
+
+    fn ret_target(&mut self) -> Result<RetTarget, Diagnostic> {
+        let tok = self.peek().clone();
+        let scalar = match &tok.kind {
+            TokenKind::KwText => Some(TypeExprKind::Text),
+            TokenKind::KwInt => Some(TypeExprKind::Int),
+            TokenKind::KwFloat => Some(TypeExprKind::Float),
+            TokenKind::KwBool => Some(TypeExprKind::Bool),
+            TokenKind::KwTimestamp => Some(TypeExprKind::Timestamp),
+            TokenKind::KwUuid => Some(TypeExprKind::Uuid),
+            _ => None,
+        };
+        if let Some(kind) = scalar {
+            self.bump();
+            return Ok(RetTarget::Scalar(kind, tok.span));
+        }
+        Ok(RetTarget::Named(
+            self.ident("a type, table, or record name")?,
+        ))
     }
 
     fn table_item(&mut self) -> Result<TableItem, Diagnostic> {
@@ -623,7 +645,7 @@ mod tests {
         assert!(!f.params[1].optional);
         assert!(f.params[2].optional);
         assert_eq!(f.ret.arity, RetArity::One);
-        assert_eq!(f.ret.name.name, "user");
+        assert!(matches!(&f.ret.target, RetTarget::Named(n) if n.name == "user"));
         assert_eq!(f.errors.len(), 2);
         assert_eq!(f.errors[1].name, "not_found");
         assert!(f.sql.contains("RETURNING *"));
@@ -639,7 +661,7 @@ mod tests {
         );
         assert_eq!(file.fns[0].ret.arity, RetArity::Maybe);
         assert_eq!(file.fns[1].ret.arity, RetArity::Many);
-        assert_eq!(file.fns[1].ret.name.name, "post");
+        assert!(matches!(&file.fns[1].ret.target, RetTarget::Named(n) if n.name == "post"));
         assert!(file.fns[2].params.is_empty());
         assert!(file.fns[2].errors.is_empty());
         assert_eq!(file.fns[3].params.len(), 1); // trailing comma
@@ -666,12 +688,32 @@ mod tests {
     }
 
     #[test]
+    fn parses_scalar_returns() {
+        let file = parse_ok(
+            "fn count() -> int { unchecked sql(\"x\") }\n\
+             fn latest() -> timestamp? { unchecked sql(\"x\") }\n\
+             fn names() -> [text] { unchecked sql(\"x\") }",
+        );
+        assert!(matches!(
+            &file.fns[0].ret.target,
+            RetTarget::Scalar(TypeExprKind::Int, _)
+        ));
+        assert_eq!(file.fns[1].ret.arity, RetArity::Maybe);
+        assert!(matches!(
+            &file.fns[1].ret.target,
+            RetTarget::Scalar(TypeExprKind::Timestamp, _)
+        ));
+        assert_eq!(file.fns[2].ret.arity, RetArity::Many);
+        assert!(matches!(
+            &file.fns[2].ret.target,
+            RetTarget::Scalar(TypeExprKind::Text, _)
+        ));
+    }
+
+    #[test]
     fn rejects_malformed_fns() {
         // missing arrow
         assert_eq!(parse_err("fn f() user { unchecked sql(\"x\") }").code, "L010");
-        // builtin scalar as return type
-        let d = parse_err("fn f() -> text { unchecked sql(\"x\") }");
-        assert!(d.message.contains("table or record name"), "{}", d.message);
         // body must open with the marker
         let d = parse_err("fn f() -> t { nosql(\"x\") }");
         assert!(d.message.contains("expected `unchecked`"), "{}", d.message);

@@ -299,15 +299,32 @@ impl Checker {
                 });
             }
 
-            let of = decl.ret.name.name.as_str();
-            if !table_names.contains(of) && !record_names.contains(of) {
-                self.error(
-                    "E037",
-                    format!("fn `{fname}` returns unknown shape `{of}` (not a declared table or record)"),
-                    decl.ret.name.span,
-                );
-                continue;
-            }
+            let (of, scalar) = match &decl.ret.target {
+                ast::RetTarget::Named(ident) => {
+                    let of = ident.name.as_str();
+                    if !table_names.contains(of) && !record_names.contains(of) {
+                        self.error(
+                            "E037",
+                            format!("fn `{fname}` returns unknown shape `{of}` (not a builtin scalar, declared table, or record)"),
+                            ident.span,
+                        );
+                        continue;
+                    }
+                    (of.to_string(), false)
+                }
+                ast::RetTarget::Scalar(kind, _) => {
+                    let name = match kind {
+                        ast::TypeExprKind::Text => "text",
+                        ast::TypeExprKind::Int => "int",
+                        ast::TypeExprKind::Float => "float",
+                        ast::TypeExprKind::Bool => "bool",
+                        ast::TypeExprKind::Timestamp => "timestamp",
+                        ast::TypeExprKind::Uuid => "uuid",
+                        ast::TypeExprKind::Named(_) => unreachable!("parser never scalars a name"),
+                    };
+                    (name.to_string(), true)
+                }
+            };
 
             let mut errors: Vec<String> = Vec::new();
             for code in &decl.errors {
@@ -339,7 +356,8 @@ impl Checker {
                         ast::RetArity::Maybe => FnArity::Maybe,
                         ast::RetArity::Many => FnArity::Many,
                     },
-                    of: of.to_string(),
+                    of,
+                    scalar,
                 },
                 errors,
                 sql: decl.sql.clone(),
