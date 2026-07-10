@@ -250,12 +250,14 @@ impl Checker {
         };
 
         let is_ref = matches!(ty, Type::Ref { .. });
-        if f.on_delete.is_some() && !is_ref {
-            self.error(
-                "E015",
-                format!("`on delete` on `{}`, which is not a reference", f.name.name),
-                f.on_delete.as_ref().unwrap().span,
-            );
+        if let Some(clause) = &f.on_delete {
+            if !is_ref {
+                self.error(
+                    "E015",
+                    format!("`on delete` on `{}`, which is not a reference", f.name.name),
+                    clause.span,
+                );
+            }
         }
 
         let default = match &f.default {

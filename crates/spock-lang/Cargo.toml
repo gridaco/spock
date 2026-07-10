@@ -3,6 +3,7 @@ name = "spock-lang"
 description = "The Spock v0 language: lexer, parser, checker, contract IR, SQLite DDL"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
