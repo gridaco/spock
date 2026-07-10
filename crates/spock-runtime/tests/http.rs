@@ -122,7 +122,7 @@ async fn the_whole_protocol() {
     assert!(user_errors.contains(&"user_restricted"));
 
     // -- open reads: the seed is visible --------------------------------
-    let (status, users) = get(&base, "/user").await;
+    let (status, users) = get(&base, "/rest/v1/user").await;
     assert_eq!(status, 200);
     let rows = users["rows"].as_array().unwrap();
     assert_eq!(rows.len(), 2);
@@ -137,37 +137,40 @@ async fn the_whole_protocol() {
     assert!(maya["joined_at"].as_str().unwrap().contains('T'));
 
     // ref integrity across the seed: the post's author is maya's uuid
-    let (_, posts) = get(&base, "/post").await;
+    let (_, posts) = get(&base, "/rest/v1/post").await;
     assert_eq!(posts["rows"][0]["author"], json!(maya_id));
 
     // by-key read
-    let (status, one) = get(&base, &format!("/user/{maya_id}")).await;
+    let (status, one) = get(&base, &format!("/rest/v1/user/{maya_id}")).await;
     assert_eq!(status, 200);
     assert_eq!(one["username"], "maya");
 
     // -- 404s ------------------------------------------------------------
-    let (status, body) = get(&base, "/nonexistent").await;
+    let (status, body) = get(&base, "/rest/v1/nonexistent").await;
     assert_eq!((status, error_code(&body)), (404, "not_found"));
-    let missing = uuid::Uuid::now_v7();
-    let (status, _) = get(&base, &format!("/user/{missing}")).await;
+    // tables are NOT served at root: the root namespace is protocol-owned
+    let (status, _) = get(&base, "/user").await;
     assert_eq!(status, 404);
-    let (status, _) = get(&base, "/user/not-even-a-uuid").await;
+    let missing = uuid::Uuid::now_v7();
+    let (status, _) = get(&base, &format!("/rest/v1/user/{missing}")).await;
+    assert_eq!(status, 404);
+    let (status, _) = get(&base, "/rest/v1/user/not-even-a-uuid").await;
     assert_eq!(status, 404);
 
     // composite-key table is listable but not key-addressable (§8)
-    let (status, follows) = get(&base, "/follow").await;
+    let (status, follows) = get(&base, "/rest/v1/follow").await;
     assert_eq!(status, 200);
     assert_eq!(follows["rows"].as_array().unwrap().len(), 1);
-    let (status, body) = get(&base, "/follow/whatever").await;
+    let (status, body) = get(&base, "/rest/v1/follow/whatever").await;
     assert_eq!((status, error_code(&body)), (400, "bad_request"));
 
     // -- limit cap (§8): protocol default, not per-table syntax ----------
-    let (status, body) = get(&base, "/user?limit=1").await;
+    let (status, body) = get(&base, "/rest/v1/user?limit=1").await;
     assert_eq!(status, 200);
     assert_eq!(body["rows"].as_array().unwrap().len(), 1);
-    let (status, _) = get(&base, "/user?limit=99999").await; // clamped, not an error
+    let (status, _) = get(&base, "/rest/v1/user?limit=99999").await; // clamped, not an error
     assert_eq!(status, 200);
-    let (status, body) = get(&base, "/user?limit=abc").await;
+    let (status, body) = get(&base, "/rest/v1/user?limit=abc").await;
     assert_eq!((status, error_code(&body)), (400, "bad_request"));
 
     // -- dev-surface writes: the happy path ------------------------------
@@ -202,7 +205,7 @@ async fn the_whole_protocol() {
     assert_eq!((status, error_code(&body)), (422, "post_author_not_found"));
 
     // -- derived error: composite key conflict (409) ----------------------
-    let (_, users) = get(&base, "/user").await;
+    let (_, users) = get(&base, "/rest/v1/user").await;
     let luis_id = users["rows"]
         .as_array()
         .unwrap()
@@ -238,7 +241,7 @@ async fn the_whole_protocol() {
     // -- delete: restrict blocks, then unblocks ---------------------------
     // vera has nothing pointing at her: deletable
     assert_eq!(delete(&base, &format!("/~dev/user/{vera_id}")).await, 204);
-    let (status, _) = get(&base, &format!("/user/{vera_id}")).await;
+    let (status, _) = get(&base, &format!("/rest/v1/user/{vera_id}")).await;
     assert_eq!(status, 404);
 
     // maya is restrict-referenced (post.author, follow.target): 409
@@ -254,10 +257,10 @@ async fn the_whole_protocol() {
     // -- delete: cascade flows -------------------------------------------
     // deleting the post cascades its comment (comment.post is cascade)
     let post_id = posts["rows"][0]["id"].as_str().unwrap().to_string();
-    let (_, comments) = get(&base, "/comment").await;
+    let (_, comments) = get(&base, "/rest/v1/comment").await;
     assert_eq!(comments["rows"].as_array().unwrap().len(), 1);
     assert_eq!(delete(&base, &format!("/~dev/post/{post_id}")).await, 204);
-    let (_, comments) = get(&base, "/comment").await;
+    let (_, comments) = get(&base, "/rest/v1/comment").await;
     assert_eq!(comments["rows"].as_array().unwrap().len(), 0);
 
     // idempotence of the check: deleting again is a 404

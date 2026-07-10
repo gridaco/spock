@@ -118,9 +118,9 @@ fn run(contract: Contract, port: u16, db: Option<PathBuf>) -> anyhow::Result<()>
     runtime.block_on(async move {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
         println!("listening on http://127.0.0.1:{port}");
-        println!("  GET  /~contract        the contract, as data");
-        println!("  GET  /{{table}}          open reads (identity view)");
-        println!("  POST /~dev/{{table}}     dev-surface insert");
+        println!("  GET  /~contract           the contract, as data");
+        println!("  GET  /rest/v1/{{table}}     open reads (identity view)");
+        println!("  POST /~dev/{{table}}        dev-surface insert");
         tokio::select! {
             result = spock_runtime::http::serve(app, listener) => result?,
             _ = tokio::signal::ctrl_c() => {}

@@ -1,6 +1,7 @@
-//! The HTTP protocol (docs/spec/v0.md §8). Plain HTTP + JSON; `~` is the
-//! meta surface; reads are the open surface in v0 degenerate form; writes
-//! exist only on the dev surface until `fn` lands.
+//! The HTTP protocol (docs/spec/v0.md §8). Plain HTTP + JSON. The root
+//! namespace is protocol-owned: `~` is the meta surface, `/rest/v1` carries
+//! the open reads (identity views, v0 degenerate form), `/graphql/v1` the
+//! GraphQL reads; writes exist only on the dev surface until `fn` lands.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,8 +29,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/~health", get(health))
         .route("/~dev/{table}", post(dev_insert))
         .route("/~dev/{table}/{id}", delete(dev_delete))
-        .route("/{table}", get(list_rows))
-        .route("/{table}/{id}", get(get_row))
+        .route("/rest/v1/{table}", get(list_rows))
+        .route("/rest/v1/{table}/{id}", get(get_row))
         .fallback(not_found)
         .with_state(app)
 }

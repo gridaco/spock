@@ -575,7 +575,7 @@ runtime, and the HTTP protocol:
 
 ```sh
 cargo run -p spock-cli -- run examples/instagram/v0.spock
-# GET /~contract · GET /{table} · POST /~dev/{table}
+# GET /~contract · GET /rest/v1/{table} · POST /graphql/v1 · POST /~dev/{table}
 ```
 
 The npm package metadata lives under `npm/` only to reserve the package name.
