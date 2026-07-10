@@ -6,10 +6,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use async_graphql::dynamic::Schema;
+use async_graphql::http::GraphiQLSource;
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use rusqlite::types::Value as SqlValue;
@@ -17,14 +19,19 @@ use serde_json::{json, Value as JsonValue};
 use spock_lang::ir::{Table, Type};
 
 use crate::error::ApiError;
+use crate::graphql::{self, SchemaBuildError};
 use crate::write;
 use crate::App;
 
 const DEFAULT_LIMIT: u32 = 50;
 const MAX_LIMIT: u32 = 200;
 
-pub fn router(app: Arc<App>) -> Router {
-    Router::new()
+pub fn router(app: Arc<App>) -> Result<Router, SchemaBuildError> {
+    let schema = graphql::schema(app.clone())?;
+    let gql = Router::new()
+        .route("/graphql/v1", get(graphiql).post(graphql_post))
+        .with_state(schema);
+    Ok(Router::new()
         .route("/~contract", get(contract))
         .route("/~health", get(health))
         .route("/~dev/{table}", post(dev_insert))
@@ -33,11 +40,34 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/rest/v1/{table}/{id}", get(get_row))
         .fallback(not_found)
         .with_state(app)
+        .merge(gql))
 }
 
 /// Serve the app on an already-bound listener until the task is stopped.
+/// A GraphQL schema-derivation failure (§8.2 naming laws) aborts startup.
 pub async fn serve(app: Arc<App>, listener: tokio::net::TcpListener) -> std::io::Result<()> {
-    axum::serve(listener, router(app)).await
+    let router = router(app).map_err(std::io::Error::other)?;
+    axum::serve(listener, router).await
+}
+
+// POST /graphql/v1 — execute a query (§8.2); errors render as GraphQL's own
+// `errors[]`, not the §8.1 envelope
+async fn graphql_post(
+    State(schema): State<Schema>,
+    Json(request): Json<async_graphql::Request>,
+) -> Json<async_graphql::Response> {
+    Json(schema.execute(request).await)
+}
+
+// GET /graphql/v1 — GraphiQL. Its JS/CSS load from a CDN: blank offline,
+// fine for a prototype.
+async fn graphiql() -> Html<String> {
+    Html(
+        GraphiQLSource::build()
+            .endpoint("/graphql/v1")
+            .title("spock")
+            .finish(),
+    )
 }
 
 async fn contract(State(app): State<Arc<App>>) -> Json<spock_lang::ir::Contract> {

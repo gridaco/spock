@@ -7,6 +7,7 @@
 
 pub mod engine;
 pub mod error;
+pub mod graphql;
 pub mod http;
 pub mod value;
 pub mod write;
