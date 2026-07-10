@@ -18,6 +18,15 @@ workaround (sayable, but the saying is evidence), **C** = confirmation
 (a v0 design dogfooding validated). Each ends with a v0.x disposition.
 Cross-references like v1-L1 point into `v1-FEEDBACK.md`.
 
+**Status.** The decision-free table-tier items shipped days after this
+review and the example now uses them — G4 (engine builtins + DDL
+defaults), G7's set-null half, G9 (scalar returns), G10 (float) are
+marked *taken* below, and W3 dissolved with G4 as predicted. G1 and the
+column-validation half of the story are deferred behind a deliberate
+design question — a `format` concept (SQL `DOMAIN`/CHECK family) that
+would subsume both; recorded in RFD 0009 §4. The fn-v2 items (G2, G3,
+G11) and everything else remain open.
+
 ---
 
 ## G — Gaps: what v0 has no way to say
@@ -96,6 +105,10 @@ carry v4 ids (`615a5ebe-…`) and millisecond timestamps.
 engine builtins (`spock_uuid()`, `spock_now()`) so a body borrows the
 engine's own generators. Cheap, and W3's precision drift dissolves
 with it.
+*Taken.* Both halves shipped (spec §7.1): the builtins are the write
+path's own generators, extracted and shared, and SQLite proved willing
+to call them from column DEFAULTs. The hand-rolled v4 is gone from the
+example; escape INSERTs simply omit defaulted columns.
 
 **G5 · Exactly-one-of.** `mention`, `report`, and `notification` target
 one of several kinds; v0 spells that as N optional refs and cannot say
@@ -128,6 +141,9 @@ somewhere.** v0 says `restrict` or `cascade`; the PRD needs more:
 → v0.x: `on delete set null` is a one-line DDL fact — take it now. Soft
 delete is doctrine — RFD alongside the filter work (a soft-deleted row
 is precisely a row every surface must filter).
+*Half taken.* `set null` shipped (optional refs only, E040):
+`comment.parent` now follows the PRD, and reports outlive their targets
+with nulled links. The soft-delete half stays an RFD.
 
 **G8 · Records are flat and scalar.** A post-detail page is three calls
 (`post` by pk, `post_media`, `post_comments`) because a record can't hold
@@ -147,12 +163,18 @@ position, L010 — and E037 is the checker error for a return *identifier*
 naming no declared table or record. Both paths close the door.)
 → v0.x: allow `-> int` / `-> text` / etc. Trivial grammar + arity
 extension; the REST/GraphQL mappings are obvious.
+*Taken.* Scalar returns shipped under the unchanged arity scheme (one
+result column, any name); `record unread` is deleted and
+`unread_count` returns a bare number.
 
 **G10 · No float.** `media_tag` positions are `x_pct/y_pct: int` because
 v0 has no floating-point type; the PRD's 0.0–1.0 tag placement is
 quantized to percent.
 → v0.x: add `float` (SQLite REAL). Small; the only real decision is the
 JSON/GraphQL mapping.
+*Taken.* `float` shipped (REAL / JSON number / GraphQL Float / TS
+number); tag placement is `x: float` 0.0–1.0 — though the *range* still
+has no home until the `format` question (RFD 0009 §4) is decided.
 
 **G11 · Twelve reads live on the Mutation root.** `home_feed`,
 `profile`, `search_profiles`, `post_engagement`, `post_media`,
@@ -261,6 +283,7 @@ millisecond precision and v4 ids. Timestamps stay mutually parseable and
 cursor comparisons are lexicographically sane at second granularity, but
 sub-second interleavings of engine- and fn-written rows can order
 inconsistently. Dissolves if G4's builtins land.
+*Dissolved.* G4 landed exactly so: one clock, one id mint, both paths.
 
 ---
 

@@ -145,3 +145,16 @@ with the rules, not the sequence:
 - **Filter dialect.** Recommendation: one predicate IR, two mirrored
   frontends (Hasura `bool_exp`, PostgREST operators) — doctrine applied,
   but it is contract surface, so it is recorded here until ratified.
+- **`format` — column formats as a language feature** (deferred July
+  2026, dogfood follow-up). A declared value-shape on a column — the SQL
+  `DOMAIN`/`CHECK` family: closed text sets (v0-FEEDBACK G1), length and
+  charset rules, ranges — would subsume the enum question and column
+  validation in one concept, extend the derived-error story (a format
+  violation names itself), and un-collapse many fn guard refusals for
+  free: a format violation is a real constraint violation, which the
+  cross-table error router already knows how to name. Needs real
+  research before it is shaped: SQL domains, refinement-type precedents,
+  how formats compose with `unique` and defaults, nominal (named,
+  reusable) vs structural (inline). Decision deliberately not made; the
+  decision-free table-tier items (`set null`, `float`, scalar returns,
+  escape-reachable defaults) shipped without waiting for it.

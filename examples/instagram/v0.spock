@@ -126,10 +126,9 @@ table like {
 table comment {
   key id: uuid = auto
   post: post on delete cascade
-  // the PRD wants deleted parents to not break replies — that is
-  // `set null` or soft delete, and v0 has neither (G7); cascade is the
-  // least-wrong option and deviates from the PRD
-  parent: comment? on delete cascade
+  // deleted parents do not break replies (the PRD's rule): the reply
+  // survives with its parent link nulled — G7's set-null half, taken
+  parent: comment? on delete set null
   author: user
   body: text
   status: text = "visible"     // "visible" | "held" (G1)
@@ -147,15 +146,14 @@ table mention {
   at: timestamp = now
 }
 
-// positions are per-mille-free ints because v0 has no float (G10);
 // unique(media, tagged) + removed_at means a removed tag can never be
 // re-applied — partial uniqueness again (G6)
 table media_tag {
   key id: uuid = auto
   media: media on delete cascade
   tagged: user
-  x_pct: int
-  y_pct: int
+  x: float                     // 0.0 – 1.0 placement; the range is unspoken (G1/format)
+  y: float
   at: timestamp = now
   removed_at: timestamp?
   unique (media, tagged)
@@ -209,13 +207,14 @@ table post_hashtag {
 
 // exactly one of post/comment/profile (G5); "no unbounded duplicates per
 // reporter and target" wants uniqueness over that one-of (G5, G6).
-// cascade erases the audit trail with the target — soft delete is the
-// real answer (G7)
+// set null keeps the report when its target dies — the audit trail
+// survives, though the link is gone; soft delete remains the full
+// answer (G7)
 table report {
   key id: uuid = auto
   reporter: user
-  post: post? on delete cascade
-  comment: comment? on delete cascade
+  post: post? on delete set null
+  comment: comment? on delete set null
   profile: user?
   reason: text
   status: text = "open"        // "open" | "reviewed" | "actioned" (G1)
@@ -261,8 +260,8 @@ fn rename_user(user: user, username: text) -> user ! user_username_taken | not_f
 // by its own guards instead of returned (W1)
 fn follow(follower: user, target: user) -> follow ! not_found {
   unchecked sql("""
-    INSERT INTO follow (follower, target, since)
-    SELECT :follower, :target, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    INSERT INTO follow (follower, target)
+    SELECT :follower, :target
     WHERE EXISTS (SELECT 1 FROM follow
                   WHERE follower = :follower AND target = :target)
        OR (:follower <> :target
@@ -291,8 +290,8 @@ fn unfollow(follower: user, target: user) -> follow? {
 // approved-but-not-following is this contract's permanent limbo
 fn request_follow(requester: user, target: user) -> follow_request ! not_found {
   unchecked sql("""
-    INSERT INTO follow_request (requester, target, status, requested_at)
-    SELECT :requester, :target, 'pending', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    INSERT INTO follow_request (requester, target)
+    SELECT :requester, :target
     WHERE :requester <> :target
       AND (SELECT private FROM user WHERE id = :target)
       AND NOT EXISTS (SELECT 1 FROM block
@@ -300,7 +299,7 @@ fn request_follow(requester: user, target: user) -> follow_request ! not_found {
                          OR (blocker = :requester AND blocked = :target))
     ON CONFLICT (requester, target) DO UPDATE SET
       status       = CASE follow_request.status WHEN 'denied' THEN 'pending' ELSE follow_request.status END,
-      requested_at = CASE follow_request.status WHEN 'denied' THEN excluded.requested_at ELSE follow_request.requested_at END,
+      requested_at = CASE follow_request.status WHEN 'denied' THEN spock_now() ELSE follow_request.requested_at END,
       responded_at = CASE follow_request.status WHEN 'denied' THEN NULL ELSE follow_request.responded_at END
     RETURNING *
   """)
@@ -316,7 +315,7 @@ fn approve_follow_request(requester: user, target: user) -> follow_request ! not
   unchecked sql("""
     UPDATE follow_request
     SET status = 'approved',
-        responded_at = coalesce(responded_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        responded_at = coalesce(responded_at, spock_now())
     WHERE requester = :requester AND target = :target
       AND status IN ('pending', 'approved')
     RETURNING *
@@ -327,7 +326,7 @@ fn deny_follow_request(requester: user, target: user) -> follow_request ! not_fo
   unchecked sql("""
     UPDATE follow_request
     SET status = 'denied',
-        responded_at = coalesce(responded_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        responded_at = coalesce(responded_at, spock_now())
     WHERE requester = :requester AND target = :target
       AND status IN ('pending', 'denied')
     RETURNING *
@@ -338,8 +337,8 @@ fn deny_follow_request(requester: user, target: user) -> follow_request ! not_fo
 // second statement, not sayable (G3)
 fn block_user(blocker: user, blocked: user) -> block ! not_found {
   unchecked sql("""
-    INSERT INTO block (blocker, blocked, at)
-    SELECT :blocker, :blocked, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    INSERT INTO block (blocker, blocked)
+    SELECT :blocker, :blocked
     WHERE :blocker <> :blocked
     ON CONFLICT (blocker, blocked) DO UPDATE SET at = at
     RETURNING *
@@ -356,8 +355,8 @@ fn unblock(blocker: user, blocked: user) -> block? {
 
 fn restrict_user(restricting: user, restricted: user) -> restriction ! not_found {
   unchecked sql("""
-    INSERT INTO restriction (restricting, restricted, at)
-    SELECT :restricting, :restricted, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    INSERT INTO restriction (restricting, restricted)
+    SELECT :restricting, :restricted
     WHERE :restricting <> :restricted
     ON CONFLICT (restricting, restricted) DO UPDATE SET at = at
     RETURNING *
@@ -384,8 +383,8 @@ fn unrestrict_user(restricting: user, restricted: user) -> restriction? {
 // block is refused rather than returned (the W1 wrinkle, unhandled).
 fn like_post(user: user, post: post) -> like ! not_found {
   unchecked sql("""
-    INSERT INTO "like" (post, user, at)
-    SELECT p.id, :user, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    INSERT INTO "like" (post, user)
+    SELECT p.id, :user
     FROM post p
     WHERE p.id = :post
       AND NOT EXISTS (SELECT 1 FROM block
@@ -410,8 +409,8 @@ fn unlike_post(user: user, post: post) -> like? {
 // same visibility guards as like_post: saving implies seeing
 fn save_post(user: user, post: post) -> save ! not_found {
   unchecked sql("""
-    INSERT INTO save (user, post, at)
-    SELECT :user, p.id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    INSERT INTO save (user, post)
+    SELECT :user, p.id
     FROM post p
     WHERE p.id = :post
       AND NOT EXISTS (SELECT 1 FROM block
@@ -439,22 +438,18 @@ fn unsave_post(user: user, post: post) -> save? {
 // trim() strips spaces only), length cap, reply stays on the same post,
 // no commenting across a block, private authors take comments only from
 // followers (self exempt); a comment from a restricted user lands held
-// instead of visible — one statement carries all of it (W2). The uuid is
-// hand-rolled because the table's own `= auto` cannot reach the escape
-// (G4). Mention parsing is not attempted (multi-table, multi-row — G3).
+// instead of visible — one statement carries all of it (W2). The id and
+// timestamp ride the table's own defaults (G4, taken: the DDL DEFAULT
+// calls the engine's mints). Mention parsing is not attempted
+// (multi-table, multi-row — G3).
 fn add_comment(author: user, post: post, body: text, parent: comment?) -> comment ! not_found {
   unchecked sql("""
-    INSERT INTO comment (id, post, author, parent, body, status, at)
+    INSERT INTO comment (post, author, parent, body, status)
     SELECT
-      lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2)))
-        || '-4' || substr(lower(hex(randomblob(2))), 2)
-        || '-' || substr('89ab', (abs(random()) % 4) + 1, 1) || substr(lower(hex(randomblob(2))), 2)
-        || '-' || lower(hex(randomblob(6))),
       p.id, :author, :parent, :body,
       CASE WHEN EXISTS (SELECT 1 FROM restriction
                         WHERE restricting = p.author AND restricted = :author)
-           THEN 'held' ELSE 'visible' END,
-      strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+           THEN 'held' ELSE 'visible' END
     FROM post p
     WHERE p.id = :post
       AND length(trim(:body, ' ' || char(9, 10, 13))) > 0
@@ -496,7 +491,7 @@ fn delete_comment(comment: comment, actor: user) -> comment? {
 fn remove_media_tag(tag: media_tag, actor: user) -> media_tag? {
   unchecked sql("""
     UPDATE media_tag
-    SET removed_at = coalesce(removed_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    SET removed_at = coalesce(removed_at, spock_now())
     WHERE id = :tag AND tagged = :actor
     RETURNING *
   """)
@@ -505,7 +500,7 @@ fn remove_media_tag(tag: media_tag, actor: user) -> media_tag? {
 fn archive_post(post: post, author: user) -> post? {
   unchecked sql("""
     UPDATE post
-    SET archived_at = coalesce(archived_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    SET archived_at = coalesce(archived_at, spock_now())
     WHERE id = :post AND author = :author
     RETURNING *
   """)
@@ -530,18 +525,12 @@ fn delete_post(post: post, author: user) -> post? {
   """)
 }
 
-// the same v4 hand-roll as add_comment — the disease spreads by
-// copy-paste (G4). "No unbounded duplicates per reporter and target"
-// stays unsaid (G5, G6)
+// id, status, and timestamp all ride their declared defaults (G4, taken).
+// "No unbounded duplicates per reporter and target" stays unsaid (G5, G6)
 fn report_post(reporter: user, post: post, reason: text) -> report {
   unchecked sql("""
-    INSERT INTO report (id, reporter, post, reason, status, at)
-    SELECT
-      lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2)))
-        || '-4' || substr(lower(hex(randomblob(2))), 2)
-        || '-' || substr('89ab', (abs(random()) % 4) + 1, 1) || substr(lower(hex(randomblob(2))), 2)
-        || '-' || lower(hex(randomblob(6))),
-      :reporter, :post, :reason, 'open', strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    INSERT INTO report (reporter, post, reason)
+    SELECT :reporter, :post, :reason
     WHERE length(trim(:reason, ' ' || char(9, 10, 13))) > 0
     RETURNING *
   """)
@@ -552,8 +541,8 @@ fn report_post(reporter: user, post: post, reason: text) -> report {
 // guard can enforce — until the floor writes around it (G13)
 fn add_to_collection(collection: collection, post: post, actor: user) -> collection_post ! not_found {
   unchecked sql("""
-    INSERT INTO collection_post (collection, post, at)
-    SELECT :collection, :post, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    INSERT INTO collection_post (collection, post)
+    SELECT :collection, :post
     WHERE (SELECT owner FROM collection WHERE id = :collection) = :actor
       AND EXISTS (SELECT 1 FROM save WHERE user = :actor AND post = :post)
     ON CONFLICT (collection, post) DO UPDATE SET at = at
@@ -573,7 +562,7 @@ fn remove_from_collection(collection: collection, post: post, actor: user) -> co
 fn mark_notifications_read(user: user) -> [notification] {
   unchecked sql("""
     UPDATE notification
-    SET read_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    SET read_at = spock_now()
     WHERE recipient = :user AND read_at IS NULL
     RETURNING *
   """)
@@ -621,10 +610,6 @@ record profile_card {
   followers: int
 }
 
-// one integer still needs a named wrapper shape (G9)
-record unread {
-  count: int
-}
 
 // followed authors plus own posts, newest first, cursor on published_at
 // with an id tiebreaker — rows tied exactly on a boundary timestamp can
@@ -782,9 +767,10 @@ fn notifications(user: user, before: timestamp?) -> [notification] {
   """)
 }
 
-fn unread_count(user: user) -> unread {
+// a bare number — the wrapper record this once needed is gone (G9, taken)
+fn unread_count(user: user) -> int {
   unchecked sql("""
-    SELECT count(*) AS count FROM notification
+    SELECT count(*) FROM notification
     WHERE recipient = :user AND read_at IS NULL
   """)
 }
@@ -843,8 +829,8 @@ seed {
 
   mention { profile: maya, comment: c2, display: "@maya" }
 
-  media_tag { media: m3, tagged: maya, x_pct: 50, y_pct: 40 }
-  media_tag { media: m3, tagged: vera, x_pct: 12, y_pct: 80,
+  media_tag { media: m3, tagged: maya, x: 0.5, y: 0.4 }
+  media_tag { media: m3, tagged: vera, x: 0.12, y: 0.8,
               at: "2026-07-09T08:00:00Z", removed_at: "2026-07-09T18:00:00Z" }
 
   save { user: vera, post: p1 }
