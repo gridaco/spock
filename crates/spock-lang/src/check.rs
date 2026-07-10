@@ -216,13 +216,7 @@ impl Checker {
             .iter()
             .flat_map(|t| t.errors.iter().map(|e| e.code.as_str()))
             .collect();
-        vocabulary.extend([
-            "not_found",
-            "type_mismatch",
-            "unknown_field",
-            "bad_request",
-            "internal",
-        ]);
+        vocabulary.extend(RESERVED_CODES);
         let record_names: HashSet<&str> = records.iter().map(|r| r.name.as_str()).collect();
 
         let mut names: HashMap<&str, Span> = HashMap::new();

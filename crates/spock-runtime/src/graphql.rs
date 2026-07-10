@@ -150,25 +150,14 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
     // named exactly like a table's root field fails startup like every
     // other claim collision.
     let mut claimed_roots: HashMap<String, String> = HashMap::new(); // field -> owner
-    {
-        let mut claim = |name: String, owner: String| -> Result<(), SchemaBuildError> {
-            if let Some(other) = claimed_roots.insert(name.clone(), owner.clone()) {
-                return Err(SchemaBuildError::DuplicateQueryField {
-                    a: other,
-                    b: owner,
-                    name,
-                });
-            }
-            Ok(())
-        };
-        for table in &contract.tables {
-            let owner = format!("table `{}`", table.name);
-            claim(table.name.clone(), owner.clone())?;
-            claim(format!("{}_by_pk", table.name), owner)?;
-        }
-        for f in contract.fns.iter().filter(|f| f.readonly) {
-            claim(f.name.clone(), format!("fn `{}`", f.name))?;
-        }
+    let dup_query: Collide = |a, b, name| SchemaBuildError::DuplicateQueryField { a, b, name };
+    for table in &contract.tables {
+        let owner = format!("table `{}`", table.name);
+        claim(&mut claimed_roots, table.name.clone(), owner.clone(), dup_query)?;
+        claim(&mut claimed_roots, format!("{}_by_pk", table.name), owner, dup_query)?;
+    }
+    for f in contract.fns.iter().filter(|f| f.readonly) {
+        claim(&mut claimed_roots, f.name.clone(), format!("fn `{}`", f.name), dup_query)?;
     }
 
     // Pass 1c — mutation-root field names. Derived CRUD names could once
@@ -176,28 +165,17 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
     // everything registered on the root is claimed — exactly what is
     // registered (a pure-key table claims no update).
     let mut claimed_mutations: HashMap<String, String> = HashMap::new(); // field -> owner
-    {
-        let mut claim = |name: String, owner: String| -> Result<(), SchemaBuildError> {
-            if let Some(other) = claimed_mutations.insert(name.clone(), owner.clone()) {
-                return Err(SchemaBuildError::DuplicateMutationField {
-                    a: other,
-                    b: owner,
-                    name,
-                });
-            }
-            Ok(())
-        };
-        for table in &contract.tables {
-            let owner = format!("table `{}`", table.name);
-            claim(format!("insert_{}_one", table.name), owner.clone())?;
-            if has_settable_fields(table) {
-                claim(format!("update_{}_by_pk", table.name), owner.clone())?;
-            }
-            claim(format!("delete_{}_by_pk", table.name), owner)?;
+    let dup_mutation: Collide = |a, b, name| SchemaBuildError::DuplicateMutationField { a, b, name };
+    for table in &contract.tables {
+        let owner = format!("table `{}`", table.name);
+        claim(&mut claimed_mutations, format!("insert_{}_one", table.name), owner.clone(), dup_mutation)?;
+        if has_settable_fields(table) {
+            claim(&mut claimed_mutations, format!("update_{}_by_pk", table.name), owner.clone(), dup_mutation)?;
         }
-        for f in contract.fns.iter().filter(|f| !f.readonly) {
-            claim(f.name.clone(), format!("fn `{}`", f.name))?;
-        }
+        claim(&mut claimed_mutations, format!("delete_{}_by_pk", table.name), owner, dup_mutation)?;
+    }
+    for f in contract.fns.iter().filter(|f| !f.readonly) {
+        claim(&mut claimed_mutations, f.name.clone(), format!("fn `{}`", f.name), dup_mutation)?;
     }
 
     // Pass 2 — object types (declared fields, forward refs, reverse
@@ -322,6 +300,24 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
 /// `update_<t>_by_pk` and its input types.
 fn has_settable_fields(table: &Table) -> bool {
     table.fields.iter().any(|f| !table.key.contains(&f.name))
+}
+
+/// A root's collision error, built from (prior owner, new owner, field).
+type Collide = fn(String, String, String) -> SchemaBuildError;
+
+/// Claim `name` for `owner` in a root's field namespace; a prior owner is
+/// a startup-fatal collision. One mechanism for every root (§8.2 naming
+/// laws) — the roots differ only in their error variant.
+fn claim(
+    map: &mut HashMap<String, String>,
+    name: String,
+    owner: String,
+    collide: Collide,
+) -> Result<(), SchemaBuildError> {
+    if let Some(other) = map.insert(name.clone(), owner.clone()) {
+        return Err(collide(other, owner, name));
+    }
+    Ok(())
 }
 
 /// GraphQL type for a scalar (non-ref) field, nullable iff optional.

@@ -209,6 +209,17 @@ impl FnReturn {
     }
 }
 
+/// The reserved non-derived error codes (§6.1) — protocol-owned, frozen
+/// for v0.x. The one home: the checker's `!`-clause vocabulary and the
+/// TS emission both read from here, so the set cannot drift per crate.
+pub const RESERVED_CODES: [&str; 5] = [
+    "not_found",
+    "type_mismatch",
+    "unknown_field",
+    "bad_request",
+    "internal",
+];
+
 /// Resolve a builtin scalar type name (as `FnReturn::of` carries it).
 /// Type keywords can never name a table or record, so the namespace is
 /// collision-free.

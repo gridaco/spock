@@ -125,13 +125,14 @@ fn validate_fns(contract: &Contract, conn: &Connection) -> Result<(), EngineErro
         let mut used: Vec<String> = Vec::new();
         let last_index = f.sql.len() - 1;
         for (index, sql) in f.sql.iter().enumerate() {
-            let at = |message: String| {
-                if last_index == 0 {
-                    fail(message)
-                } else {
-                    fail(format!("statement {}: {message}", index + 1))
-                }
+            // multi-statement bodies name their statement; the dominant
+            // single-statement case keeps its unprefixed message
+            let loc = if last_index == 0 {
+                String::new()
+            } else {
+                format!("statement {}: ", index + 1)
             };
+            let at = |message: String| fail(format!("{loc}{message}"));
 
             // exactly one statement per escape: Batch skips comment- and
             // whitespace-only segments, so trailing `;` and comments are
@@ -174,7 +175,7 @@ fn validate_fns(contract: &Contract, conn: &Connection) -> Result<(), EngineErro
             // only the final statement answers; its columns are the
             // contract's
             if index == last_index {
-                validate_return_columns(contract, f, &stmt, &at)?;
+                validate_return_columns(contract, f, &stmt).map_err(&at)?;
             }
             drop(stmt);
 
@@ -207,29 +208,29 @@ fn validate_fns(contract: &Contract, conn: &Connection) -> Result<(), EngineErro
 /// The final statement's result columns must equal the declared return
 /// shape's fields, by name — known at prepare time for SELECT and
 /// RETURNING alike. An empty column set also rejects DML without
-/// RETURNING: every fn answers with rows.
+/// RETURNING: every fn answers with rows. `Err` is the bare message; the
+/// caller adds the statement location.
 fn validate_return_columns(
     contract: &Contract,
     f: &spock_lang::ir::FnDef,
     stmt: &rusqlite::Statement<'_>,
-    at: &dyn Fn(String) -> EngineError,
-) -> Result<(), EngineError> {
+) -> Result<(), String> {
     let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
     if columns.is_empty() {
-        return Err(at(format!(
+        return Err(format!(
             "the SQL returns no columns, but the fn returns `{}` (DML needs RETURNING)",
             f.returns.of
-        )));
+        ));
     }
     // a scalar return is one column, any name — there is no shape to
     // match against
     if f.returns.scalar {
         if columns.len() != 1 {
-            return Err(at(format!(
+            return Err(format!(
                 "the SQL returns {} columns, but the fn returns the scalar `{}` (exactly one column)",
                 columns.len(),
                 f.returns.of
-            )));
+            ));
         }
         return Ok(());
     }
@@ -237,9 +238,7 @@ fn validate_return_columns(
     dedup.sort();
     dedup.dedup();
     if dedup.len() != columns.len() {
-        return Err(at(
-            "the SQL returns duplicate column names; row mapping is by name".into(),
-        ));
+        return Err("the SQL returns duplicate column names; row mapping is by name".into());
     }
     let declared = contract
         .output_fields(&f.returns.of)
@@ -254,7 +253,7 @@ fn validate_return_columns(
         .filter(|c| !declared.iter().any(|(n, _, _)| n == &c.as_str()))
         .collect();
     if !missing.is_empty() || !extra.is_empty() {
-        return Err(at(format!(
+        return Err(format!(
             "the SQL's columns do not match `{}` (missing: [{}], extra: [{}])",
             f.returns.of,
             missing.join(", "),
@@ -263,7 +262,7 @@ fn validate_return_columns(
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
-        )));
+        ));
     }
     Ok(())
 }

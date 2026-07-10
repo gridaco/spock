@@ -218,11 +218,10 @@ pub fn typescript(contract: &Contract) -> Result<String, TsGenError> {
 
     out.push_str("\n/** Reserved non-derived codes (docs/spec/v0.md §6.1). */\n");
     out.push_str("export type reserved_error =\n");
-    out.push_str("  | \"not_found\"\n");
-    out.push_str("  | \"type_mismatch\"\n");
-    out.push_str("  | \"unknown_field\"\n");
-    out.push_str("  | \"bad_request\"\n");
-    out.push_str("  | \"internal\";\n");
+    for (i, code) in crate::ir::RESERVED_CODES.iter().enumerate() {
+        let end = if i + 1 == crate::ir::RESERVED_CODES.len() { ";" } else { "" };
+        let _ = writeln!(out, "  | \"{code}\"{end}");
+    }
 
     out.push_str("\n/** Every error code this contract can produce. */\n");
     out.push_str("export type error_code =\n");

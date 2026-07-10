@@ -35,6 +35,30 @@ pub fn now_utc() -> String {
     canon_timestamp(time::OffsetDateTime::now_utc())
 }
 
+/// A wire string (query-string value, path segment) as the JSON a *value*
+/// type expects (refs already chased). Values that do not parse pass
+/// through as strings — the shared call path then names the canonical
+/// `type_mismatch` — and the text-shaped types (text, uuid, timestamp)
+/// pass through untouched by construction.
+pub fn text_to_json_scalar(value_type: &Type, raw: String) -> Json {
+    match value_type {
+        Type::Int => match raw.parse::<i64>() {
+            Ok(n) => Json::from(n),
+            Err(_) => Json::String(raw),
+        },
+        Type::Float => match raw.parse::<f64>() {
+            Ok(v) if v.is_finite() => serde_json::json!(v),
+            _ => Json::String(raw),
+        },
+        Type::Bool => match raw.as_str() {
+            "true" => Json::Bool(true),
+            "false" => Json::Bool(false),
+            _ => Json::String(raw),
+        },
+        _ => Json::String(raw),
+    }
+}
+
 /// Validate a JSON value against a *value* type (refs already chased) and
 /// convert it. `Err` is the "expected …" description — callers supply
 /// their own context (a table field, a fn argument).

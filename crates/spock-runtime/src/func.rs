@@ -10,33 +10,29 @@
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, ToSql, TransactionBehavior};
 use serde_json::{Map, Value as Json};
-use spock_lang::ir::{Contract, FnArity, FnDef};
+use spock_lang::ir::{Contract, FnArity, FnDef, Type};
 
 use crate::error::ApiError;
 use crate::value::{json_to_sql_scalar, sql_to_json_scalar};
 use crate::write::map_fn_engine_error;
 
 /// Route a rusqlite failure inside a fn body (§7.4). The refusal channel
-/// is checked first: `spock_refuse('<code>')` errors with a sentinel
-/// message, and the code routes **only** if this fn minted it in its `!`
-/// clause — a derived or reserved code can only be produced by its own
-/// mechanism (raising one would let a body counterfeit evidence), and an
-/// unminted code is the body breaking its signature; both are `internal`.
-/// Everything else falls through to the cross-table constraint router.
+/// is checked first: `spock_refuse('<code>')` errors with a
+/// sentinel-prefixed message, and the code routes **only** if this fn
+/// minted it in its `!` clause — a declared derived or reserved code can
+/// only be produced by its own mechanism (raising one would let a body
+/// counterfeit evidence), and an unminted code is the body breaking its
+/// signature; both are `internal`. Everything else falls through to the
+/// cross-table constraint router. No vocabulary scan: the checker already
+/// stored the mint/reference partition (`refusals ⊆ errors`).
 fn map_fn_call_error(contract: &Contract, f: &FnDef, e: rusqlite::Error) -> ApiError {
     if let rusqlite::Error::SqliteFailure(_, Some(msg)) = &e {
-        if let Some(code) = msg.split(crate::engine::REFUSE_SENTINEL).nth(1) {
+        if let Some(code) = msg.strip_prefix(crate::engine::REFUSE_SENTINEL) {
             let code = code.trim();
             if f.refusals.iter().any(|r| r == code) {
                 return ApiError::refused(code, &f.name);
             }
-            let known = contract
-                .tables
-                .iter()
-                .any(|t| t.errors.iter().any(|d| d.code == code))
-                || ["not_found", "type_mismatch", "unknown_field", "bad_request", "internal"]
-                    .contains(&code);
-            let reason = if known {
+            let reason = if f.errors.iter().any(|c| c == code) {
                 "a derived or reserved code can only be produced by its own mechanism, never raised"
             } else {
                 "it is not a refusal declared in the `!` clause"
@@ -95,44 +91,59 @@ pub fn call(
         .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
 
     let rows: Vec<Json> = {
-        // scalar returns map column 0 as a bare value; shapes map by name
-        let scalar_ty = f.returns.scalar_type();
-        let declared = match &scalar_ty {
-            Some(_) => Vec::new(),
-            None => contract
-                .output_fields(&f.returns.of)
-                .ok_or_else(|| ApiError::internal("contract drift: fn return shape"))?,
-        };
-        let mut out = Vec::new();
-        let last_index = f.sql.len().saturating_sub(1);
-        for (index, sql) in f.sql.iter().enumerate() {
-            let mut stmt = tx
-                .prepare(sql)
-                .map_err(|e| map_fn_call_error(contract, f, e))?;
-            let columns: Vec<String> =
-                stmt.column_names().iter().map(|c| c.to_string()).collect();
-            // each statement binds only the params it names (validated
-            // total across the body at load)
-            let params: Vec<(&str, &dyn ToSql)> = binds
+        let map_err = |e| map_fn_call_error(contract, f, e);
+        // each statement binds only the params it names (validated total
+        // across the body at load)
+        let bind = |stmt: &rusqlite::Statement<'_>| -> Vec<(&str, &dyn ToSql)> {
+            binds
                 .iter()
                 .filter(|(n, _)| matches!(stmt.parameter_index(n), Ok(Some(_))))
                 .map(|(n, v)| (n.as_str(), v as &dyn ToSql))
-                .collect();
-            let mut rows = stmt
-                .query(params.as_slice())
-                .map_err(|e| map_fn_call_error(contract, f, e))?;
-            if index < last_index {
-                // a guard or an effect: run it to completion (a guard's
-                // refusal fires while stepping), discard its rows
-                while rows
-                    .next()
-                    .map_err(|e| map_fn_call_error(contract, f, e))?
-                    .is_some()
-                {}
-                continue;
+                .collect()
+        };
+        let Some((answer, effects)) = f.sql.split_last() else {
+            return Err(ApiError::internal("contract drift: fn body is empty"));
+        };
+
+        // guards and effects: run each to completion (a guard's refusal
+        // fires while stepping), discard the rows
+        for sql in effects {
+            let mut stmt = tx.prepare(sql).map_err(map_err)?;
+            let params = bind(&stmt);
+            let mut rows = stmt.query(params.as_slice()).map_err(map_err)?;
+            while rows.next().map_err(map_err)?.is_some() {}
+        }
+
+        // the last statement answers: scalar returns map column 0 as a
+        // bare value; shapes map by name, each column's value type
+        // resolved once — every row reuses the mapping
+        let scalar_ty = f.returns.scalar_type();
+        let mut stmt = tx.prepare(answer).map_err(map_err)?;
+        let columns: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
+        let col_types: Vec<&Type> = match &scalar_ty {
+            Some(_) => Vec::new(),
+            None => {
+                let declared = contract
+                    .output_fields(&f.returns.of)
+                    .ok_or_else(|| ApiError::internal("contract drift: fn return shape"))?;
+                columns
+                    .iter()
+                    .map(|col| {
+                        declared
+                            .iter()
+                            .find(|(n, _, _)| *n == col.as_str())
+                            .map(|(_, ty, _)| contract.value_type(ty))
+                            .ok_or_else(|| {
+                                ApiError::internal("contract drift: unvalidated column")
+                            })
+                    })
+                    .collect::<Result<_, _>>()?
             }
-            // the last statement answers
-            while let Some(row) = rows.next().map_err(|e| map_fn_call_error(contract, f, e))? {
+        };
+        let params = bind(&stmt);
+        let mut rows = stmt.query(params.as_slice()).map_err(map_err)?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next().map_err(map_err)? {
             if let Some(ty) = &scalar_ty {
                 let value = row
                     .get_ref(0)
@@ -152,18 +163,13 @@ pub fn call(
                 continue;
             }
             let mut obj = Map::new();
-            for (i, col) in columns.iter().enumerate() {
-                let (_, ty, _) = declared
-                    .iter()
-                    .find(|(n, _, _)| *n == col.as_str())
-                    .ok_or_else(|| ApiError::internal("contract drift: unvalidated column"))?;
+            for (i, (col, ty)) in columns.iter().zip(&col_types).enumerate() {
                 let value = row
                     .get_ref(i)
                     .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
-                obj.insert(col.clone(), sql_to_json_scalar(contract.value_type(ty), value));
+                obj.insert(col.clone(), sql_to_json_scalar(ty, value));
             }
-                out.push(Json::Object(obj));
-            }
+            out.push(Json::Object(obj));
         }
         out
     };

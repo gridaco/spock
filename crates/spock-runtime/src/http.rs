@@ -107,10 +107,7 @@ async fn rpc_call(
     Path(name): Path<String>,
     body: String,
 ) -> Result<Json<JsonValue>, ApiError> {
-    let f = app
-        .contract
-        .fn_def(&name)
-        .ok_or_else(|| ApiError::not_found(format!("no fn `{name}` in this contract")))?;
+    let f = resolve_fn(&app, &name)?;
     let args: Map<String, JsonValue> = if body.trim().is_empty() {
         Map::new()
     } else {
@@ -137,10 +134,7 @@ async fn rpc_get(
     Path(name): Path<String>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<JsonValue>, ApiError> {
-    let f = app
-        .contract
-        .fn_def(&name)
-        .ok_or_else(|| ApiError::not_found(format!("no fn `{name}` in this contract")))?;
+    let f = resolve_fn(&app, &name)?;
     if !f.readonly {
         return Err(ApiError::method_not_allowed(format!(
             "fn `{name}` is `mut`; call it with POST"
@@ -148,36 +142,21 @@ async fn rpc_get(
     }
     let mut args: Map<String, JsonValue> = Map::new();
     for (key, raw) in params {
-        let ty = f
-            .params
-            .iter()
-            .find(|p| p.name == key)
-            .map(|p| app.contract.value_type(&p.ty));
-        args.insert(key, query_arg_json(ty, raw));
+        // unknown keys carry no type and pass through as strings — the
+        // shared call path rejects them by name
+        let value = match f.params.iter().find(|p| p.name == key) {
+            Some(p) => crate::value::text_to_json_scalar(app.contract.value_type(&p.ty), raw),
+            None => JsonValue::String(raw),
+        };
+        args.insert(key, value);
     }
     run_rpc(&app, f, &args)
 }
 
-/// A query-string value as the JSON the fn call path expects. Unknown
-/// keys carry no type (the call rejects them by name); unparseable
-/// values stay strings (the call names the mismatch).
-fn query_arg_json(ty: Option<&Type>, raw: String) -> JsonValue {
-    match ty {
-        Some(Type::Int) => match raw.parse::<i64>() {
-            Ok(n) => JsonValue::from(n),
-            Err(_) => JsonValue::String(raw),
-        },
-        Some(Type::Float) => match raw.parse::<f64>() {
-            Ok(v) if v.is_finite() => json!(v),
-            _ => JsonValue::String(raw),
-        },
-        Some(Type::Bool) => match raw.as_str() {
-            "true" => JsonValue::Bool(true),
-            "false" => JsonValue::Bool(false),
-            _ => JsonValue::String(raw),
-        },
-        _ => JsonValue::String(raw),
-    }
+fn resolve_fn<'a>(app: &'a App, name: &str) -> Result<&'a spock_lang::ir::FnDef, ApiError> {
+    app.contract
+        .fn_def(name)
+        .ok_or_else(|| ApiError::not_found(format!("no fn `{name}` in this contract")))
 }
 
 /// The shared rpc execution tail: one locked call, arity-shaped envelope.
