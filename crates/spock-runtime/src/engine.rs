@@ -54,12 +54,31 @@ pub fn open(contract: &Contract, path: Option<&Path>) -> Result<Connection, Engi
     };
 
     conn.pragma_update(None, "foreign_keys", true)?;
+    register_builtins(&conn)?;
     for statement in ddl(contract) {
         conn.execute_batch(&statement)?;
     }
     validate_fns(contract, &conn)?;
     seed(contract, &mut conn)?;
     Ok(conn)
+}
+
+/// The engine builtins (§7.1): `spock_uuid()` and `spock_now()` — the
+/// same mints the write path uses for `= auto` and `= now`, so a value
+/// generated inside an escape body is indistinguishable from one the
+/// engine generated. Registered before DDL: the emitted DEFAULT clauses
+/// reference them.
+fn register_builtins(conn: &Connection) -> Result<(), EngineError> {
+    use rusqlite::functions::FunctionFlags;
+    // non-deterministic by nature: neither DETERMINISTIC (they change per
+    // call) nor DIRECTONLY (DEFAULT clauses must be able to call them)
+    conn.create_scalar_function("spock_uuid", 0, FunctionFlags::SQLITE_UTF8, |_| {
+        Ok(crate::value::new_uuid())
+    })?;
+    conn.create_scalar_function("spock_now", 0, FunctionFlags::SQLITE_UTF8, |_| {
+        Ok(crate::value::now_utc())
+    })?;
+    Ok(())
 }
 
 /// Validate every fn's SQL escape at load (§7.4), after DDL (tables must
@@ -267,6 +286,54 @@ mod tests {
         open_ok("fn rename(user: user, username: text) -> user ! user_username_taken { unchecked sql(\"UPDATE user SET username = :username WHERE id = :user RETURNING *\") }");
         // a CTE is one statement
         open_ok("fn all() -> [user] { unchecked sql(\"WITH x AS (SELECT * FROM user) SELECT * FROM x\") }");
+    }
+
+    #[test]
+    fn escape_inserts_borrow_the_declared_defaults() {
+        // the load-bearing G4 claim, proven: a fn INSERT that omits
+        // `= auto` / `= now` / literal-default columns gets the engine's
+        // own values via the emitted DEFAULT clauses — including the
+        // application-defined spock_uuid()/spock_now() builtins, which
+        // SQLite happily calls from a column DEFAULT
+        let contract = spock_lang::compile(
+            "table note {\n\
+               key id: uuid = auto\n\
+               body: text\n\
+               pinned: bool = false\n\
+               at: timestamp = now\n\
+             }\n\
+             fn add(body: text) -> note {\n\
+               unchecked sql(\"INSERT INTO note (body) VALUES (:body) RETURNING *\")\n\
+             }\n\
+             fn stamp() -> timestamp {\n\
+               unchecked sql(\"SELECT spock_now()\")\n\
+             }",
+        )
+        .expect("compiles");
+        let mut conn = open(&contract, None).expect("loads");
+
+        let f = contract.fn_def("add").expect("declared");
+        let row = crate::func::call(
+            &contract,
+            f,
+            &mut conn,
+            &serde_json::Map::from_iter([("body".to_string(), "hi".into())]),
+        )
+        .expect("insert with omitted defaults");
+        // a v7 uuid from the engine's own mint, not a hand-rolled v4
+        let id = uuid::Uuid::parse_str(row["id"].as_str().unwrap()).unwrap();
+        assert_eq!(id.get_version_num(), 7);
+        assert_eq!(row["pinned"], serde_json::Value::Bool(false));
+        // the stamp parses as the engine's own format
+        use time::format_description::well_known::Rfc3339;
+        time::OffsetDateTime::parse(row["at"].as_str().unwrap(), &Rfc3339)
+            .expect("DEFAULT (spock_now()) is RFC 3339");
+
+        // and the builtins are directly callable from a body
+        let f = contract.fn_def("stamp").expect("declared");
+        let now = crate::func::call(&contract, f, &mut conn, &serde_json::Map::new())
+            .expect("spock_now() resolves in an escape body");
+        time::OffsetDateTime::parse(now.as_str().unwrap(), &Rfc3339).expect("rfc 3339");
     }
 
     #[test]

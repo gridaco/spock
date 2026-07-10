@@ -6,7 +6,6 @@ use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{Map, Value as Json};
 use spock_lang::ir::{Contract, DefaultValue, ErrorKind, OnDelete, Table, Type};
-use time::format_description::well_known::Rfc3339;
 
 use crate::error::ApiError;
 use crate::value::{json_to_sql, sql_to_json};
@@ -33,12 +32,10 @@ pub fn insert_row(
         let value = match provided {
             Some(v) => json_to_sql(contract, table, field, v)?,
             None => match &field.default {
-                Some(DefaultValue::Auto) => SqlValue::Text(uuid::Uuid::now_v7().to_string()),
-                Some(DefaultValue::Now) => SqlValue::Text(
-                    time::OffsetDateTime::now_utc()
-                        .format(&Rfc3339)
-                        .expect("rfc3339 format"),
-                ),
+                // the same mints the engine registers as spock_uuid() /
+                // spock_now() — one clock, one id format, both paths
+                Some(DefaultValue::Auto) => SqlValue::Text(crate::value::new_uuid()),
+                Some(DefaultValue::Now) => SqlValue::Text(crate::value::now_utc()),
                 Some(DefaultValue::Str { value }) => SqlValue::Text(value.clone()),
                 Some(DefaultValue::Int { value }) => SqlValue::Integer(*value),
                 Some(DefaultValue::Float { value }) => SqlValue::Real(*value),

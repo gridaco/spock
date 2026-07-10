@@ -16,7 +16,7 @@ thiserror = "2"
 anyhow = "1"
 uuid = { version = "1", features = ["v7"] }
 time = { version = "0.3", features = ["formatting", "parsing"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 axum = "0.8"
 async-graphql = { version = "7", default-features = false, features = ["dynamic-schema", "graphiql"] }
 async-graphql-value = "7"

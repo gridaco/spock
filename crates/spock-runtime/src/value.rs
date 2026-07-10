@@ -8,6 +8,20 @@ use time::format_description::well_known::Rfc3339;
 
 use crate::error::ApiError;
 
+/// The engine's uuid mint — UUIDv7, the same generator `= auto` uses.
+/// Exposed to escape bodies as the SQL builtin `spock_uuid()`.
+pub fn new_uuid() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
+
+/// The engine's clock — RFC 3339 UTC, the same stamp `= now` uses.
+/// Exposed to escape bodies as the SQL builtin `spock_now()`.
+pub fn now_utc() -> String {
+    time::OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .expect("utc now formats as rfc3339")
+}
+
 /// Validate a JSON value against a *value* type (refs already chased) and
 /// convert it. `Err` is the "expected …" description — callers supply
 /// their own context (a table field, a fn argument).

@@ -1,7 +1,11 @@
 //! SQLite DDL emission (docs/spec/v0.md §7.1). One `CREATE TABLE` per
 //! contract table, declaration order preserved, all identifiers quoted.
+//! Declared defaults are emitted as DEFAULT clauses — `auto`/`now` call
+//! the engine builtins (`spock_uuid()`/`spock_now()`), so escape-body
+//! INSERTs may omit defaulted columns and get the same values the write
+//! path would mint.
 
-use crate::ir::{Contract, Type};
+use crate::ir::{Contract, DefaultValue, Type};
 
 /// Emit `CREATE TABLE` statements for every table, in declaration order.
 pub fn ddl(contract: &Contract) -> Vec<String> {
@@ -14,7 +18,11 @@ pub fn ddl(contract: &Contract) -> Vec<String> {
             for field in &table.fields {
                 let storage = contract.storage_type(&field.ty).sql();
                 let null = if field.optional { "" } else { " NOT NULL" };
-                lines.push(format!("  \"{}\" {storage}{null}", field.name));
+                let default = match &field.default {
+                    None => String::new(),
+                    Some(d) => format!(" DEFAULT {}", default_sql(d)),
+                };
+                lines.push(format!("  \"{}\" {storage}{null}{default}", field.name));
             }
 
             let key_list = quote_list(&table.key);
@@ -54,6 +62,18 @@ pub fn ddl(contract: &Contract) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// A default value as a SQLite DEFAULT expression.
+fn default_sql(default: &DefaultValue) -> String {
+    match default {
+        DefaultValue::Auto => "(spock_uuid())".into(),
+        DefaultValue::Now => "(spock_now())".into(),
+        DefaultValue::Str { value } => format!("'{}'", value.replace('\'', "''")),
+        DefaultValue::Int { value } => value.to_string(),
+        DefaultValue::Float { value } => value.to_string(),
+        DefaultValue::Bool { value } => if *value { "1" } else { "0" }.into(),
+    }
 }
 
 fn quote_list(names: &[String]) -> String {
@@ -98,17 +118,17 @@ mod tests {
         assert_eq!(
             statements[0],
             "CREATE TABLE \"user\" (\n\
-             \x20 \"id\" TEXT NOT NULL,\n\
+             \x20 \"id\" TEXT NOT NULL DEFAULT (spock_uuid()),\n\
              \x20 \"username\" TEXT NOT NULL,\n\
              \x20 \"bio\" TEXT,\n\
-             \x20 \"joined_at\" TEXT NOT NULL,\n\
+             \x20 \"joined_at\" TEXT NOT NULL DEFAULT (spock_now()),\n\
              \x20 PRIMARY KEY (\"id\"),\n\
              \x20 UNIQUE (\"username\")\n\
              );"
         );
 
         // bool → INTEGER; the ref column takes the target key's storage type
-        assert!(statements[1].contains("\"pinned\" INTEGER NOT NULL"));
+        assert!(statements[1].contains("\"pinned\" INTEGER NOT NULL DEFAULT 0"));
         assert!(statements[1].contains("\"author\" TEXT NOT NULL"));
         assert!(statements[1]
             .contains("FOREIGN KEY (\"author\") REFERENCES \"user\" (\"id\") ON DELETE RESTRICT"));
@@ -116,6 +136,24 @@ mod tests {
         assert!(statements[2].contains("PRIMARY KEY (\"follower\", \"target\")"));
         assert!(statements[2]
             .contains("FOREIGN KEY (\"target\") REFERENCES \"user\" (\"id\") ON DELETE CASCADE"));
+    }
+
+    #[test]
+    fn emits_literal_defaults() {
+        let contract = compile(
+            "table t {\n\
+               key id: uuid = auto\n\
+               status: text = \"it's fine\"\n\
+               tries: int = 3\n\
+               weight: float = 0.5\n\
+             }",
+        )
+        .unwrap();
+        let sql = &ddl(&contract)[0];
+        // single quotes doubled — the classic injection foothold
+        assert!(sql.contains("\"status\" TEXT NOT NULL DEFAULT 'it''s fine'"));
+        assert!(sql.contains("\"tries\" INTEGER NOT NULL DEFAULT 3"));
+        assert!(sql.contains("\"weight\" REAL NOT NULL DEFAULT 0.5"));
     }
 
     #[test]
