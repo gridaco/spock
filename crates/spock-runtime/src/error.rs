@@ -74,6 +74,31 @@ impl ApiError {
         }
     }
 
+    /// A fn argument that failed its declared type. Same code as a
+    /// field mismatch (`type_mismatch`); the fn has no table.
+    pub fn fn_arg_mismatch(fn_name: &str, param: &str, expected: &str) -> Self {
+        ApiError {
+            status: 422,
+            code: "type_mismatch".into(),
+            kind: "type_mismatch",
+            table: None,
+            fields: vec![param.to_string()],
+            message: format!("fn `{fn_name}` argument `{param}` expects {expected}"),
+        }
+    }
+
+    /// An argument the fn does not declare.
+    pub fn fn_unknown_arg(fn_name: &str, arg: &str) -> Self {
+        ApiError {
+            status: 422,
+            code: "unknown_field".into(),
+            kind: "unknown_field",
+            table: None,
+            fields: vec![arg.to_string()],
+            message: format!("fn `{fn_name}` has no parameter `{arg}`"),
+        }
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         ApiError {
             status: 500,

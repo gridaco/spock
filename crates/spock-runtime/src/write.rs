@@ -427,13 +427,88 @@ fn map_delete_error(table: &Table, e: rusqlite::Error) -> ApiError {
     sqlite_internal(e)
 }
 
-/// Parse `"UNIQUE constraint failed: user.a, user.b"` → `["a", "b"]`.
-fn violated_columns(msg: &str) -> Vec<String> {
-    msg.split(':')
+/// Parse `"UNIQUE constraint failed: user.a, user.b"` →
+/// `(Some("user"), ["a", "b"])` — table and columns both. Table-in-hand
+/// callers use only the columns; fn execution routes by the table too.
+fn violated_table_columns(msg: &str) -> (Option<String>, Vec<String>) {
+    let mut table = None;
+    let columns = msg
+        .split(':')
         .nth(1)
         .unwrap_or("")
         .split(',')
-        .filter_map(|part| part.trim().split('.').nth(1))
-        .map(str::to_string)
-        .collect()
+        .filter_map(|part| {
+            let mut halves = part.trim().split('.');
+            let t = halves.next()?;
+            let c = halves.next()?;
+            if table.is_none() {
+                table = Some(t.to_string());
+            }
+            Some(c.to_string())
+        })
+        .collect();
+    (table, columns)
+}
+
+fn violated_columns(msg: &str) -> Vec<String> {
+    violated_table_columns(msg).1
+}
+
+/// Route an engine failure from a fn's SQL escape (§7.4). Unlike
+/// [`map_conflict_error`], no table is known a priori — the constraint
+/// message names `table.column`, which is enough to find the owning
+/// table's derived code, cross-table, with no write-set declaration:
+///
+/// - UNIQUE / PRIMARY KEY → that table's `key`/`unique` derived error;
+/// - NOT NULL → that table's derived `required` error;
+/// - FOREIGN KEY → reserved `bad_request` — SQLite reports no table
+///   detail for FK failures, and truth beats guessing;
+/// - anything else → `internal`.
+pub(crate) fn map_fn_engine_error(contract: &Contract, e: rusqlite::Error) -> ApiError {
+    use rusqlite::ffi;
+    if let rusqlite::Error::SqliteFailure(err, Some(msg)) = &e {
+        let code = err.extended_code;
+        if code == ffi::SQLITE_CONSTRAINT_PRIMARYKEY || code == ffi::SQLITE_CONSTRAINT_UNIQUE {
+            let (table_name, fields) = violated_table_columns(msg);
+            if let Some(table) = table_name.and_then(|t| contract.table(&t)) {
+                let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+                if let Some(derr) = table
+                    .error_for(ErrorKind::Key, &refs)
+                    .or_else(|| table.error_for(ErrorKind::Unique, &refs))
+                {
+                    let what = fields.join(", ");
+                    return ApiError::derived(
+                        &table.name,
+                        derr,
+                        match derr.kind {
+                            ErrorKind::Key => {
+                                format!("a {} with this key already exists", table.name)
+                            }
+                            _ => format!("{}.{what} is already taken", table.name),
+                        },
+                    );
+                }
+            }
+        }
+        if code == ffi::SQLITE_CONSTRAINT_NOTNULL {
+            let (table_name, fields) = violated_table_columns(msg);
+            if let Some(table) = table_name.and_then(|t| contract.table(&t)) {
+                let refs: Vec<&str> = fields.iter().map(String::as_str).collect();
+                if let Some(derr) = table.error_for(ErrorKind::Required, &refs) {
+                    return ApiError::derived(
+                        &table.name,
+                        derr,
+                        format!("{}.{} is required", table.name, fields.join(", ")),
+                    );
+                }
+            }
+        }
+        if code == ffi::SQLITE_CONSTRAINT_FOREIGNKEY {
+            return ApiError::bad_request(
+                "foreign key constraint failed (the statement referenced a missing row \
+                 or removed a referenced one; sqlite reports no table detail)",
+            );
+        }
+    }
+    sqlite_internal(e)
 }
