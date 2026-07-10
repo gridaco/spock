@@ -384,6 +384,7 @@ impl Parser {
         let kind = match &tok.kind {
             TokenKind::KwText => TypeExprKind::Text,
             TokenKind::KwInt => TypeExprKind::Int,
+            TokenKind::KwFloat => TypeExprKind::Float,
             TokenKind::KwBool => TypeExprKind::Bool,
             TokenKind::KwTimestamp => TypeExprKind::Timestamp,
             TokenKind::KwUuid => TypeExprKind::Uuid,
@@ -404,6 +405,7 @@ impl Parser {
             TokenKind::KwNow => DefaultExpr::Now(tok.span),
             TokenKind::Str(s) => DefaultExpr::Lit(Lit::Str(s.clone(), tok.span)),
             TokenKind::Int(v) => DefaultExpr::Lit(Lit::Int(*v, tok.span)),
+            TokenKind::Float(v) => DefaultExpr::Lit(Lit::Float(*v, tok.span)),
             TokenKind::KwTrue => DefaultExpr::Lit(Lit::Bool(true, tok.span)),
             TokenKind::KwFalse => DefaultExpr::Lit(Lit::Bool(false, tok.span)),
             _ => return Err(self.unexpected("`auto`, `now`, or a literal")),
@@ -476,6 +478,7 @@ impl Parser {
         let value = match &tok.kind {
             TokenKind::Str(s) => SeedValue::Lit(Lit::Str(s.clone(), tok.span)),
             TokenKind::Int(v) => SeedValue::Lit(Lit::Int(*v, tok.span)),
+            TokenKind::Float(v) => SeedValue::Lit(Lit::Float(*v, tok.span)),
             TokenKind::KwTrue => SeedValue::Lit(Lit::Bool(true, tok.span)),
             TokenKind::KwFalse => SeedValue::Lit(Lit::Bool(false, tok.span)),
             TokenKind::Ident(name) => SeedValue::Binding(Ident {

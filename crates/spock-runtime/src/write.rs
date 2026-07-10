@@ -41,6 +41,7 @@ pub fn insert_row(
                 ),
                 Some(DefaultValue::Str { value }) => SqlValue::Text(value.clone()),
                 Some(DefaultValue::Int { value }) => SqlValue::Integer(*value),
+                Some(DefaultValue::Float { value }) => SqlValue::Real(*value),
                 Some(DefaultValue::Bool { value }) => SqlValue::Integer(*value as i64),
                 None if field.optional => SqlValue::Null,
                 None => {

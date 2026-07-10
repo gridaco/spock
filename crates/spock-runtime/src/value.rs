@@ -21,6 +21,11 @@ pub fn json_to_sql_scalar(value_type: &Type, value: &Json) -> Result<SqlValue, &
             Some(n) if !value.is_boolean() => Ok(SqlValue::Integer(n)),
             _ => Err("an integer"),
         },
+        // a whole JSON number is a legal float value; booleans are not
+        Type::Float => match value.as_f64() {
+            Some(f) if !value.is_boolean() => Ok(SqlValue::Real(f)),
+            _ => Err("a number"),
+        },
         Type::Bool => match value {
             Json::Bool(b) => Ok(SqlValue::Integer(*b as i64)),
             _ => Err("a boolean"),
@@ -66,10 +71,11 @@ pub fn sql_to_json_scalar(value_type: &Type, value: ValueRef<'_>) -> Json {
             _ => Json::Number(n.into()),
         },
         ValueRef::Text(bytes) => Json::String(String::from_utf8_lossy(bytes).into_owned()),
-        // v0 never stores reals or blobs; render defensively.
+        // float columns; NaN/infinity have no JSON spelling → null
         ValueRef::Real(f) => serde_json::Number::from_f64(f)
             .map(Json::Number)
             .unwrap_or(Json::Null),
+        // v0 never stores blobs; render defensively.
         ValueRef::Blob(_) => Json::Null,
     }
 }

@@ -232,6 +232,10 @@ fn path_key_value(app: &App, table: &Table, raw: &str) -> Result<SqlValue, ApiEr
             .parse::<i64>()
             .map(SqlValue::Integer)
             .map_err(|_| not_found()),
+        Type::Float => raw
+            .parse::<f64>()
+            .map(SqlValue::Real)
+            .map_err(|_| not_found()),
         Type::Bool => match raw {
             "true" => Ok(SqlValue::Integer(1)),
             "false" => Ok(SqlValue::Integer(0)),

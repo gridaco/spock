@@ -323,6 +323,7 @@ fn value_ts(contract: &Contract, ty: &Type) -> String {
     match ty {
         Type::Text => "string".into(),
         Type::Int => "number".into(),
+        Type::Float => "number".into(),
         Type::Bool => "boolean".into(),
         Type::Uuid => "uuid".into(),
         Type::Timestamp => "timestamp".into(),

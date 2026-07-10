@@ -60,6 +60,7 @@ pub struct TypeExpr {
 pub enum TypeExprKind {
     Text,
     Int,
+    Float,
     Bool,
     Timestamp,
     Uuid,
@@ -87,13 +88,14 @@ impl DefaultExpr {
 pub enum Lit {
     Str(String, Span),
     Int(i64, Span),
+    Float(f64, Span),
     Bool(bool, Span),
 }
 
 impl Lit {
     pub fn span(&self) -> Span {
         match self {
-            Lit::Str(_, s) | Lit::Int(_, s) | Lit::Bool(_, s) => *s,
+            Lit::Str(_, s) | Lit::Int(_, s) | Lit::Float(_, s) | Lit::Bool(_, s) => *s,
         }
     }
 }

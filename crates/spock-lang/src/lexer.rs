@@ -8,6 +8,7 @@ pub enum TokenKind {
     Ident(String),
     Str(String),
     Int(i64),
+    Float(f64),
 
     // punctuation
     LBrace,
@@ -39,6 +40,7 @@ pub enum TokenKind {
     KwNull,
     KwText,
     KwInt,
+    KwFloat,
     KwBool,
     KwTimestamp,
     KwUuid,
@@ -57,6 +59,7 @@ impl TokenKind {
             TokenKind::Ident(name) => format!("identifier `{name}`"),
             TokenKind::Str(_) => "string literal".to_string(),
             TokenKind::Int(_) => "integer literal".to_string(),
+            TokenKind::Float(_) => "float literal".to_string(),
             TokenKind::LBrace => "`{`".to_string(),
             TokenKind::RBrace => "`}`".to_string(),
             TokenKind::LParen => "`(`".to_string(),
@@ -92,6 +95,7 @@ fn keyword_text(kind: &TokenKind) -> &'static str {
         TokenKind::KwNull => "null",
         TokenKind::KwText => "text",
         TokenKind::KwInt => "int",
+        TokenKind::KwFloat => "float",
         TokenKind::KwBool => "bool",
         TokenKind::KwTimestamp => "timestamp",
         TokenKind::KwUuid => "uuid",
@@ -141,6 +145,7 @@ fn keyword(word: &str) -> Option<TokenKind> {
         "null" => TokenKind::KwNull,
         "text" => TokenKind::KwText,
         "int" => TokenKind::KwInt,
+        "float" => TokenKind::KwFloat,
         "bool" => TokenKind::KwBool,
         "timestamp" => TokenKind::KwTimestamp,
         "uuid" => TokenKind::KwUuid,
@@ -297,11 +302,34 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             continue;
         }
 
-        // integer literal (minus only immediately before digits)
+        // numeric literal (minus only immediately before digits); a `.`
+        // followed by a digit turns it into a float — plain decimal
+        // notation only, no exponents in v0
         if b.is_ascii_digit() || (b == b'-' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit)) {
             i += 1;
             while i < bytes.len() && bytes[i].is_ascii_digit() {
                 i += 1;
+            }
+            let is_float = bytes.get(i) == Some(&b'.')
+                && bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
+            if is_float {
+                i += 1;
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+                let text = &source[start..i];
+                let value: f64 = text.parse().map_err(|_| {
+                    Diagnostic::new(
+                        "L004",
+                        format!("float literal `{text}` is not representable"),
+                        Span::new(start, i),
+                    )
+                })?;
+                tokens.push(Token {
+                    kind: TokenKind::Float(value),
+                    span: Span::new(start, i),
+                });
+                continue;
             }
             let text = &source[start..i];
             let value: i64 = text.parse().map_err(|_| {
@@ -415,6 +443,22 @@ mod tests {
                 TokenKind::Eof,
             ]
         );
+    }
+
+    #[test]
+    fn lexes_float_literals() {
+        assert_eq!(
+            kinds("0.5 -1.25"),
+            vec![
+                TokenKind::Float(0.5),
+                TokenKind::Float(-1.25),
+                TokenKind::Eof,
+            ]
+        );
+        // a trailing dot is not a float: the int lexes, the `.` is stray
+        assert_eq!(lex("1. x").unwrap_err().code, "L001");
+        // `float` is an active keyword
+        assert_eq!(kinds("float"), vec![TokenKind::KwFloat, TokenKind::Eof]);
     }
 
     #[test]

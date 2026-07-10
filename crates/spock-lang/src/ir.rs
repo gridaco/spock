@@ -49,6 +49,7 @@ pub struct Field {
 pub enum Type {
     Text,
     Int,
+    Float,
     Bool,
     Timestamp,
     Uuid,
@@ -82,6 +83,9 @@ pub enum DefaultValue {
     },
     Int {
         value: i64,
+    },
+    Float {
+        value: f64,
     },
     Bool {
         value: bool,
@@ -184,6 +188,8 @@ pub enum SeedValue {
     },
     Str(String),
     Int(i64),
+    /// Tried after `Int`: an untagged whole number stays an integer.
+    Float(f64),
     Bool(bool),
 }
 
@@ -238,6 +244,7 @@ impl Contract {
         match ty {
             Type::Text | Type::Uuid | Type::Timestamp => StorageType::Text,
             Type::Int => StorageType::Integer,
+            Type::Float => StorageType::Real,
             Type::Bool => StorageType::Integer,
             Type::Ref { table, .. } => {
                 let target = self.table(table).expect("checked: ref target exists");
@@ -290,6 +297,7 @@ impl Table {
 pub enum StorageType {
     Text,
     Integer,
+    Real,
 }
 
 impl StorageType {
@@ -297,6 +305,7 @@ impl StorageType {
         match self {
             StorageType::Text => "TEXT",
             StorageType::Integer => "INTEGER",
+            StorageType::Real => "REAL",
         }
     }
 }

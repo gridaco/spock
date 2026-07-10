@@ -119,6 +119,15 @@ mod tests {
     }
 
     #[test]
+    fn emits_real_for_float() {
+        let contract =
+            compile("table tag { key id: uuid = auto\n x: float\n y: float? }").unwrap();
+        let statements = ddl(&contract);
+        assert!(statements[0].contains("\"x\" REAL NOT NULL"));
+        assert!(statements[0].contains("\"y\" REAL,"));
+    }
+
+    #[test]
     fn emits_set_null() {
         let contract = compile(
             "table user { key id: uuid = auto }\n\

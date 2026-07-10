@@ -321,6 +321,7 @@ fn scalar_name(contract: &Contract, ty: &Type) -> &'static str {
     match contract.value_type(ty) {
         Type::Text => TypeRef::STRING,
         Type::Int => TypeRef::INT,
+        Type::Float => TypeRef::FLOAT,
         Type::Bool => TypeRef::BOOLEAN,
         Type::Uuid => "uuid",
         Type::Timestamp => "timestamp",
@@ -585,6 +586,7 @@ fn arg_to_sql(
             .ok()
             .map(|u| SqlValue::Text(u.to_string())),
         Type::Int => Some(SqlValue::Integer(arg.i64()?)),
+        Type::Float => Some(SqlValue::Real(arg.f64()?)),
         Type::Bool => Some(SqlValue::Integer(arg.boolean()? as i64)),
         Type::Timestamp => time::OffsetDateTime::parse(arg.string()?, &Rfc3339)
             .ok()

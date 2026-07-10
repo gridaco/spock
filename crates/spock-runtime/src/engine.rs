@@ -186,6 +186,9 @@ fn seed(contract: &Contract, conn: &mut Connection) -> Result<(), EngineError> {
             let json = match value {
                 SeedValue::Str(s) => Json::String(s.clone()),
                 SeedValue::Int(n) => Json::Number((*n).into()),
+                SeedValue::Float(f) => serde_json::Number::from_f64(*f)
+                    .map(Json::Number)
+                    .expect("checked: seed floats are finite"),
                 SeedValue::Bool(b) => Json::Bool(*b),
                 SeedValue::Ref { binding } => bindings
                     .get(binding)

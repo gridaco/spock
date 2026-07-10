@@ -166,6 +166,7 @@ impl Checker {
                 let ty = match &f.ty.kind {
                     ast::TypeExprKind::Text => Type::Text,
                     ast::TypeExprKind::Int => Type::Int,
+                    ast::TypeExprKind::Float => Type::Float,
                     ast::TypeExprKind::Bool => Type::Bool,
                     ast::TypeExprKind::Timestamp => Type::Timestamp,
                     ast::TypeExprKind::Uuid => Type::Uuid,
@@ -253,6 +254,7 @@ impl Checker {
                 let ty = match &p.ty.kind {
                     ast::TypeExprKind::Text => Type::Text,
                     ast::TypeExprKind::Int => Type::Int,
+                    ast::TypeExprKind::Float => Type::Float,
                     ast::TypeExprKind::Bool => Type::Bool,
                     ast::TypeExprKind::Timestamp => Type::Timestamp,
                     ast::TypeExprKind::Uuid => Type::Uuid,
@@ -493,6 +495,7 @@ impl Checker {
         let ty = match &f.ty.kind {
             ast::TypeExprKind::Text => Type::Text,
             ast::TypeExprKind::Int => Type::Int,
+            ast::TypeExprKind::Float => Type::Float,
             ast::TypeExprKind::Bool => Type::Bool,
             ast::TypeExprKind::Timestamp => Type::Timestamp,
             ast::TypeExprKind::Uuid => Type::Uuid,
@@ -585,6 +588,9 @@ impl Checker {
             }
             (ast::DefaultExpr::Lit(ast::Lit::Int(v, _)), Type::Int) => {
                 ok(DefaultValue::Int { value: *v })
+            }
+            (ast::DefaultExpr::Lit(ast::Lit::Float(v, _)), Type::Float) => {
+                ok(DefaultValue::Float { value: *v })
             }
             (ast::DefaultExpr::Lit(ast::Lit::Bool(v, _)), Type::Bool) => {
                 ok(DefaultValue::Bool { value: *v })
@@ -842,6 +848,7 @@ impl Checker {
                         }
                     }
                     (ast::Lit::Int(v, _), Type::Int) => Some(SeedValue::Int(*v)),
+                    (ast::Lit::Float(v, _), Type::Float) => Some(SeedValue::Float(*v)),
                     (ast::Lit::Bool(v, _), Type::Bool) => Some(SeedValue::Bool(*v)),
                     (_, Type::Text) => {
                         mismatch(self, "a string");
@@ -849,6 +856,10 @@ impl Checker {
                     }
                     (_, Type::Int) => {
                         mismatch(self, "an integer");
+                        None
+                    }
+                    (_, Type::Float) => {
+                        mismatch(self, "a float (write `0.0`, not `0`)");
                         None
                     }
                     (_, Type::Bool) => {
@@ -1120,6 +1131,27 @@ mod tests {
         assert_eq!(
             codes("table a { key id: uuid = auto\n n: int on delete cascade }"),
             vec!["E015"]
+        );
+    }
+
+    #[test]
+    fn float_fields_defaults_and_seeds() {
+        // literals fit their own type: 0.5 fits float, 0 does not
+        let contract = compile(
+            "table tag { key id: uuid = auto\n x: float = 0.5 }\n\
+             seed { tag { x: 0.25 } }",
+        )
+        .unwrap();
+        let x = contract.table("tag").unwrap().field("x").unwrap();
+        assert_eq!(x.ty, Type::Float);
+        assert!(matches!(x.default, Some(DefaultValue::Float { value }) if value == 0.5));
+        assert_eq!(
+            codes("table tag { key id: uuid = auto\n x: float = 0 }"),
+            vec!["E009"]
+        );
+        assert_eq!(
+            codes("table tag { key id: uuid = auto\n x: float }\nseed { tag { x: 1 } }"),
+            vec!["E023"]
         );
     }
 

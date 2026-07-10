@@ -139,6 +139,7 @@ table post {
 }
 
 record stats { posts: int }
+record ratio { value: float }
 
 fn rename_user(user: user, username: text) -> user ! user_username_taken {
   unchecked sql("UPDATE user SET username = :username WHERE id = :user RETURNING *")
@@ -162,6 +163,10 @@ fn force_post(author: uuid, caption: text?) -> post {
 
 fn clear_username(user: user) -> user {
   unchecked sql("UPDATE user SET username = NULL WHERE id = :user RETURNING *")
+}
+
+fn double(f: float) -> ratio {
+  unchecked sql("SELECT :f * 2.0 AS value")
 }
 
 seed {
@@ -208,6 +213,13 @@ seed {
         let f = contract.fn_def("user_stats").unwrap();
         let stats = call(&contract, f, &mut conn, &args(&[("user", maya.clone().into())])).unwrap();
         assert_eq!(stats["posts"], 1);
+        // float param binds Real; the result maps back as a JSON number
+        let f = contract.fn_def("double").unwrap();
+        let row = call(&contract, f, &mut conn, &args(&[("f", 1.5.into())])).unwrap();
+        assert_eq!(row["value"], 3.0);
+        // a whole JSON number is a legal float argument
+        let row = call(&contract, f, &mut conn, &args(&[("f", 2.into())])).unwrap();
+        assert_eq!(row["value"], 4.0);
     }
 
     #[test]
