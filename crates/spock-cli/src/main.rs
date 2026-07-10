@@ -120,8 +120,7 @@ fn run(contract: Contract, port: u16, db: Option<PathBuf>) -> anyhow::Result<()>
         println!("listening on http://127.0.0.1:{port}");
         println!("  GET  /~contract           the contract, as data");
         println!("  GET  /rest/v1/{{table}}     open reads (identity view)");
-        println!("  POST /graphql/v1          GraphQL reads (GraphiQL in the browser)");
-        println!("  POST /~dev/{{table}}        dev-surface insert");
+        println!("  POST /graphql/v1          GraphQL reads + writes (GraphiQL in the browser)");
         tokio::select! {
             result = spock_runtime::http::serve(app, listener) => result?,
             _ = tokio::signal::ctrl_c() => {}

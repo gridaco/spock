@@ -104,7 +104,7 @@ async fn the_graphql_surface() {
     .await;
     assert_no_errors(&resp);
     assert_eq!(resp["data"]["__schema"]["queryType"]["name"], "Query");
-    assert!(resp["data"]["__schema"]["mutationType"].is_null());
+    assert_eq!(resp["data"]["__schema"]["mutationType"]["name"], "Mutation");
     let types: Vec<&str> = resp["data"]["__schema"]["types"]
         .as_array()
         .unwrap()
@@ -232,8 +232,10 @@ async fn the_graphql_surface() {
     assert_no_errors(&resp);
     assert_eq!(resp["data"]["follow_list"].as_array().unwrap().len(), 1);
 
+    // the by-key root now exists for composite tables, but its key args are
+    // required — omitting them is still a validation error over HTTP 200
     let resp = gql(&base, "{ follow { since } }", Value::Null).await;
-    assert!(!resp["errors"].is_null()); // validation error, HTTP 200
+    assert!(!resp["errors"].is_null());
 
     // -- GraphiQL on GET -------------------------------------------------------
     let resp = reqwest::get(format!("{base}/graphql/v1")).await.unwrap();
@@ -248,4 +250,301 @@ async fn the_graphql_surface() {
     assert!(content_type.starts_with("text/html"));
     let body = resp.text().await.unwrap();
     assert!(body.to_lowercase().contains("graphiql"));
+}
+
+fn extensions(response: &Value) -> &Value {
+    &response["errors"][0]["extensions"]
+}
+
+#[tokio::test]
+async fn the_graphql_mutations() {
+    let base = start().await;
+
+    // -- create: defaults applied, row returned -----------------------------
+    let resp = gql(
+        &base,
+        r#"mutation { create_user(username: "vera") { id username bio joined_at } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    let vera = &resp["data"]["create_user"];
+    assert_eq!(vera["username"], "vera");
+    assert!(vera["bio"].is_null());
+    let vera_id = vera["id"].as_str().unwrap().to_string();
+    assert!(uuid::Uuid::parse_str(&vera_id).is_ok()); // auto -> uuidv7
+    assert!(vera["joined_at"].as_str().unwrap().contains('T')); // now -> rfc3339
+
+    // -- create: derived unique error in extensions -------------------------
+    let resp = gql(
+        &base,
+        r#"mutation { create_user(username: "maya") { id } }"#,
+        Value::Null,
+    )
+    .await;
+    assert!(resp["data"].is_null());
+    let ext = extensions(&resp);
+    assert_eq!(ext["code"], "user_username_taken");
+    assert_eq!(ext["kind"], "unique");
+    assert_eq!(ext["table"], "user");
+    assert_eq!(ext["fields"], json!(["username"]));
+
+    // -- create: omitted required arg is a *validation* error ---------------
+    // (required-no-default fields are non-null args; the type system
+    // supersedes the derived `required` error on create — spec 8.2)
+    let resp = gql(
+        &base,
+        "mutation { create_user(bio: \"x\") { id } }",
+        Value::Null,
+    )
+    .await;
+    assert!(!resp["errors"].is_null());
+
+    // -- create: ref errors --------------------------------------------------
+    let ghost = uuid::Uuid::now_v7().to_string();
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ create_post(author: "{ghost}") {{ id }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(extensions(&resp)["code"], "post_author_not_found");
+    assert_eq!(extensions(&resp)["kind"], "ref_not_found");
+
+    let resp = gql(
+        &base,
+        r#"mutation { create_post(author: "not-a-uuid") { id } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(extensions(&resp)["code"], "type_mismatch");
+
+    // -- create: composite key conflict --------------------------------------
+    let (maya_id, luis_id) = {
+        let resp = gql(&base, "{ user_list { id username } }", Value::Null).await;
+        let users = resp["data"]["user_list"].as_array().unwrap().clone();
+        let id_of = |name: &str| {
+            users.iter().find(|u| u["username"] == name).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        (id_of("maya"), id_of("luis"))
+    };
+    let resp = gql(
+        &base,
+        &format!(
+            r#"mutation {{ create_follow(follower: "{luis_id}", target: "{maya_id}") {{ since }} }}"#
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(extensions(&resp)["code"], "follow_already_exists");
+    assert_eq!(extensions(&resp)["kind"], "key");
+
+    // -- update: change, keep, clear ------------------------------------------
+    let resp = gql(
+        &base,
+        &format!(
+            r#"mutation {{ update_user(id: "{vera_id}", bio: "climber") {{ username bio }} }}"#
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["update_user"]["bio"], "climber");
+    assert_eq!(resp["data"]["update_user"]["username"], "vera"); // untouched
+
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ update_user(id: "{vera_id}", bio: null) {{ bio }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    assert!(resp["data"]["update_user"]["bio"].is_null()); // explicit null clears
+
+    // -- update: null on required fields -> derived required errors ----------
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ update_user(id: "{vera_id}", username: null) {{ id }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(extensions(&resp)["code"], "user_username_required");
+
+    // required-with-default non-key field: clearable, so derived too
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ update_user(id: "{vera_id}", joined_at: null) {{ id }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(extensions(&resp)["code"], "user_joined_at_required");
+
+    // -- update: unique conflict (pins UPDATE-vs-INSERT message parsing) ------
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ update_user(id: "{vera_id}", username: "maya") {{ id }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(extensions(&resp)["code"], "user_username_taken");
+
+    // -- update: write-miss and malformed key are errors, not null -----------
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ update_user(id: "{ghost}", bio: "x") {{ id }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(extensions(&resp)["code"], "not_found");
+
+    let resp = gql(
+        &base,
+        r#"mutation { update_user(id: "not-a-uuid", bio: "x") { id } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(extensions(&resp)["code"], "not_found");
+
+    // -- update: empty change set is a validated no-op ------------------------
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ update_user(id: "{vera_id}") {{ username }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["update_user"]["username"], "vera");
+
+    // -- update via variables: null clears, UNPROVIDED means omitted ----------
+    // (pins the workaround for async-graphql coercing unprovided nullable
+    // variables to null — spec 8.2 says unprovided variable = omitted arg)
+    let query = r#"mutation($id: UUID!, $bio: String) { update_user(id: $id, bio: $bio) { bio } }"#;
+    let resp = gql(&base, query, json!({ "id": vera_id, "bio": "with-vars" })).await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["update_user"]["bio"], "with-vars");
+
+    let resp = gql(&base, query, json!({ "id": vera_id })).await; // $bio unprovided
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["update_user"]["bio"], "with-vars"); // untouched
+
+    let resp = gql(&base, query, json!({ "id": vera_id, "bio": null })).await;
+    assert_no_errors(&resp);
+    assert!(resp["data"]["update_user"]["bio"].is_null()); // explicit null clears
+
+    // -- serial mutations: first commits, second errors, first survives -------
+    let resp = gql(
+        &base,
+        r#"mutation {
+             a: create_user(username: "rex") { id }
+             b: create_user(username: "rex") { id }
+           }"#,
+        Value::Null,
+    )
+    .await;
+    assert!(!resp["errors"].is_null()); // b conflicts
+    let resp = gql(
+        &base,
+        r#"{ user_list(limit: 200) { username } }"#,
+        Value::Null,
+    )
+    .await;
+    let names: Vec<&str> = resp["data"]["user_list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| u["username"].as_str().unwrap())
+        .collect();
+    assert_eq!(names.iter().filter(|n| **n == "rex").count(), 1); // a committed
+
+    // -- delete: restrict blocks ----------------------------------------------
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ delete_user(id: "{maya_id}") {{ id }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(extensions(&resp)["code"], "user_restricted");
+    assert_eq!(extensions(&resp)["kind"], "restricted");
+
+    // -- delete: returns the row, then the read is null ------------------------
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ delete_user(id: "{vera_id}") {{ username }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["delete_user"]["username"], "vera");
+    let resp = gql(
+        &base,
+        &format!(r#"{{ user(id: "{vera_id}") {{ id }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert!(resp["data"]["user"].is_null());
+
+    // -- delete: cascade (post -> its comments) --------------------------------
+    let resp = gql(&base, r#"{ post_list { id caption } }"#, Value::Null).await;
+    let p1 = resp["data"]["post_list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["caption"] == "first light")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resp = gql(&base, "{ comment_list { id } }", Value::Null).await;
+    assert_eq!(resp["data"]["comment_list"].as_array().unwrap().len(), 1);
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ delete_post(id: "{p1}") {{ caption }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    let resp = gql(&base, "{ comment_list { id } }", Value::Null).await;
+    assert_eq!(resp["data"]["comment_list"].as_array().unwrap().len(), 0);
+
+    // -- delete: double delete is not_found -------------------------------------
+    let resp = gql(
+        &base,
+        &format!(r#"mutation {{ delete_post(id: "{p1}") {{ id }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(extensions(&resp)["code"], "not_found");
+
+    // -- composite by-key query, then unfollow (the composite motivator) --------
+    let resp = gql(
+        &base,
+        &format!(r#"{{ follow(follower: "{luis_id}", target: "{maya_id}") {{ since }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    assert!(resp["data"]["follow"]["since"].is_string());
+    let resp = gql(
+        &base,
+        &format!(r#"{{ follow(follower: "{maya_id}", target: "{luis_id}") {{ since }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    assert!(resp["data"]["follow"].is_null()); // read-miss stays null
+
+    let resp = gql(
+        &base,
+        &format!(
+            r#"mutation {{ delete_follow(follower: "{luis_id}", target: "{maya_id}") {{ since }} }}"#
+        ),
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    let resp = gql(&base, "{ follow_list { since } }", Value::Null).await;
+    assert_eq!(resp["data"]["follow_list"].as_array().unwrap().len(), 0);
 }

@@ -1,18 +1,16 @@
 //! The HTTP protocol (docs/spec/v0.md §8). Plain HTTP + JSON. The root
 //! namespace is protocol-owned: `~` is the meta surface, `/rest/v1` carries
 //! the open reads (identity views, v0 degenerate form), `/graphql/v1` the
-//! GraphQL reads; writes exist only on the dev surface until `fn` lands.
+//! GraphQL reads and writes (§8.2). REST stays read-only in v0.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_graphql::dynamic::Schema;
 use async_graphql::http::GraphiQLSource;
-use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::response::Html;
+use axum::routing::get;
 use axum::{Json, Router};
 use rusqlite::types::Value as SqlValue;
 use serde_json::{json, Value as JsonValue};
@@ -34,8 +32,6 @@ pub fn router(app: Arc<App>) -> Result<Router, SchemaBuildError> {
     Ok(Router::new()
         .route("/~contract", get(contract))
         .route("/~health", get(health))
-        .route("/~dev/{table}", post(dev_insert))
-        .route("/~dev/{table}/{id}", delete(dev_delete))
         .route("/rest/v1/{table}", get(list_rows))
         .route("/rest/v1/{table}/{id}", get(get_row))
         .fallback(not_found)
@@ -155,44 +151,6 @@ async fn get_row(
             table.name
         ))),
     }
-}
-
-// POST /~dev/{table} — dev-surface insert (§7.2, §8)
-async fn dev_insert(
-    State(app): State<Arc<App>>,
-    Path(table): Path<String>,
-    body: Bytes,
-) -> Result<Response, ApiError> {
-    let table = resolve_table(&app, &table)?;
-
-    let parsed: JsonValue = serde_json::from_slice(&body)
-        .map_err(|_| ApiError::bad_request("body is not valid JSON"))?;
-    let JsonValue::Object(object) = parsed else {
-        return Err(ApiError::bad_request("body must be a JSON object"));
-    };
-
-    let mut db = app
-        .db
-        .lock()
-        .map_err(|_| ApiError::internal("db lock poisoned"))?;
-    let row = write::insert_row(&app.contract, table, &mut db, &object)?;
-    Ok((StatusCode::CREATED, Json(row)).into_response())
-}
-
-// DELETE /~dev/{table}/{id} — dev-surface delete (§7.2, §8)
-async fn dev_delete(
-    State(app): State<Arc<App>>,
-    Path((table, id)): Path<(String, String)>,
-) -> Result<StatusCode, ApiError> {
-    let table = resolve_table(&app, &table)?;
-    let key = path_key_value(&app, table, &id)?;
-
-    let mut db = app
-        .db
-        .lock()
-        .map_err(|_| ApiError::internal("db lock poisoned"))?;
-    write::delete_row(&app.contract, table, &mut db, &[key])?;
-    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Interpret a path segment as the table's key value. Composite keys are not

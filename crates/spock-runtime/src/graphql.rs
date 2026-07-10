@@ -1,17 +1,21 @@
-//! GraphQL reads at `/graphql/v1` (docs/spec/v0.md §8.2).
+//! GraphQL reads and writes at `/graphql/v1` (docs/spec/v0.md §8.2).
 //!
 //! The schema is built dynamically at startup from the loaded contract —
 //! types are unknown at compile time, so this is `async_graphql::dynamic`
-//! end to end. Read-only by design: the query root is derived from tables;
-//! mutations arrive with `fn`. Naming laws (normative, §8.2):
+//! end to end. Naming laws (normative, §8.2):
 //!
 //! - object type = PascalCase of the table name (`post_media` → `PostMedia`);
 //!   collisions or reserved names fail startup, not requests;
 //! - field names are the contract's, verbatim;
-//! - `Query.<table>_list(limit)` for every table; `Query.<table>(<key>)`
-//!   for single-key tables (missing row → `null`);
+//! - `Query.<table>_list(limit)` and `Query.<table>(<key args>)` for every
+//!   table (missing row → `null`);
 //! - forward reference fields resolve to the referenced object;
-//! - reverse collections are `<child>_<field>_list` on the referenced type.
+//! - reverse collections are `<child>_<field>_list` on the referenced type;
+//! - `Mutation.create_<table>` / `update_<table>` / `delete_<table>`,
+//!   inline args, single row each. Update args: absent = keep, explicit
+//!   `null` = clear (§5.1 carve-out). A write that did not happen is an
+//!   error (`extensions.code = "not_found"`), never a silent `null`; all
+//!   write errors carry the §8.1 payload in `errors[].extensions`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -20,12 +24,15 @@ use async_graphql::dynamic::{
     Field, FieldFuture, FieldValue, InputValue, Object, ResolverContext, Scalar, Schema,
     SchemaError, TypeRef,
 };
+use async_graphql::ErrorExtensions;
 use async_graphql::Value as GqlValue;
+use async_graphql_value::Value as AstValue;
 use rusqlite::types::Value as SqlValue;
-use serde_json::Value as Json;
-use spock_lang::ir::{Contract, Table, Type};
+use serde_json::{Map, Value as Json};
+use spock_lang::ir::{Contract, ErrorKind, Field as IrField, Table, Type};
 use time::format_description::well_known::Rfc3339;
 
+use crate::error::ApiError;
 use crate::value::json_to_sql;
 use crate::write;
 use crate::App;
@@ -33,9 +40,11 @@ use crate::App;
 const DEFAULT_LIMIT: i64 = 50;
 const MAX_LIMIT: i64 = 200;
 
-/// Type names the derivation may never produce (builtins + our scalars).
+/// Type names the derivation may never produce (builtins + roots + our
+/// scalars).
 const RESERVED_TYPE_NAMES: &[&str] = &[
     "Query",
+    "Mutation",
     "String",
     "Int",
     "Float",
@@ -106,9 +115,7 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
             Ok(())
         };
         claim(format!("{}_list", table.name))?;
-        if table.key.len() == 1 {
-            claim(table.name.clone())?;
-        }
+        claim(table.name.clone())?;
     }
 
     // Pass 2 — object types (declared fields, forward refs, reverse
@@ -157,18 +164,30 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
         objects.push(obj);
     }
 
-    // Pass 3 — the Query root.
+    // Pass 3 — the Query root. By-key fields take the key fields as args,
+    // so composite-key tables are addressable too.
     let mut query = Object::new("Query");
     for table in &contract.tables {
         let type_name = &type_names[&table.name];
         query = query.field(root_list_field(table, type_name));
-        if table.key.len() == 1 {
-            query = query.field(root_by_key_field(contract, table, type_name));
-        }
+        query = query.field(root_by_key_field(contract, table, type_name));
+    }
+
+    // Pass 3b — the Mutation root: create/update/delete per table. The
+    // names are collision-free by construction: three fixed, distinct
+    // prefixes over unique table names (`create_x == update_y` is
+    // impossible character-wise), on a root object with no other fields.
+    let mut mutation = Object::new("Mutation");
+    for table in &contract.tables {
+        let type_name = &type_names[&table.name];
+        mutation = mutation
+            .field(create_field(contract, table, type_name))
+            .field(update_field(contract, table, type_name))
+            .field(delete_field(contract, table, type_name));
     }
 
     // Pass 4 — register and finish. Introspection stays enabled (§8.2).
-    let mut builder = Schema::build("Query", None, None)
+    let mut builder = Schema::build("Query", Some("Mutation"), None)
         .register(Scalar::new("UUID").description("A UUID in canonical hyphenated form"))
         .register(Scalar::new("Timestamp").description("An RFC 3339 UTC timestamp"))
         .data(app.clone())
@@ -178,7 +197,7 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
     for obj in objects {
         builder = builder.register(obj);
     }
-    builder = builder.register(query);
+    builder = builder.register(query).register(mutation);
     Ok(builder.finish()?)
 }
 
@@ -414,53 +433,323 @@ fn root_list_field(table: &Table, type_name: &str) -> Field {
     .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
 }
 
-/// `Query.<table>(<key>): T` — single-key tables; a miss (including a
+/// Convert one argument value per the field's *value* type. `Ok(None)`
+/// means a well-typed but unparseable uuid/timestamp — a key that can
+/// match no row.
+fn arg_to_sql(
+    contract: &Contract,
+    field: &IrField,
+    arg: async_graphql::dynamic::ValueAccessor<'_>,
+) -> Result<Option<SqlValue>, async_graphql::Error> {
+    Ok(match contract.value_type(&field.ty) {
+        Type::Text => Some(SqlValue::Text(arg.string()?.to_string())),
+        Type::Uuid => uuid::Uuid::parse_str(arg.string()?)
+            .ok()
+            .map(|u| SqlValue::Text(u.to_string())),
+        Type::Int => Some(SqlValue::Integer(arg.i64()?)),
+        Type::Bool => Some(SqlValue::Integer(arg.boolean()? as i64)),
+        Type::Timestamp => time::OffsetDateTime::parse(arg.string()?, &Rfc3339)
+            .ok()
+            .map(|t| SqlValue::Text(t.format(&Rfc3339).expect("rfc3339 roundtrip"))),
+        Type::Ref { .. } => unreachable!("value_type never returns a ref"),
+    })
+}
+
+/// One required argument per key field — shared by `Query.<t>` and the
+/// update/delete mutations.
+fn key_args(contract: &Contract, table: &Table) -> Vec<InputValue> {
+    table
+        .key
+        .iter()
+        .map(|name| {
+            let field = table.field(name).expect("checked: key fields exist");
+            InputValue::new(
+                name.clone(),
+                TypeRef::named_nn(scalar_name(contract, &field.ty)),
+            )
+        })
+        .collect()
+}
+
+/// How a key that can match no row (malformed uuid/timestamp) lands:
+/// reads render `null`; writes are errors — a write that did not happen
+/// must shout (§8.2).
+#[derive(Clone, Copy)]
+enum KeyMiss {
+    ReadNull,
+    WriteNotFound,
+}
+
+/// Parse the key args in key order. `Ok(None)` only under `ReadNull`.
+fn key_from_args(
+    contract: &Contract,
+    table: &Table,
+    ctx: &ResolverContext<'_>,
+    miss: KeyMiss,
+) -> Result<Option<Vec<SqlValue>>, async_graphql::Error> {
+    let mut key = Vec::with_capacity(table.key.len());
+    for name in &table.key {
+        let field = table
+            .field(name)
+            .ok_or_else(|| gql("schema/contract drift: key"))?;
+        let arg = ctx.args.try_get(name)?;
+        match arg_to_sql(contract, field, arg)? {
+            Some(v) => key.push(v),
+            None => {
+                return match miss {
+                    KeyMiss::ReadNull => Ok(None),
+                    KeyMiss::WriteNotFound => Err(api_error_to_gql(ApiError::not_found(format!(
+                        "no {} row with this key",
+                        table.name
+                    )))),
+                };
+            }
+        }
+    }
+    Ok(Some(key))
+}
+
+/// Port an [`ApiError`] to a GraphQL error carrying the §8.1 envelope
+/// payload in `extensions` (`status` is dropped — GraphQL is HTTP 200).
+fn api_error_to_gql(e: ApiError) -> async_graphql::Error {
+    async_graphql::Error::new(e.message.clone()).extend_with(|_, ext| {
+        ext.set("code", e.code.clone());
+        ext.set("kind", e.kind);
+        match &e.table {
+            Some(t) => ext.set("table", t.clone()),
+            None => ext.set("table", GqlValue::Null),
+        }
+        ext.set(
+            "fields",
+            GqlValue::List(e.fields.iter().cloned().map(GqlValue::String).collect()),
+        );
+    })
+}
+
+/// True when `arg` appears in `ctx.args` as `null` only because it was
+/// bound to a nullable variable the client did not provide (and whose
+/// definition has no explicit default). async-graphql coerces such
+/// variables to `null` (parser `VariableDefinition::default_value`); the
+/// GraphQL spec says an unprovided variable means the argument is
+/// *omitted* — we restore the spec, because update semantics hang on the
+/// distinction (§5.1 carve-out).
+fn is_unprovided_variable(ctx: &ResolverContext<'_>, arg: &str) -> bool {
+    let Some(value) = ctx.ctx.item.node.get_argument(arg) else {
+        return false;
+    };
+    let AstValue::Variable(var_name) = &value.node else {
+        return false;
+    };
+    let env = &ctx.ctx.query_env;
+    if env.variables.contains_key(var_name) {
+        return false; // provided — possibly as an explicit null
+    }
+    !env.operation
+        .node
+        .variable_definitions
+        .iter()
+        .any(|def| def.node.name.node == *var_name && def.node.default_value.is_some())
+}
+
+/// `Query.<table>(<key args>): T` — every table; a miss (including a
 /// malformed uuid/timestamp key, §8's "malformed key matches no row") is
 /// `null`, never an error.
 fn root_by_key_field(contract: &Contract, table: &Table, type_name: &str) -> Field {
     let table_name = table.name.clone();
-    let key_name = table.key[0].clone();
-    let key_field = table.field(&key_name).expect("checked: key field exists");
-    let arg_type = TypeRef::named_nn(scalar_name(contract, &key_field.ty));
-
-    Field::new(table.name.clone(), TypeRef::named(type_name), move |ctx| {
+    let mut field = Field::new(table.name.clone(), TypeRef::named(type_name), move |ctx| {
         let table_name = table_name.clone();
-        let key_name = key_name.clone();
         FieldFuture::new(async move {
             let app = app_of(&ctx)?;
             let contract = &app.contract;
             let table = contract
                 .table(&table_name)
                 .ok_or_else(|| gql("schema/contract drift: table"))?;
-            let key_field = table
-                .field(&key_name)
-                .ok_or_else(|| gql("schema/contract drift: key"))?;
-            let arg = ctx.args.try_get(&key_name)?;
-
-            let key = match contract.value_type(&key_field.ty) {
-                Type::Text => Some(SqlValue::Text(arg.string()?.to_string())),
-                Type::Uuid => uuid::Uuid::parse_str(arg.string()?)
-                    .ok()
-                    .map(|u| SqlValue::Text(u.to_string())),
-                Type::Int => Some(SqlValue::Integer(arg.i64()?)),
-                Type::Bool => Some(SqlValue::Integer(arg.boolean()? as i64)),
-                Type::Timestamp => time::OffsetDateTime::parse(arg.string()?, &Rfc3339)
-                    .ok()
-                    .map(|t| SqlValue::Text(t.format(&Rfc3339).expect("rfc3339 roundtrip"))),
-                Type::Ref { .. } => unreachable!("value_type never returns a ref"),
-            };
-            let Some(key) = key else {
+            let Some(key) = key_from_args(contract, table, &ctx, KeyMiss::ReadNull)? else {
                 return Ok(None); // malformed key value matches no row
             };
-
             let row = {
                 let db = app.db.lock().map_err(|_| gql("db lock poisoned"))?;
-                write::select_by_key(contract, table, &db, &[key]).map_err(gql)?
+                write::select_by_key(contract, table, &db, &key).map_err(gql)?
             };
             Ok(row.map(FieldValue::owned_any))
         })
-    })
-    .argument(InputValue::new(table.key[0].clone(), arg_type))
+    });
+    for arg in key_args(contract, table) {
+        field = field.argument(arg);
+    }
+    field
+}
+
+/// Description listing the derived-error codes a mutation can produce —
+/// the contract's error surface, visible through introspection.
+fn mutation_description(
+    action: &str,
+    table: &Table,
+    kinds: &[ErrorKind],
+    extra: &[&str],
+) -> String {
+    let mut codes: Vec<String> = table
+        .errors
+        .iter()
+        .filter(|e| kinds.contains(&e.kind))
+        .map(|e| e.code.clone())
+        .collect();
+    codes.extend(extra.iter().map(|s| s.to_string()));
+    format!(
+        "{action} one {} row. Errors: {}.",
+        table.name,
+        codes.join(", ")
+    )
+}
+
+/// `Mutation.create_<table>(<field args>): T!` — one arg per field,
+/// required iff the field is required and has no default; defaults apply
+/// on omission (§7.2 Inserts; `null` is absence on insert, §5.1).
+fn create_field(contract: &Contract, table: &Table, type_name: &str) -> Field {
+    let table_name = table.name.clone();
+    let mut field = Field::new(
+        format!("create_{}", table.name),
+        TypeRef::named_nn(type_name),
+        move |ctx| {
+            let table_name = table_name.clone();
+            FieldFuture::new(async move {
+                let app = app_of(&ctx)?;
+                let contract = &app.contract;
+                let table = contract
+                    .table(&table_name)
+                    .ok_or_else(|| gql("schema/contract drift: table"))?;
+                let mut body = Map::new();
+                for f in &table.fields {
+                    if let Some(v) = ctx.args.get(&f.name) {
+                        body.insert(f.name.clone(), v.deserialize::<Json>()?);
+                    }
+                }
+                let row = {
+                    let mut db = app.db.lock().map_err(|_| gql("db lock poisoned"))?;
+                    write::insert_row(contract, table, &mut db, &body).map_err(api_error_to_gql)?
+                };
+                Ok(Some(FieldValue::owned_any(row)))
+            })
+        },
+    )
+    .description(mutation_description(
+        "Create",
+        table,
+        &[ErrorKind::Key, ErrorKind::Unique, ErrorKind::RefNotFound],
+        &[],
+    ));
+    for f in &table.fields {
+        let required = !f.optional && f.default.is_none();
+        let ty = if required {
+            TypeRef::named_nn(scalar_name(contract, &f.ty))
+        } else {
+            TypeRef::named(scalar_name(contract, &f.ty))
+        };
+        field = field.argument(InputValue::new(f.name.clone(), ty));
+    }
+    field
+}
+
+/// `Mutation.update_<table>(<key args>, <non-key field args>): T!` —
+/// key args select (keys are immutable); non-key args are all nullable:
+/// absent = keep, explicit `null` = clear (§5.1 carve-out, §7.2 Updates).
+fn update_field(contract: &Contract, table: &Table, type_name: &str) -> Field {
+    let table_name = table.name.clone();
+    let mut field = Field::new(
+        format!("update_{}", table.name),
+        TypeRef::named_nn(type_name),
+        move |ctx| {
+            let table_name = table_name.clone();
+            FieldFuture::new(async move {
+                let app = app_of(&ctx)?;
+                let contract = &app.contract;
+                let table = contract
+                    .table(&table_name)
+                    .ok_or_else(|| gql("schema/contract drift: table"))?;
+                let key = key_from_args(contract, table, &ctx, KeyMiss::WriteNotFound)?
+                    .expect("WriteNotFound never yields None");
+                let mut changes = Map::new();
+                for f in &table.fields {
+                    if table.key.contains(&f.name) {
+                        continue;
+                    }
+                    let Some(v) = ctx.args.get(&f.name) else {
+                        continue; // absent = keep
+                    };
+                    if v.is_null() && is_unprovided_variable(&ctx, &f.name) {
+                        continue; // unprovided variable = omitted (spec-faithful)
+                    }
+                    changes.insert(f.name.clone(), v.deserialize::<Json>()?);
+                }
+                let row = {
+                    let mut db = app.db.lock().map_err(|_| gql("db lock poisoned"))?;
+                    write::update_row(contract, table, &mut db, &key, &changes)
+                        .map_err(api_error_to_gql)?
+                };
+                Ok(Some(FieldValue::owned_any(row)))
+            })
+        },
+    )
+    .description(mutation_description(
+        "Update",
+        table,
+        &[
+            ErrorKind::Unique,
+            ErrorKind::Required,
+            ErrorKind::RefNotFound,
+        ],
+        &["not_found"],
+    ));
+    for arg in key_args(contract, table) {
+        field = field.argument(arg);
+    }
+    for f in &table.fields {
+        if table.key.contains(&f.name) {
+            continue;
+        }
+        field = field.argument(InputValue::new(
+            f.name.clone(),
+            TypeRef::named(scalar_name(contract, &f.ty)),
+        ));
+    }
+    field
+}
+
+/// `Mutation.delete_<table>(<key args>): T!` — returns the row as it read
+/// before deletion; inbound `restrict` references block (§7.2 Deletes).
+fn delete_field(contract: &Contract, table: &Table, type_name: &str) -> Field {
+    let table_name = table.name.clone();
+    let mut field = Field::new(
+        format!("delete_{}", table.name),
+        TypeRef::named_nn(type_name),
+        move |ctx| {
+            let table_name = table_name.clone();
+            FieldFuture::new(async move {
+                let app = app_of(&ctx)?;
+                let contract = &app.contract;
+                let table = contract
+                    .table(&table_name)
+                    .ok_or_else(|| gql("schema/contract drift: table"))?;
+                let key = key_from_args(contract, table, &ctx, KeyMiss::WriteNotFound)?
+                    .expect("WriteNotFound never yields None");
+                let row = {
+                    let mut db = app.db.lock().map_err(|_| gql("db lock poisoned"))?;
+                    write::delete_row(contract, table, &mut db, &key).map_err(api_error_to_gql)?
+                };
+                Ok(Some(FieldValue::owned_any(row)))
+            })
+        },
+    )
+    .description(mutation_description(
+        "Delete",
+        table,
+        &[ErrorKind::Restricted],
+        &["not_found"],
+    ));
+    for arg in key_args(contract, table) {
+        field = field.argument(arg);
+    }
+    field
 }
 
 #[cfg(test)]
@@ -496,7 +785,66 @@ mod tests {
         assert!(sdl.contains("type User"));
         assert!(sdl.contains("type Post"));
         assert!(sdl.contains("post_author_list"));
-        assert!(!sdl.contains("type Mutation"));
+        assert!(sdl.contains("type Mutation"));
+        for mutation in [
+            "create_user(",
+            "update_user(",
+            "delete_user(",
+            "create_post(",
+        ] {
+            assert!(sdl.contains(mutation), "missing {mutation} in:\n{sdl}");
+        }
+    }
+
+    /// One line of the SDL, located by prefix.
+    fn sdl_line(sdl: &str, prefix: &str) -> String {
+        sdl.lines()
+            .find(|l| l.trim_start().starts_with(prefix))
+            .unwrap_or_else(|| panic!("no `{prefix}` line in:\n{sdl}"))
+            .to_string()
+    }
+
+    #[test]
+    fn mutation_and_by_key_derivation_laws() {
+        let schema = build(
+            "table user { key id: uuid = auto\n username: text unique\n bio: text?\n joined_at: timestamp = now }\n\
+             table follow { key (follower, target)\n follower: user\n target: user\n since: timestamp = now }",
+        )
+        .unwrap();
+        let sdl = schema.sdl();
+
+        // create: required iff required ∧ no default; defaulted/optional nullable
+        let create = sdl_line(&sdl, "create_user(");
+        assert!(create.contains("username: String!"), "{create}");
+        assert!(create.contains("id: UUID,"), "{create}"); // auto default → nullable
+        assert!(create.contains("bio: String,"), "{create}");
+        assert!(create.contains("joined_at: Timestamp)"), "{create}");
+
+        // update: key required + immutable; non-keys all nullable
+        let update = sdl_line(&sdl, "update_user(");
+        assert!(update.contains("id: UUID!"), "{update}");
+        assert!(update.contains("username: String,"), "{update}");
+
+        // composite keys: full key args on delete and on the by-key query
+        let delete = sdl_line(&sdl, "delete_follow(");
+        assert!(
+            delete.contains("follower: UUID!, target: UUID!"),
+            "{delete}"
+        );
+        let by_key = sdl_line(&sdl, "follow(");
+        assert!(
+            by_key.contains("follower: UUID!, target: UUID!): Follow"),
+            "{by_key}"
+        );
+    }
+
+    #[test]
+    fn table_named_mutation_fails_startup() {
+        let err = build("table mutation { key id: uuid = auto\n a: int }").unwrap_err();
+        assert!(
+            matches!(err, SchemaBuildError::ReservedTypeName { .. }),
+            "{err}"
+        );
     }
 
     #[test]
