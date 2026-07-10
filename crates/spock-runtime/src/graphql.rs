@@ -1189,9 +1189,9 @@ mod tests {
         let schema = build(
             "table user { key id: uuid = auto\n username: text unique\n bio: text? }\n\
              record stats { posts: int\n latest: timestamp? }\n\
-             fn rename_user(user: user, username: text, note: text?) -> user ! user_username_taken { sql(\"UPDATE user SET username = :username, bio = :note WHERE id = :user RETURNING *\") }\n\
-             fn find_user(username: text) -> user? { sql(\"SELECT * FROM user WHERE username = :username\") }\n\
-             fn tally(n: int) -> [stats] { sql(\"SELECT count(*) AS posts, NULL AS latest FROM user LIMIT :n\") }",
+             fn rename_user(user: user, username: text, note: text?) -> user ! user_username_taken { unchecked sql(\"UPDATE user SET username = :username, bio = :note WHERE id = :user RETURNING *\") }\n\
+             fn find_user(username: text) -> user? { unchecked sql(\"SELECT * FROM user WHERE username = :username\") }\n\
+             fn tally(n: int) -> [stats] { unchecked sql(\"SELECT count(*) AS posts, NULL AS latest FROM user LIMIT :n\") }",
         )
         .unwrap();
         let sdl = schema.sdl();
@@ -1219,7 +1219,7 @@ mod tests {
         // a fn named like a derived CRUD mutation dies in the claim pass
         let err = build(
             "table user { key id: uuid = auto\n a: int }\n\
-             fn insert_user_one() -> user { sql(\"SELECT * FROM user\") }",
+             fn insert_user_one() -> user { unchecked sql(\"SELECT * FROM user\") }",
         )
         .unwrap_err();
         assert!(
@@ -1231,7 +1231,7 @@ mod tests {
         let schema = build(
             "table user { key id: uuid = auto\n a: int }\n\
              table follow { key (follower, target)\n follower: user\n target: user }\n\
-             fn update_follow_by_pk() -> [follow] { sql(\"SELECT * FROM follow\") }",
+             fn update_follow_by_pk() -> [follow] { unchecked sql(\"SELECT * FROM follow\") }",
         );
         assert!(schema.is_ok(), "{:?}", schema.err());
     }
@@ -1242,7 +1242,7 @@ mod tests {
         let err = build(
             "table user { key id: uuid = auto\n a: int }\n\
              record query { x: int }\n\
-             fn q() -> query { sql(\"SELECT 1 AS x\") }",
+             fn q() -> query { unchecked sql(\"SELECT 1 AS x\") }",
         )
         .unwrap_err();
         assert!(
@@ -1253,7 +1253,7 @@ mod tests {
         let err = build(
             "table user { key id: uuid = auto\n a: int }\n\
              record user_insert_input { x: int }\n\
-             fn q() -> user_insert_input { sql(\"SELECT 1 AS x\") }",
+             fn q() -> user_insert_input { unchecked sql(\"SELECT 1 AS x\") }",
         )
         .unwrap_err();
         assert!(

@@ -141,27 +141,27 @@ table post {
 record stats { posts: int }
 
 fn rename_user(user: user, username: text) -> user ! user_username_taken {
-  sql("UPDATE user SET username = :username WHERE id = :user RETURNING *")
+  unchecked sql("UPDATE user SET username = :username WHERE id = :user RETURNING *")
 }
 
 fn find_user(username: text) -> user? {
-  sql("SELECT * FROM user WHERE username = :username")
+  unchecked sql("SELECT * FROM user WHERE username = :username")
 }
 
 fn user_stats(user: user) -> stats {
-  sql("SELECT count(*) AS posts FROM post WHERE author = :user")
+  unchecked sql("SELECT count(*) AS posts FROM post WHERE author = :user")
 }
 
 fn all_users() -> [user] {
-  sql("SELECT * FROM user ORDER BY username")
+  unchecked sql("SELECT * FROM user ORDER BY username")
 }
 
 fn force_post(author: uuid, caption: text?) -> post {
-  sql("INSERT INTO post (id, author, caption) VALUES (:author, :author, :caption) RETURNING *")
+  unchecked sql("INSERT INTO post (id, author, caption) VALUES (:author, :author, :caption) RETURNING *")
 }
 
 fn clear_username(user: user) -> user {
-  sql("UPDATE user SET username = NULL WHERE id = :user RETURNING *")
+  unchecked sql("UPDATE user SET username = NULL WHERE id = :user RETURNING *")
 }
 
 seed {

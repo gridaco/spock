@@ -132,7 +132,7 @@ impl Parser {
     }
 
     // fn_decl = "fn" ident "(" [param {"," param} [","]] ")" "->" ret
-    //           ["!" ident {"|" ident}] "{" "sql" "(" string ")" "}"
+    //           ["!" ident {"|" ident}] "{" "unchecked" "sql" "(" string ")" "}"
     fn fn_decl(&mut self) -> Result<FnDecl, Diagnostic> {
         let start = self.expect(TokenKind::KwFn, "`fn`")?.span;
         let name = self.ident("fn name")?;
@@ -179,13 +179,34 @@ impl Parser {
         }
 
         self.expect(TokenKind::LBrace, "`{`")?;
-        // `sql` is contextual: a keyword only here, an identifier everywhere
+        // `unchecked` and `sql` are contextual: keywords only here,
+        // identifiers everywhere else. The marker is forced — the checker
+        // cannot verify the SQL, and the language marks its own limits
+        // (RFD 0011).
+        let marker = self.ident("`unchecked`")?;
+        if marker.name == "sql" {
+            return Err(Diagnostic::new(
+                "L010",
+                "a fn body must acknowledge the escape: write `unchecked sql(\"...\")` — the checker cannot verify SQL (RFD 0011)",
+                marker.span,
+            ));
+        }
+        if marker.name != "unchecked" {
+            return Err(Diagnostic::new(
+                "L010",
+                format!(
+                    "expected `unchecked`, found identifier `{}` (a v0 fn body is a single `unchecked sql(\"...\")` call)",
+                    marker.name
+                ),
+                marker.span,
+            ));
+        }
         let escape = self.ident("`sql`")?;
         if escape.name != "sql" {
             return Err(Diagnostic::new(
                 "L010",
                 format!(
-                    "expected `sql`, found identifier `{}` (a v0 fn body is a single sql(\"...\") call)",
+                    "expected `sql`, found identifier `{}` (a v0 fn body is a single `unchecked sql(\"...\")` call)",
                     escape.name
                 ),
                 escape.span,
@@ -561,7 +582,7 @@ mod tests {
     fn parses_full_fn() {
         let file = parse_ok(
             "fn rename_user(user: user, name: text, note: text?) -> user ! user_username_taken | not_found {\n\
-               sql(\"\"\"\n\
+               unchecked sql(\"\"\"\n\
                  UPDATE user SET username = :name WHERE id = :user RETURNING *\n\
                \"\"\")\n\
              }",
@@ -583,10 +604,10 @@ mod tests {
     #[test]
     fn parses_fn_arities_and_zero_params() {
         let file = parse_ok(
-            "fn find(name: text) -> user? { sql(\"x\") }\n\
-             fn recent(n: int) -> [post] { sql(\"x\") }\n\
-             fn hello() -> greeting { sql(\"x\") }\n\
-             fn trailing(a: int,) -> t { sql(\"x\") }",
+            "fn find(name: text) -> user? { unchecked sql(\"x\") }\n\
+             fn recent(n: int) -> [post] { unchecked sql(\"x\") }\n\
+             fn hello() -> greeting { unchecked sql(\"x\") }\n\
+             fn trailing(a: int,) -> t { unchecked sql(\"x\") }",
         );
         assert_eq!(file.fns[0].ret.arity, RetArity::Maybe);
         assert_eq!(file.fns[1].ret.arity, RetArity::Many);
@@ -611,19 +632,35 @@ mod tests {
     }
 
     #[test]
+    fn unchecked_stays_an_identifier_outside_fn_bodies() {
+        let file = parse_ok("table unchecked { key id: uuid = auto\n unchecked: bool = false }");
+        assert_eq!(file.tables[0].name.name, "unchecked");
+    }
+
+    #[test]
     fn rejects_malformed_fns() {
         // missing arrow
-        assert_eq!(parse_err("fn f() user { sql(\"x\") }").code, "L010");
+        assert_eq!(parse_err("fn f() user { unchecked sql(\"x\") }").code, "L010");
         // builtin scalar as return type
-        let d = parse_err("fn f() -> text { sql(\"x\") }");
+        let d = parse_err("fn f() -> text { unchecked sql(\"x\") }");
         assert!(d.message.contains("table or record name"), "{}", d.message);
-        // body must be sql(...)
+        // body must open with the marker
         let d = parse_err("fn f() -> t { nosql(\"x\") }");
+        assert!(d.message.contains("expected `unchecked`"), "{}", d.message);
+        // an unmarked escape gets the acknowledgment guidance (RFD 0011)
+        let d = parse_err("fn f() -> t { sql(\"x\") }");
+        assert!(
+            d.message.contains("unchecked sql") && d.message.contains("cannot verify"),
+            "{}",
+            d.message
+        );
+        // the marker alone is not a body
+        let d = parse_err("fn f() -> t { unchecked nosql(\"x\") }");
         assert!(d.message.contains("expected `sql`"), "{}", d.message);
         // body must carry a string
-        assert_eq!(parse_err("fn f() -> t { sql(42) }").code, "L010");
+        assert_eq!(parse_err("fn f() -> t { unchecked sql(42) }").code, "L010");
         // unclosed body
-        assert_eq!(parse_err("fn f() -> t { sql(\"x\")").code, "L010");
+        assert_eq!(parse_err("fn f() -> t { unchecked sql(\"x\")").code, "L010");
     }
 
     #[test]

@@ -60,7 +60,7 @@ record engagement {
 }
 
 fn rename_user(user: user, username: text) -> user ! user_username_taken {
-  sql("""
+  unchecked sql("""
     UPDATE user SET username = :username
     WHERE id = :user
     RETURNING *
@@ -68,7 +68,7 @@ fn rename_user(user: user, username: text) -> user ! user_username_taken {
 }
 
 fn unfollow(follower: user, target: user) -> follow ! not_found {
-  sql("""
+  unchecked sql("""
     DELETE FROM follow
     WHERE follower = :follower AND target = :target
     RETURNING *
@@ -76,7 +76,7 @@ fn unfollow(follower: user, target: user) -> follow ! not_found {
 }
 
 fn post_engagement(post: post) -> engagement {
-  sql("""
+  unchecked sql("""
     SELECT
       (SELECT count(*) FROM "like"  WHERE post = :post) AS likes,
       (SELECT count(*) FROM comment WHERE post = :post) AS comments

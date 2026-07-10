@@ -1241,9 +1241,9 @@ mod tests {
         let contract = compile(&format!(
             "{USER}\
              record stats {{ posts: int\n latest: timestamp? }}\n\
-             fn rename_user(user: user, name: text) -> user ! user_username_taken | not_found {{ sql(\"S\") }}\n\
-             fn find_user(name: text) -> user? {{ sql(\"S\") }}\n\
-             fn tally() -> [stats] {{ sql(\"S\") }}"
+             fn rename_user(user: user, name: text) -> user ! user_username_taken | not_found {{ unchecked sql(\"S\") }}\n\
+             fn find_user(name: text) -> user? {{ unchecked sql(\"S\") }}\n\
+             fn tally() -> [stats] {{ unchecked sql(\"S\") }}"
         ))
         .unwrap();
         assert_eq!(contract.records.len(), 1);
@@ -1256,7 +1256,7 @@ mod tests {
         // a fn may share a table's name — separate namespaces
         assert!(compile(&format!(
             "{USER}\
-             fn user(name: text) -> user? {{ sql(\"S\") }}"
+             fn user(name: text) -> user? {{ unchecked sql(\"S\") }}"
         ))
         .is_ok());
     }
@@ -1306,7 +1306,7 @@ mod tests {
         assert_eq!(
             codes(&format!(
                 "{USER}\
-                 fn f() -> user {{ sql(\"S\") }}\nfn f() -> user {{ sql(\"S\") }}"
+                 fn f() -> user {{ unchecked sql(\"S\") }}\nfn f() -> user {{ unchecked sql(\"S\") }}"
             )),
             vec!["E035"]
         );
@@ -1316,13 +1316,13 @@ mod tests {
     fn e036_bad_param_types() {
         // unknown type
         assert_eq!(
-            codes(&format!("{USER}fn f(x: ghost) -> user {{ sql(\"S\") }}")),
+            codes(&format!("{USER}fn f(x: ghost) -> user {{ unchecked sql(\"S\") }}")),
             vec!["E036"]
         );
         // record as param
         assert_eq!(
             codes(&format!(
-                "{USER}record r {{ x: int }}\nfn f(x: r) -> user {{ sql(\"S\") }}"
+                "{USER}record r {{ x: int }}\nfn f(x: r) -> user {{ unchecked sql(\"S\") }}"
             )),
             vec!["E036"]
         );
@@ -1331,7 +1331,7 @@ mod tests {
             codes(&format!(
                 "{USER}\
                  table follow {{ key (follower, target)\n follower: user\n target: user }}\n\
-                 fn f(x: follow) -> user {{ sql(\"S\") }}"
+                 fn f(x: follow) -> user {{ unchecked sql(\"S\") }}"
             )),
             vec!["E036"]
         );
@@ -1340,7 +1340,7 @@ mod tests {
     #[test]
     fn e037_unknown_return_shape() {
         assert_eq!(
-            codes(&format!("{USER}fn f() -> ghost {{ sql(\"S\") }}")),
+            codes(&format!("{USER}fn f() -> ghost {{ unchecked sql(\"S\") }}")),
             vec!["E037"]
         );
     }
@@ -1349,7 +1349,7 @@ mod tests {
     fn e038_duplicate_param() {
         assert_eq!(
             codes(&format!(
-                "{USER}fn f(a: int, a: text) -> user {{ sql(\"S\") }}"
+                "{USER}fn f(a: int, a: text) -> user {{ unchecked sql(\"S\") }}"
             )),
             vec!["E038"]
         );
@@ -1360,14 +1360,14 @@ mod tests {
         // unknown code
         assert_eq!(
             codes(&format!(
-                "{USER}fn f() -> user ! user_exploded {{ sql(\"S\") }}"
+                "{USER}fn f() -> user ! user_exploded {{ unchecked sql(\"S\") }}"
             )),
             vec!["E039"]
         );
         // duplicate code
         assert_eq!(
             codes(&format!(
-                "{USER}fn f() -> user ! not_found | not_found {{ sql(\"S\") }}"
+                "{USER}fn f() -> user ! not_found | not_found {{ unchecked sql(\"S\") }}"
             )),
             vec!["E039"]
         );

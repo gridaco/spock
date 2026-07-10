@@ -42,7 +42,7 @@ table comment {
 record stats { posts: int }
 
 fn rename_user(user: user, username: text) -> user ! user_username_taken {
-  sql("""
+  unchecked sql("""
     UPDATE user SET username = :username
     WHERE id = :user
     RETURNING *
@@ -50,15 +50,15 @@ fn rename_user(user: user, username: text) -> user ! user_username_taken {
 }
 
 fn find_user(username: text) -> user? {
-  sql("""SELECT * FROM user WHERE username = :username""")
+  unchecked sql("""SELECT * FROM user WHERE username = :username""")
 }
 
 fn author_stats(author: user) -> stats {
-  sql("""SELECT count(*) AS posts FROM post WHERE author = :author""")
+  unchecked sql("""SELECT count(*) AS posts FROM post WHERE author = :author""")
 }
 
 fn recent_posts(n: int) -> [post] {
-  sql("""SELECT * FROM post ORDER BY published_at DESC LIMIT :n""")
+  unchecked sql("""SELECT * FROM post ORDER BY published_at DESC LIMIT :n""")
 }
 
 seed {

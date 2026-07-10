@@ -20,13 +20,17 @@ fn check_accepts_a_valid_program() {
     let path = write_program(
         &dir,
         "table user { key id: uuid = auto\n username: text unique }\n\
+         fn find(username: text) -> user? { unchecked sql(\"SELECT * FROM user WHERE username = :username\") }\n\
          seed { user { username: \"maya\" } }",
     );
     spock()
         .args(["check", path.to_str().unwrap()])
         .assert()
         .success()
-        .stdout(predicate::str::contains("ok: 1 table(s), 1 seed row(s)"));
+        // the unchecked-body count is the ledger (RFD 0011 §4)
+        .stdout(predicate::str::contains(
+            "ok: 1 table(s), 0 record(s), 1 fn(s) (1 unchecked bodies), 1 seed row(s)",
+        ));
 }
 
 #[test]

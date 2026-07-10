@@ -293,7 +293,7 @@ view post_preview from post {
 // contract, the body is the SQL escape (it may replace the body,
 // never the contract)
 fn publish_post(post: post) -> post ! not_found {
-    sql("""
+    unchecked sql("""
       UPDATE post SET published = true
       WHERE id = :post
       RETURNING *

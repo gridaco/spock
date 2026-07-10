@@ -238,57 +238,57 @@ mod tests {
 
     #[test]
     fn valid_fn_bodies_load() {
-        open_ok("fn find(username: text) -> user? { sql(\"SELECT * FROM user WHERE username = :username\") }");
+        open_ok("fn find(username: text) -> user? { unchecked sql(\"SELECT * FROM user WHERE username = :username\") }");
         // trailing semicolon and comment are tolerated (Batch skips them)
-        open_ok("fn find(username: text) -> user? { sql(\"SELECT * FROM user WHERE username = :username; -- done\") }");
+        open_ok("fn find(username: text) -> user? { unchecked sql(\"SELECT * FROM user WHERE username = :username; -- done\") }");
         // DML with RETURNING *
-        open_ok("fn rename(user: user, username: text) -> user ! user_username_taken { sql(\"UPDATE user SET username = :username WHERE id = :user RETURNING *\") }");
+        open_ok("fn rename(user: user, username: text) -> user ! user_username_taken { unchecked sql(\"UPDATE user SET username = :username WHERE id = :user RETURNING *\") }");
         // a CTE is one statement
-        open_ok("fn all() -> [user] { sql(\"WITH x AS (SELECT * FROM user) SELECT * FROM x\") }");
+        open_ok("fn all() -> [user] { unchecked sql(\"WITH x AS (SELECT * FROM user) SELECT * FROM x\") }");
     }
 
     #[test]
     fn fn_sql_failures_gate_the_load() {
         // syntax error surfaces SQLite's own message
-        assert!(open_err("fn f() -> user { sql(\"SELEC *\") }").contains("does not compile"));
+        assert!(open_err("fn f() -> user { unchecked sql(\"SELEC *\") }").contains("does not compile"));
         // unknown column resolves at prepare
-        assert!(open_err("fn f() -> user { sql(\"SELECT * FROM user WHERE ghost = 1\") }")
+        assert!(open_err("fn f() -> user { unchecked sql(\"SELECT * FROM user WHERE ghost = 1\") }")
             .contains("does not compile"));
         // exactly one statement
         assert!(
-            open_err("fn f() -> user { sql(\"SELECT * FROM user; SELECT * FROM user\") }")
+            open_err("fn f() -> user { unchecked sql(\"SELECT * FROM user; SELECT * FROM user\") }")
                 .contains("single SQL statement")
         );
         // empty and comment-only bodies
-        assert!(open_err("fn f() -> user { sql(\"\") }").contains("no SQL statement"));
-        assert!(open_err("fn f() -> user { sql(\"-- nothing\") }").contains("no SQL statement"));
+        assert!(open_err("fn f() -> user { unchecked sql(\"\") }").contains("no SQL statement"));
+        assert!(open_err("fn f() -> user { unchecked sql(\"-- nothing\") }").contains("no SQL statement"));
         // placeholder spellings: bare `?` is nameless (→ positional error);
         // `?1` and `@a` carry their spelling as the name (→ :param error)
         assert!(
-            open_err("fn f(a: int) -> user { sql(\"SELECT * FROM user LIMIT ?\") }")
+            open_err("fn f(a: int) -> user { unchecked sql(\"SELECT * FROM user LIMIT ?\") }")
                 .contains("positional")
         );
         assert!(
-            open_err("fn f(a: int) -> user { sql(\"SELECT * FROM user LIMIT ?1\") }")
+            open_err("fn f(a: int) -> user { unchecked sql(\"SELECT * FROM user LIMIT ?1\") }")
                 .contains(":param")
         );
-        assert!(open_err("fn f(a: int) -> user { sql(\"SELECT * FROM user LIMIT @a\") }")
+        assert!(open_err("fn f(a: int) -> user { unchecked sql(\"SELECT * FROM user LIMIT @a\") }")
             .contains(":param"));
         // both directions of the placeholder check
         assert!(
-            open_err("fn f() -> user { sql(\"SELECT * FROM user WHERE id = :ghost\") }")
+            open_err("fn f() -> user { unchecked sql(\"SELECT * FROM user WHERE id = :ghost\") }")
                 .contains("not a parameter")
         );
-        assert!(open_err("fn f(a: int) -> user { sql(\"SELECT * FROM user\") }")
+        assert!(open_err("fn f(a: int) -> user { unchecked sql(\"SELECT * FROM user\") }")
             .contains("never used"));
         // column set-equality, duplicates, and DML-without-RETURNING
-        assert!(open_err("fn f() -> user { sql(\"SELECT id FROM user\") }").contains("do not match"));
+        assert!(open_err("fn f() -> user { unchecked sql(\"SELECT id FROM user\") }").contains("do not match"));
         assert!(
-            open_err("fn f() -> user { sql(\"SELECT id AS username, username FROM user\") }")
+            open_err("fn f() -> user { unchecked sql(\"SELECT id AS username, username FROM user\") }")
                 .contains("duplicate column")
         );
         assert!(open_err(
-            "fn f(username: text) -> user { sql(\"UPDATE user SET username = :username\") }"
+            "fn f(username: text) -> user { unchecked sql(\"UPDATE user SET username = :username\") }"
         )
         .contains("RETURNING"));
     }

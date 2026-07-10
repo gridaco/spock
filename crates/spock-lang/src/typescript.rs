@@ -562,9 +562,9 @@ export interface contract {
         let ts = emit(
             "table user { key id: uuid = auto\n username: text unique }\n\
              record stats { posts: int\n latest: timestamp? }\n\
-             fn rename_user(user: user, name: text, note: text?) -> user ! user_username_taken { sql(\"S\") }\n\
-             fn find_user(name: text) -> user? { sql(\"S\") }\n\
-             fn tally() -> [stats] { sql(\"S\") }",
+             fn rename_user(user: user, name: text, note: text?) -> user ! user_username_taken { unchecked sql(\"S\") }\n\
+             fn find_user(name: text) -> user? { unchecked sql(\"S\") }\n\
+             fn tally() -> [stats] { unchecked sql(\"S\") }",
         )
         .unwrap();
         // record interface
@@ -603,7 +603,7 @@ export interface contract {
         // a table named like a fn's args interface
         let err = emit(
             "table hello_args { key id: uuid = auto\n a: int }\n\
-             fn hello() -> hello_args { sql(\"S\") }",
+             fn hello() -> hello_args { unchecked sql(\"S\") }",
         )
         .unwrap_err();
         assert!(matches!(err, TsGenError::DuplicateTypeName { .. }), "{err}");

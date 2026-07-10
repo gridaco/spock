@@ -100,6 +100,8 @@ fn keyword_text(kind: &TokenKind) -> &'static str {
 }
 
 /// Keywords reserved for future versions (§2.3): using one is L005.
+/// `unsafe` is reserved for the runtime-integrity tier (RFD 0011 §3) —
+/// the verification-gap tier is the contextual `unchecked`.
 const RESERVED: &[&str] = &[
     "view",
     "role",
@@ -107,6 +109,7 @@ const RESERVED: &[&str] = &[
     "error",
     "state",
     "extern",
+    "unsafe",
     "derived",
     "protected",
     "module",
