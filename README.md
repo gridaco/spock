@@ -578,6 +578,16 @@ cargo run -p spock-cli -- run examples/instagram/v0.spock
 # GET /~contract · GET /rest/v1/{table} · POST /graphql/v1 (reads + writes)
 ```
 
+The GraphQL surface speaks a specified, Hasura-mirrored dialect
+(`docs/spec/graphql.md`), which means the existing GraphQL ecosystem
+consumes it unmodified — `examples/instagram/client/` derives a fully
+typed TypeScript client from a running server with standard
+`graphql-codegen`, no Spock-specific tooling involved. What the borrowed
+tools cannot know, the binary emits itself (`docs/rfd/0010`): `spock gen
+types` turns the contract into TypeScript — row and write shapes plus the
+derived error codes as literal unions — and `spock gen graphql-schema`
+prints the SDL for offline schema tooling.
+
 The npm package metadata lives under `npm/` only to reserve the package name.
 It is not the primary implementation target.
 
