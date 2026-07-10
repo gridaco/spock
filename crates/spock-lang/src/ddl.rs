@@ -71,7 +71,8 @@ fn default_sql(default: &DefaultValue) -> String {
         DefaultValue::Now => "(spock_now())".into(),
         DefaultValue::Str { value } => format!("'{}'", value.replace('\'', "''")),
         DefaultValue::Int { value } => value.to_string(),
-        DefaultValue::Float { value } => value.to_string(),
+        // {:?} keeps the decimal point (`2.0`, not `2`) — literals verbatim
+        DefaultValue::Float { value } => format!("{value:?}"),
         DefaultValue::Bool { value } => if *value { "1" } else { "0" }.into(),
     }
 }

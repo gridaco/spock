@@ -458,5 +458,13 @@ mod tests {
         let contract: Contract = serde_json::from_str(legacy).unwrap();
         assert!(contract.fns.is_empty());
         assert!(contract.records.is_empty());
+
+        // pre-scalar fn JSON (no `returns.scalar` key) still loads too
+        let pre_scalar = r#"{ "spock": "v0", "tables": [], "seed": [], "fns": [
+            { "name": "f", "params": [],
+              "returns": { "arity": "one", "of": "user" },
+              "errors": [], "sql": "S" } ] }"#;
+        let contract: Contract = serde_json::from_str(pre_scalar).unwrap();
+        assert!(!contract.fns[0].returns.scalar);
     }
 }

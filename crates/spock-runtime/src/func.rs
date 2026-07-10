@@ -76,7 +76,18 @@ pub fn call(
                 let value = row
                     .get_ref(0)
                     .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
-                out.push(sql_to_json_scalar(ty, value));
+                let json = sql_to_json_scalar(ty, value);
+                // a NULL under a non-optional scalar is the body breaking
+                // its contract — surface it (GraphQL would otherwise serve
+                // null under a non-null type); `-> t?` keeps null
+                if json.is_null() && f.returns.arity != FnArity::Maybe {
+                    return Err(ApiError::internal(format!(
+                        "fn `{}`: the SQL returned NULL for the non-optional scalar `{of}` (declare -> {of}? if null is possible)",
+                        f.name,
+                        of = f.returns.of
+                    )));
+                }
+                out.push(json);
                 continue;
             }
             let mut obj = Map::new();
@@ -193,6 +204,14 @@ fn usernames() -> [text] {
   unchecked sql("SELECT username FROM user ORDER BY username")
 }
 
+fn lying_count() -> int {
+  unchecked sql("SELECT NULL")
+}
+
+fn bios() -> [text] {
+  unchecked sql("SELECT bio FROM user")
+}
+
 seed {
   maya = user { username: "maya", bio: "photographer" }
   luis = user { username: "luis" }
@@ -265,6 +284,15 @@ seed {
         let f = contract.fn_def("usernames").unwrap();
         let rows = call(&contract, f, &mut conn, &Map::new()).unwrap();
         assert_eq!(rows, serde_json::json!(["luis", "maya"]));
+        // a NULL under a non-optional scalar is the body's contract
+        // violation — internal, never a null under a non-null type
+        let f = contract.fn_def("lying_count").unwrap();
+        let err = call(&contract, f, &mut conn, &Map::new()).unwrap_err();
+        assert_eq!(err.code, "internal");
+        // same rule per element for lists (luis has no bio)
+        let f = contract.fn_def("bios").unwrap();
+        let err = call(&contract, f, &mut conn, &Map::new()).unwrap_err();
+        assert_eq!(err.code, "internal");
     }
 
     #[test]

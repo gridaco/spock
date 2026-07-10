@@ -14,12 +14,25 @@ pub fn new_uuid() -> String {
     uuid::Uuid::now_v7().to_string()
 }
 
-/// The engine's clock — RFC 3339 UTC, the same stamp `= now` uses.
-/// Exposed to escape bodies as the SQL builtin `spock_now()`.
+/// The canonical stored timestamp: UTC, fixed six-digit fractional
+/// seconds. Fixed width matters — RFC 3339 permits trimmed fractions,
+/// and `00:00:00.5Z` sorts lexicographically *after* `00:00:00.51Z`;
+/// canonical width makes text order chronological order, which the
+/// example's cursors and ORDER BYs rely on. Every timestamp the runtime
+/// stores — defaults, seed literals, wire inputs — passes through here.
+pub fn canon_timestamp(t: time::OffsetDateTime) -> String {
+    let canon = time::macros::format_description!(
+        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:6]Z"
+    );
+    t.to_offset(time::UtcOffset::UTC)
+        .format(&canon)
+        .expect("canonical timestamp formats")
+}
+
+/// The engine's clock — the same stamp `= now` uses. Exposed to escape
+/// bodies as the SQL builtin `spock_now()`.
 pub fn now_utc() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .expect("utc now formats as rfc3339")
+    canon_timestamp(time::OffsetDateTime::now_utc())
 }
 
 /// Validate a JSON value against a *value* type (refs already chased) and
@@ -52,10 +65,9 @@ pub fn json_to_sql_scalar(value_type: &Type, value: &Json) -> Result<SqlValue, &
             _ => Err("a uuid string"),
         },
         Type::Timestamp => match value {
+            // inputs are RFC 3339 in any offset; storage is canonical
             Json::String(s) => match time::OffsetDateTime::parse(s, &Rfc3339) {
-                Ok(t) => Ok(SqlValue::Text(
-                    t.format(&Rfc3339).expect("rfc3339 roundtrip"),
-                )),
+                Ok(t) => Ok(SqlValue::Text(canon_timestamp(t))),
                 Err(_) => Err("an RFC 3339 timestamp string"),
             },
             _ => Err("an RFC 3339 timestamp string"),

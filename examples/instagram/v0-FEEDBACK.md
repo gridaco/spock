@@ -8,7 +8,8 @@ exercised live. The oracles are the PRD, `pg.sql` (the answer sheet), and
 `v1.spock` (the aspiration). The question: what could v0 not say, what
 could it say only through a workaround, and what did dogfooding confirm?
 
-The file grew from 5 tables / 3 fns to **19 tables, 5 records, 37 fns** —
+The file grew from 5 tables / 3 fns to **19 tables, 4 records, 37 fns**
+(5 records at review time; `record unread` died when G9 was taken) —
 and the growth was mostly friction-free where the table tier is concerned.
 The walls are concentrated in one place: the fn body. That concentration
 is itself the finding.

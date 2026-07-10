@@ -318,13 +318,18 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     i += 1;
                 }
                 let text = &source[start..i];
-                let value: f64 = text.parse().map_err(|_| {
-                    Diagnostic::new(
+                // f64 parsing never fails on plain decimals — overflow
+                // saturates to infinity — so the real guard is finiteness:
+                // a non-finite value has no JSON spelling and would corrupt
+                // the contract artifact
+                let value: f64 = text.parse().unwrap_or(f64::INFINITY);
+                if !value.is_finite() {
+                    return Err(Diagnostic::new(
                         "L004",
-                        format!("float literal `{text}` is not representable"),
+                        format!("float literal `{text}` does not fit in a 64-bit float"),
                         Span::new(start, i),
-                    )
-                })?;
+                    ));
+                }
                 tokens.push(Token {
                     kind: TokenKind::Float(value),
                     span: Span::new(start, i),
@@ -459,6 +464,9 @@ mod tests {
         assert_eq!(lex("1. x").unwrap_err().code, "L001");
         // `float` is an active keyword
         assert_eq!(kinds("float"), vec![TokenKind::KwFloat, TokenKind::Eof]);
+        // overflow saturates in f64 parsing — the lexer must catch it
+        let huge = format!("{}.0", "9".repeat(320));
+        assert_eq!(lex(&huge).unwrap_err().code, "L004");
     }
 
     #[test]

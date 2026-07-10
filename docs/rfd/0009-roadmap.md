@@ -85,9 +85,13 @@ that gates nothing.
 **8. Language L2 — the syntax iteration.** The friction-driven pass over
 the grammar once real programs exist: upsert semantics
 (`examples/instagram/v1-FEEDBACK.md` L2 — this is what gates
-`on_conflict` in graphql.md Tier 3), `on delete set null`, richer defaults,
-enum/check candidacy. Trails usage by design; it should be fed by demo
-friction, not speculation.
+`on_conflict` in graphql.md Tier 3) and enum/check candidacy — now the
+`format` question, see §4. Partially consumed by the July 2026 dogfood
+batch, exactly as this track intended (fed by demo friction):
+`on delete set null` SHIPPED, escape-reachable defaults SHIPPED
+(`spock_uuid()`/`spock_now()` + DDL DEFAULT; richer default *forms* —
+expressions — remain future), plus `float` and scalar fn returns from
+the same batch (v0-FEEDBACK G7/G4/G10/G9).
 
 **9. DX and the demo.** Small items, outsized demo value:
 

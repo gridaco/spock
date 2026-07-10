@@ -244,7 +244,7 @@ fn path_key_value(app: &App, table: &Table, raw: &str) -> Result<SqlValue, ApiEr
         Type::Timestamp => {
             use time::format_description::well_known::Rfc3339;
             time::OffsetDateTime::parse(raw, &Rfc3339)
-                .map(|t| SqlValue::Text(t.format(&Rfc3339).expect("rfc3339 roundtrip")))
+                .map(|t| SqlValue::Text(crate::value::canon_timestamp(t)))
                 .map_err(|_| not_found())
         }
         Type::Ref { .. } => unreachable!("value_type never returns a ref"),

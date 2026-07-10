@@ -590,7 +590,7 @@ fn arg_to_sql(
         Type::Bool => Some(SqlValue::Integer(arg.boolean()? as i64)),
         Type::Timestamp => time::OffsetDateTime::parse(arg.string()?, &Rfc3339)
             .ok()
-            .map(|t| SqlValue::Text(t.format(&Rfc3339).expect("rfc3339 roundtrip"))),
+            .map(|t| SqlValue::Text(crate::value::canon_timestamp(t))),
         Type::Ref { .. } => unreachable!("value_type never returns a ref"),
     })
 }

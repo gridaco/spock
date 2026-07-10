@@ -516,7 +516,8 @@ fn unarchive_post(post: post, author: user) -> post? {
 
 // hard delete, idempotent by arity; the declared cascades take media,
 // likes, comments, saves, collection entries, hashtag links, mentions,
-// tags, notifications — and the reports (the audit trail, G7)
+// tags, notifications — while reports survive with nulled links (the
+// set-null half of G7; soft delete remains the full audit answer)
 fn delete_post(post: post, author: user) -> post? {
   unchecked sql("""
     DELETE FROM post

@@ -141,7 +141,8 @@ Write semantics (mirroring spec v0 §7.2):
   transaction — an earlier field's committed write survives a later
   field's error;
 - deletes check inbound `restrict` references (→ `<t>_restricted`);
-  `cascade` delegates to the engine.
+  `cascade` and `set null` delegate to the engine (children deleted or
+  their reference field nulled, respectively).
 
 ### 5.1 Functions — the deliberate surface
 
