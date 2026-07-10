@@ -38,6 +38,24 @@ table comment {
   at: timestamp = now
 }
 
+record stats { posts: int }
+
+fn find_user(username: text) -> user? {
+  sql("""SELECT * FROM user WHERE username = :username""")
+}
+
+fn rename_user(user: user, username: text) -> user ! user_username_taken {
+  sql("""UPDATE user SET username = :username WHERE id = :user RETURNING *""")
+}
+
+fn author_stats(author: user) -> stats {
+  sql("""SELECT count(*) AS posts FROM post WHERE author = :author""")
+}
+
+fn recent_posts(n: int) -> [post] {
+  sql("""SELECT * FROM post ORDER BY published_at DESC LIMIT :n""")
+}
+
 seed {
   maya = user { username: "maya", bio: "photographer" }
   luis = user { username: "luis" }
@@ -151,12 +169,105 @@ async fn the_whole_protocol() {
     let (status, body) = get(&base, "/rest/v1/user?limit=abc").await;
     assert_eq!((status, error_code(&body)), (400, "bad_request"));
 
-    // -- the dev surface is retired: REST is read-only (§8, §9) ----------
+    // -- the dev surface is retired: REST tables are read-only (§8, §9) --
     let resp = reqwest::Client::new()
         .post(format!("{base}/~dev/user"))
         .json(&json!({ "username": "vera" }))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status().as_u16(), 404); // writes live on /graphql/v1
+    assert_eq!(resp.status().as_u16(), 404); // table writes live on /graphql/v1
+}
+
+async fn rpc(base: &str, name: &str, body: Option<Value>) -> (u16, Value) {
+    let mut req = reqwest::Client::new().post(format!("{base}/rest/v1/rpc/{name}"));
+    if let Some(body) = body {
+        req = req.json(&body);
+    }
+    let resp = req.send().await.expect("POST rpc");
+    let status = resp.status().as_u16();
+    let body = resp.json::<Value>().await.unwrap_or(Value::Null);
+    (status, body)
+}
+
+#[tokio::test]
+async fn the_rpc_surface() {
+    let base = start().await;
+
+    let (_, users) = get(&base, "/rest/v1/user").await;
+    let rows = users["rows"].as_array().unwrap();
+    let id_of = |name: &str| {
+        rows.iter().find(|r| r["username"] == name).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let (maya_id, luis_id) = (id_of("maya"), id_of("luis"));
+
+    // -- maybe arity: hit is the row, miss is null ------------------------
+    let (status, body) = rpc(&base, "find_user", Some(json!({"username": "maya"}))).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["bio"], "photographer");
+    let (status, body) = rpc(&base, "find_user", Some(json!({"username": "ghost"}))).await;
+    assert_eq!(status, 200);
+    assert!(body.is_null());
+
+    // -- record return ------------------------------------------------------
+    let (status, body) = rpc(&base, "author_stats", Some(json!({"author": maya_id}))).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["posts"], 1);
+
+    // -- many arity: the REST list envelope ----------------------------------
+    let (status, body) = rpc(&base, "recent_posts", Some(json!({"n": 5}))).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["rows"].as_array().unwrap().len(), 1);
+
+    // -- one arity write + derived error in the §8.1 envelope ----------------
+    let (status, body) = rpc(
+        &base,
+        "rename_user",
+        Some(json!({"user": luis_id, "username": "luis_x"})),
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body["username"], "luis_x");
+    let (status, body) = rpc(
+        &base,
+        "rename_user",
+        Some(json!({"user": luis_id, "username": "maya"})),
+    )
+    .await;
+    assert_eq!((status, error_code(&body)), (409, "user_username_taken"));
+    assert_eq!(body["error"]["table"], "user");
+
+    // -- argument failures, envelope-shaped -----------------------------------
+    let (status, body) = rpc(&base, "find_user", None).await; // missing required
+    assert_eq!((status, error_code(&body)), (400, "bad_request"));
+    let (status, body) = rpc(&base, "find_user", Some(json!({"username": 42}))).await;
+    assert_eq!((status, error_code(&body)), (422, "type_mismatch"));
+    let (status, body) = rpc(&base, "find_user", Some(json!({"ghost": "x"}))).await;
+    assert_eq!((status, error_code(&body)), (422, "unknown_field"));
+    let (status, body) = rpc(&base, "find_user", Some(json!(["not", "an", "object"]))).await;
+    assert_eq!((status, error_code(&body)), (400, "bad_request"));
+
+    // -- unknown fn and write-miss ---------------------------------------------
+    let (status, body) = rpc(&base, "nope", None).await;
+    assert_eq!((status, error_code(&body)), (404, "not_found"));
+    let ghost = uuid::Uuid::now_v7().to_string();
+    let (status, body) = rpc(
+        &base,
+        "rename_user",
+        Some(json!({"user": ghost, "username": "x"})),
+    )
+    .await;
+    assert_eq!((status, error_code(&body)), (404, "not_found"));
+}
+
+#[tokio::test]
+async fn a_table_named_rpc_fails_startup() {
+    let contract =
+        spock_lang::compile("table rpc { key id: uuid = auto\n a: int }").expect("compiles");
+    let conn = engine::open(&contract, None).expect("engine opens");
+    let app = Arc::new(App::new(contract, conn));
+    assert!(http::router(app).is_err());
 }

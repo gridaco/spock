@@ -1,7 +1,8 @@
 //! The HTTP protocol (docs/spec/v0.md §8). Plain HTTP + JSON. The root
 //! namespace is protocol-owned: `~` is the meta surface, `/rest/v1` carries
 //! the open reads (identity views, v0 degenerate form), `/graphql/v1` the
-//! GraphQL reads and writes (§8.2). REST stays read-only in v0.
+//! GraphQL reads and writes (§8.2). REST tables stay read-only in v0;
+//! `POST /rest/v1/rpc/{fn}` is the deliberate write surface (§7.4).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,21 +11,37 @@ use async_graphql::dynamic::Schema;
 use async_graphql::http::GraphiQLSource;
 use axum::extract::{Path, Query, State};
 use axum::response::Html;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use rusqlite::types::Value as SqlValue;
-use serde_json::{json, Value as JsonValue};
-use spock_lang::ir::{Table, Type};
+use serde_json::{json, Map, Value as JsonValue};
+use spock_lang::ir::{FnArity, Table, Type};
 
 use crate::error::ApiError;
 use crate::graphql::{self, SchemaBuildError};
-use crate::write;
+use crate::{func, write};
 use crate::App;
 
 const DEFAULT_LIMIT: u32 = 50;
 const MAX_LIMIT: u32 = 200;
 
-pub fn router(app: Arc<App>) -> Result<Router, SchemaBuildError> {
+/// Startup failures: schema-derivation collisions (§8.2 naming laws) or a
+/// table claiming a protocol-owned REST segment. Both abort load — never
+/// a request-time surprise.
+#[derive(Debug, thiserror::Error)]
+pub enum StartupError {
+    #[error(transparent)]
+    Schema(#[from] SchemaBuildError),
+    #[error("table `rpc` collides with the protocol-owned /rest/v1/rpc segment")]
+    ReservedRestSegment,
+}
+
+pub fn router(app: Arc<App>) -> Result<Router, StartupError> {
+    // `/rest/v1/rpc/{fn}` shadows `GET /rest/v1/rpc/{id}` for a table
+    // literally named `rpc` — collisions fail startup, never requests
+    if app.contract.table("rpc").is_some() {
+        return Err(StartupError::ReservedRestSegment);
+    }
     let schema = graphql::schema(app.clone())?;
     let gql = Router::new()
         .route("/graphql/v1", get(graphiql).post(graphql_post))
@@ -32,6 +49,7 @@ pub fn router(app: Arc<App>) -> Result<Router, SchemaBuildError> {
     Ok(Router::new()
         .route("/~contract", get(contract))
         .route("/~health", get(health))
+        .route("/rest/v1/rpc/{name}", post(rpc_call))
         .route("/rest/v1/{table}", get(list_rows))
         .route("/rest/v1/{table}/{id}", get(get_row))
         .fallback(not_found)
@@ -76,6 +94,45 @@ async fn health() -> Json<JsonValue> {
 
 async fn not_found() -> ApiError {
     ApiError::not_found("no such path")
+}
+
+// POST /rest/v1/rpc/{fn} — call a declared fn (§7.4): REST's one
+// deliberate write surface. The body is a JSON object of arguments;
+// absent or empty means `{}` (zero-param fns are curl-friendly). The
+// body parses by hand so even malformed JSON gets the §8.1 envelope.
+async fn rpc_call(
+    State(app): State<Arc<App>>,
+    Path(name): Path<String>,
+    body: String,
+) -> Result<Json<JsonValue>, ApiError> {
+    let f = app
+        .contract
+        .fn_def(&name)
+        .ok_or_else(|| ApiError::not_found(format!("no fn `{name}` in this contract")))?;
+    let args: Map<String, JsonValue> = if body.trim().is_empty() {
+        Map::new()
+    } else {
+        match serde_json::from_str::<JsonValue>(&body) {
+            Ok(JsonValue::Object(map)) => map,
+            Ok(JsonValue::Null) => Map::new(),
+            Ok(_) => {
+                return Err(ApiError::bad_request("fn arguments must be a JSON object"));
+            }
+            Err(e) => return Err(ApiError::bad_request(format!("malformed JSON body: {e}"))),
+        }
+    };
+    let result = {
+        let mut db = app
+            .db
+            .lock()
+            .map_err(|_| ApiError::internal("db lock poisoned"))?;
+        func::call(&app.contract, f, &mut db, &args)?
+    };
+    Ok(Json(match f.returns.arity {
+        // list results share the REST list envelope
+        FnArity::Many => json!({ "rows": result }),
+        _ => result,
+    }))
 }
 
 fn resolve_table<'a>(app: &'a App, name: &str) -> Result<&'a Table, ApiError> {
