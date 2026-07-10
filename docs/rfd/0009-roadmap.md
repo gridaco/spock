@@ -113,8 +113,16 @@ until doctrine asks (graphql.md §7).
 
 ## 3. The order
 
-Tier-1 rename → codegen proof → `fn` → filter RFD → Tier 2 + REST writes →
-auth — with track 9 filling gaps and track 8 trailing usage throughout.
+Tier-1 rename → codegen proof → `fn` → **fn v2 (RFD 0012)** → filter RFD →
+Tier 2 + REST writes → auth — with track 9 filling gaps and track 8
+trailing usage throughout.
+
+(Revised July 2026: fn v2 — declared refusals, multi-statement bodies,
+read/write polarity — jumped ahead of the filter RFD on the dogfood
+evidence (v0-FEEDBACK G2/G3/G11), by the third rule below. The filter
+RFD's scope grew in exchange: pagination/cursor discipline for *all*
+row-returning surfaces — tables, future views, and read fns — was
+deliberately kept out of fn v2 and assigned to the universal query layer.)
 
 Four rules generate this ordering; if the ordering is ever revisited, argue
 with the rules, not the sequence:
