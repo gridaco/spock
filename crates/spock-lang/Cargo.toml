@@ -1,6 +1,6 @@
 [package]
 name = "spock-lang"
-description = "The Spock v0 language: lexer, parser, checker, contract IR, SQLite DDL"
+description = "The Spock v0 language: lexer, parser, checker, contract IR, SQLite DDL and TypeScript emissions"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

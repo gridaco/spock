@@ -1,4 +1,5 @@
 //! The `spock` command: `check` (diagnostics), `build` (emit the contract),
+//! `gen` (derived artifacts — TypeScript types, GraphQL SDL; RFD 0010),
 //! `run` (materialize + serve the HTTP protocol). docs/spec/v0.md.
 
 use std::path::PathBuf;
@@ -33,6 +34,27 @@ enum Command {
         /// Database file (recreated on every run). Default: in-memory.
         #[arg(long)]
         db: Option<PathBuf>,
+    },
+    /// Generate derived artifacts from a program (RFD 0010).
+    Gen {
+        #[command(subcommand)]
+        target: GenTarget,
+    },
+}
+
+#[derive(Subcommand)]
+enum GenTarget {
+    /// TypeScript types: rows, insert/update shapes, error-code unions.
+    Types {
+        file: PathBuf,
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
+    /// The GraphQL SDL the runtime serves — for offline schema tooling.
+    GraphqlSchema {
+        file: PathBuf,
+        #[arg(short, long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -77,6 +99,60 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 }
             }
+        }
+        Command::Gen { target } => {
+            let (file, out) = match &target {
+                GenTarget::Types { file, out } | GenTarget::GraphqlSchema { file, out } => {
+                    (file.clone(), out.clone())
+                }
+            };
+            let Some(contract) = load(&file) else {
+                return ExitCode::FAILURE;
+            };
+            let artifact = match target {
+                GenTarget::Types { .. } => {
+                    spock_lang::typescript::typescript(&contract).map_err(anyhow::Error::from)
+                }
+                GenTarget::GraphqlSchema { .. } => graphql_sdl(contract),
+            };
+            match artifact {
+                Ok(content) => emit(out, content),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+    }
+}
+
+/// The SDL of the schema the runtime would serve — derived through the
+/// same builder as `run`, so it cannot drift. The in-memory engine exists
+/// only because the builder wants a full `App`; no resolver ever runs,
+/// and the seed is dropped first: the SDL is a pure function of the
+/// tables, so a data problem (say, a seed unique conflict) must not gate
+/// a data-independent artifact.
+fn graphql_sdl(mut contract: Contract) -> anyhow::Result<String> {
+    contract.seed.clear();
+    let conn = spock_runtime::engine::open(&contract, None)?;
+    let app = Arc::new(spock_runtime::App::new(contract, conn));
+    Ok(spock_runtime::graphql::schema(app)?.sdl())
+}
+
+/// Print to stdout, or write to `-o FILE`.
+fn emit(out: Option<PathBuf>, content: String) -> ExitCode {
+    match out {
+        None => {
+            print!("{content}");
+            ExitCode::SUCCESS
+        }
+        Some(path) => {
+            if let Err(e) = std::fs::write(&path, content) {
+                eprintln!("error: could not write {}: {e}", path.display());
+                return ExitCode::FAILURE;
+            }
+            println!("wrote {}", path.display());
+            ExitCode::SUCCESS
         }
     }
 }

@@ -1,7 +1,8 @@
-//! The Spock v0 language: lexer, parser, checker, contract IR, SQLite DDL.
+//! The Spock v0 language: lexer, parser, checker, contract IR, emissions.
 //!
 //! Pipeline: source → [`lexer`] → [`parser`] (AST) → [`check`] (lower +
-//! validate) → [`ir::Contract`] → [`ddl`] (SQLite schema).
+//! validate) → [`ir::Contract`] → emissions ([`ddl`] SQLite schema,
+//! [`typescript`] client types — RFD 0010).
 //!
 //! The [`ir::Contract`] is the interchange artifact (docs/spec/v0.md §6);
 //! everything before it is front-end, everything after it is back-end.
@@ -14,6 +15,7 @@ pub mod ir;
 pub mod lexer;
 pub mod parser;
 pub mod span;
+pub mod typescript;
 
 use diag::Diagnostic;
 use ir::Contract;
