@@ -37,7 +37,7 @@ use async_graphql_value::Value as AstValue;
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Map, Value as Json};
 use spock_lang::ir::{
-    Contract, DerivedError, ErrorKind, Field as IrField, FnArity, FnDef, Table, Type,
+    Contract, DefaultValue, DerivedError, ErrorKind, Field as IrField, FnArity, FnDef, Table, Type,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -296,10 +296,22 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
     Ok(builder.finish()?)
 }
 
-/// Whether the table has any non-key field — the precondition for deriving
-/// `update_<t>_by_pk` and its input types.
+/// Whether the table has any client-settable field — the precondition for
+/// deriving `update_<t>_by_pk` and its input types. Excludes keys (immutable)
+/// and `= me` fields (RFD 0014: server-stamped, off the client surface). If
+/// none remain, no `_set` input is emitted — an empty GraphQL input object is
+/// invalid and would fail schema build (§14.4).
 fn has_settable_fields(table: &Table) -> bool {
-    table.fields.iter().any(|f| !table.key.contains(&f.name))
+    table
+        .fields
+        .iter()
+        .any(|f| !table.key.contains(&f.name) && !is_actor_default(f))
+}
+
+/// A `= me` field (RFD 0014): stamped by the runtime, removed from the
+/// client insert/update surface.
+fn is_actor_default(field: &IrField) -> bool {
+    matches!(field.default, Some(DefaultValue::Actor))
 }
 
 /// A root's collision error, built from (prior owner, new owner, field).
@@ -352,6 +364,11 @@ fn scalar_name(contract: &Contract, ty: &Type) -> &'static str {
 fn insert_input_type(contract: &Contract, table: &Table) -> InputObject {
     let mut input = InputObject::new(insert_input_name(&table.name));
     for f in &table.fields {
+        // `= me` fields (RFD 0014) leave the client insert surface: the
+        // runtime stamps the actor, so a client cannot forge them.
+        if is_actor_default(f) {
+            continue;
+        }
         input = input.field(InputValue::new(
             f.name.clone(),
             TypeRef::named(scalar_name(contract, &f.ty)),
@@ -366,7 +383,9 @@ fn insert_input_type(contract: &Contract, table: &Table) -> InputObject {
 fn set_input_type(contract: &Contract, table: &Table) -> InputObject {
     let mut input = InputObject::new(set_input_name(&table.name));
     for f in &table.fields {
-        if table.key.contains(&f.name) {
+        // keys are immutable; `= me` fields are stamped once and never
+        // reassigned by a client (RFD 0014) — both leave the update surface.
+        if table.key.contains(&f.name) || is_actor_default(f) {
             continue;
         }
         input = input.field(InputValue::new(
@@ -860,9 +879,14 @@ fn insert_one_field(table: &Table) -> Field {
                         body.insert(f.name.clone(), v.deserialize::<Json>()?);
                     }
                 }
+                // `= me` fields are absent from the input by construction
+                // (removed from insert_input_type); the runtime stamps the
+                // request actor for them (RFD 0014 §14.3).
+                let actor = actor_of(&ctx);
                 let row = {
                     let mut db = app.db.lock().map_err(|_| gql("db lock poisoned"))?;
-                    write::insert_row(contract, table, &mut db, &body).map_err(api_error_to_gql)?
+                    write::insert_row(contract, table, &mut db, &body, actor)
+                        .map_err(api_error_to_gql)?
                 };
                 Ok(Some(FieldValue::owned_any(row)))
             })

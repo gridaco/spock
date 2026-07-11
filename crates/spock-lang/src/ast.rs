@@ -96,13 +96,16 @@ pub struct SetMember {
 pub enum DefaultExpr {
     Auto(Span),
     Now(Span),
+    /// `= me` — the current actor (RFD 0014). Legal only on a reference to
+    /// the `auth`-anchored table; the checker enforces the rest.
+    Me(Span),
     Lit(Lit),
 }
 
 impl DefaultExpr {
     pub fn span(&self) -> Span {
         match self {
-            DefaultExpr::Auto(s) | DefaultExpr::Now(s) => *s,
+            DefaultExpr::Auto(s) | DefaultExpr::Now(s) | DefaultExpr::Me(s) => *s,
             DefaultExpr::Lit(lit) => lit.span(),
         }
     }

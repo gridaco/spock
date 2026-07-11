@@ -110,6 +110,11 @@ pub enum DefaultValue {
     Auto,
     /// UTC now captured by the runtime at insert.
     Now,
+    /// The current actor's key, stamped by the runtime at insert (RFD 0014,
+    /// `= me`). A *strong preset*: removed from the client insert/update
+    /// surface, so a client cannot forge it. Runtime-materialized on the
+    /// write path — never a DDL DEFAULT, since `spock_actor()` is DIRECTONLY.
+    Actor,
     Str {
         value: String,
     },
