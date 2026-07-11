@@ -397,12 +397,15 @@ fn seed(contract: &Contract, conn: &mut Connection) -> Result<(), EngineError> {
             body.insert(name.clone(), json);
         }
 
-        let stored =
-            insert_row(contract, table, conn, &body).map_err(|source| EngineError::Seed {
+        // seed runs before any actor exists (anonymous); a `= me` column
+        // must be named explicitly in the row (checker E022, RFD 0014 §14.4).
+        let stored = insert_row(contract, table, conn, &body, None).map_err(|source| {
+            EngineError::Seed {
                 index,
                 table: table.name.clone(),
                 source: Box::new(source),
-            })?;
+            }
+        })?;
 
         if let Some(binding) = &row.binding {
             if let Some(key_field) = table.key.first() {

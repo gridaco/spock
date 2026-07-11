@@ -190,6 +190,78 @@ async fn rpc(base: &str, name: &str, body: Option<Value>) -> (u16, Value) {
     (status, body)
 }
 
+// --- the actor seam (RFD 0014): a separate program with an `auth` anchor ---
+
+const ACTOR_PROGRAM: &str = r#"
+auth table account {
+  key handle: text
+  name: text?
+}
+table note {
+  key id: uuid = auto
+  owner: account = me
+  body: text
+}
+seed {
+  account { handle: "maya", name: "Maya Chen" }
+  account { handle: "luis" }
+}
+"#;
+
+async fn start_program(program: &str) -> String {
+    let contract = spock_lang::compile(program).expect("program compiles");
+    let conn = engine::open(&contract, None).expect("engine opens and seeds");
+    let app = Arc::new(App::new(contract, conn));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind ephemeral port");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        http::serve(app, listener).await.expect("serve");
+    });
+    format!("http://{addr}")
+}
+
+async fn gql_as(base: &str, actor: Option<&str>, query: &str) -> Value {
+    let mut req = reqwest::Client::new()
+        .post(format!("{base}/graphql/v1"))
+        .json(&json!({ "query": query }));
+    if let Some(a) = actor {
+        req = req.header("X-Spock-Actor", a);
+    }
+    let resp = req.send().await.expect("POST graphql");
+    resp.json::<Value>().await.unwrap_or(Value::Null)
+}
+
+#[tokio::test]
+async fn me_default_stamps_the_actor_on_the_floor() {
+    let base = start_program(ACTOR_PROGRAM).await;
+    // owner is a reference, exposed as the `account` object (graphql.md D5)
+    let insert = r#"mutation { insert_note_one(object: {body: "hi"}) { owner { handle } body } }"#;
+
+    // impersonated → owner auto-stamped from the header, absent from the input
+    let body = gql_as(&base, Some("maya"), insert).await;
+    assert_eq!(
+        body["data"]["insert_note_one"]["owner"]["handle"], "maya",
+        "{body}"
+    );
+    assert_eq!(body["data"]["insert_note_one"]["body"], "hi");
+
+    // anonymous → the derived `required` error, not a raw 500 (§14.4)
+    let body = gql_as(&base, None, insert).await;
+    assert_eq!(
+        body["errors"][0]["extensions"]["code"], "note_owner_required",
+        "{body}"
+    );
+
+    // the `owner` field is off the client insert surface — a client cannot
+    // forge it (removed from note_insert_input; async-graphql rejects it)
+    let forge = r#"mutation { insert_note_one(object: {owner: "luis", body: "x"}) { id } }"#;
+    let body = gql_as(&base, Some("maya"), forge).await;
+    let msg = body["errors"][0]["message"].as_str().unwrap_or("");
+    assert!(msg.contains("owner"), "expected owner rejected as unknown input, got {body}");
+}
+
 #[tokio::test]
 async fn the_rpc_surface() {
     let base = start().await;

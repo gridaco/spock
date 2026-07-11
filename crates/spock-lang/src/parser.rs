@@ -601,12 +601,13 @@ impl Parser {
         let expr = match &tok.kind {
             TokenKind::KwAuto => DefaultExpr::Auto(tok.span),
             TokenKind::KwNow => DefaultExpr::Now(tok.span),
+            TokenKind::KwMe => DefaultExpr::Me(tok.span),
             TokenKind::Str(s) => DefaultExpr::Lit(Lit::Str(s.clone(), tok.span)),
             TokenKind::Int(v) => DefaultExpr::Lit(Lit::Int(*v, tok.span)),
             TokenKind::Float(v) => DefaultExpr::Lit(Lit::Float(*v, tok.span)),
             TokenKind::KwTrue => DefaultExpr::Lit(Lit::Bool(true, tok.span)),
             TokenKind::KwFalse => DefaultExpr::Lit(Lit::Bool(false, tok.span)),
-            _ => return Err(self.unexpected("`auto`, `now`, or a literal")),
+            _ => return Err(self.unexpected("`auto`, `now`, `me`, or a literal")),
         };
         self.bump();
         Ok(expr)

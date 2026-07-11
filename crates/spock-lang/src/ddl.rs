@@ -21,7 +21,11 @@ pub fn ddl(contract: &Contract) -> Vec<String> {
                 let storage = contract.storage_type(&field.ty).sql();
                 let null = if field.optional { "" } else { " NOT NULL" };
                 let default = match &field.default {
-                    None => String::new(),
+                    // `= me` (RFD 0014) emits NO DDL DEFAULT: spock_actor() is
+                    // DIRECTONLY and cannot sit in a DEFAULT clause. The
+                    // runtime materializes the actor on the write path; an
+                    // escape names spock_actor() itself (§14.3).
+                    None | Some(DefaultValue::Actor) => String::new(),
                     Some(d) => format!(" DEFAULT {}", default_sql(d)),
                 };
                 lines.push(format!("  \"{}\" {storage}{null}{default}", field.name));
@@ -114,6 +118,9 @@ fn default_sql(default: &DefaultValue) -> String {
     match default {
         DefaultValue::Auto => "(spock_uuid())".into(),
         DefaultValue::Now => "(spock_now())".into(),
+        // `= me` emits no DEFAULT clause — the call site short-circuits it,
+        // so this is never reached (the actor is materialized at write time).
+        DefaultValue::Actor => unreachable!("`= me` emits no DEFAULT clause"),
         DefaultValue::Str { value } => format!("'{}'", value.replace('\'', "''")),
         DefaultValue::Int { value } => value.to_string(),
         // {:?} keeps the decimal point (`2.0`, not `2`) — literals verbatim
@@ -210,7 +217,8 @@ pub fn field_check_default_probe(
     let field = contract.table(table_name)?.field(field_name)?;
     let fn_name = field.check.as_ref()?;
     let value = match field.default.as_ref()? {
-        DefaultValue::Auto | DefaultValue::Now => return None,
+        // engine-minted defaults have no literal to probe against a check
+        DefaultValue::Auto | DefaultValue::Now | DefaultValue::Actor => return None,
         lit => default_sql(lit),
     };
     let f = contract.fn_def(fn_name)?;

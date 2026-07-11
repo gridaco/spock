@@ -423,6 +423,34 @@ seed {
     }
 
     #[test]
+    fn me_default_stamps_and_routes_anonymous() {
+        let contract = spock_lang::compile(
+            "auth table account { key handle: text }\n\
+             table note { key id: uuid = auto\n owner: account = me\n body: text }\n\
+             seed { account { handle: \"maya\" } }",
+        )
+        .expect("compiles");
+        let mut conn = engine::open(&contract, None).expect("loads");
+        let note = contract.table("note").unwrap();
+        let body = args(&[("body", "hi".into())]);
+        // impersonated → owner stamped from the actor, never from the body
+        let row = crate::write::insert_row(
+            &contract,
+            note,
+            &mut conn,
+            &body,
+            Some(SqlValue::Text("maya".into())),
+        )
+        .unwrap();
+        assert_eq!(row["owner"], "maya");
+        assert_eq!(row["body"], "hi");
+        // anonymous → the derived `required` error (422), NOT a raw NOT NULL
+        // 500 the floor's map_conflict_error can't translate (§14.4)
+        let err = crate::write::insert_row(&contract, note, &mut conn, &body, None).unwrap_err();
+        assert_eq!(err.code, "note_owner_required");
+    }
+
+    #[test]
     fn spock_actor_without_an_anchor_fails_at_load() {
         // E-ACT03: with no `auth table`, spock_actor() is never registered, so
         // a body that calls it fails to prepare at load — identity needs a

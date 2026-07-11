@@ -59,8 +59,9 @@ impl Checker {
         self.check_ref_targets(&tables, &spans, file);
         self.check_key_cycles(&tables, &spans);
         // The identity anchor (RFD 0014): E045 ≤1 `auth table`, E046 its key
-        // is a single scalar column. Cross-table, so it lives here.
-        self.check_anchor(&tables, file);
+        // is a single scalar column, E047 `= me` targets the anchor. Cross-
+        // table, so it lives here.
+        self.check_anchor(&tables, file, &spans);
 
         // Derived errors (§6.1) — needs inbound-ref knowledge, so done last.
         let derived: Vec<Vec<DerivedError>> =
@@ -467,10 +468,13 @@ impl Checker {
                             );
                             continue;
                         }
-                        if matches!(field.default, Some(DefaultValue::Auto | DefaultValue::Now)) {
+                        if matches!(
+                            field.default,
+                            Some(DefaultValue::Auto | DefaultValue::Now | DefaultValue::Actor)
+                        ) {
                             self.error(
                                 "E042",
-                                format!("`check` on `{}`, which is defaulted `auto`/`now` — an engine-minted value cannot be proven against a validator", f.name.name),
+                                format!("`check` on `{}`, which is defaulted `auto`/`now`/`me` — an engine-minted value cannot be proven against a validator", f.name.name),
                                 check.span,
                             );
                             continue;
@@ -839,6 +843,21 @@ impl Checker {
 
         let default = match &f.default {
             None => None,
+            // `= me` (RFD 0014): the current actor. Carve-out to E016 — the
+            // one default legal on a reference. Phase B (`check_anchor`)
+            // verifies the target IS the anchor and an anchor exists (E047).
+            Some(ast::DefaultExpr::Me(span)) => {
+                if is_ref {
+                    Some(DefaultValue::Actor)
+                } else {
+                    self.error(
+                        "E047",
+                        "`= me` requires a reference to the `auth` table".to_string(),
+                        *span,
+                    );
+                    None
+                }
+            }
             Some(expr) => {
                 if is_ref {
                     self.error(
@@ -994,9 +1013,37 @@ impl Checker {
     /// - **E046** — the anchor's key is a single scalar (builtin) column;
     ///   `spock_actor()` returns one value, so a composite / ref / set key
     ///   has no scalar identity.
-    fn check_anchor(&mut self, tables: &[Table], file: &ast::File) {
+    fn check_anchor(&mut self, tables: &[Table], file: &ast::File, spans: &HashMap<String, Span>) {
         let anchors: Vec<&ast::TableDecl> =
             file.tables.iter().filter(|d| d.auth.is_some()).collect();
+        let anchor_name = anchors.first().map(|d| d.name.name.as_str());
+        // E047: a `= me` default (DefaultValue::Actor — Phase A only produced
+        // it for a ref) must reference the *anchor* table, and an anchor must
+        // exist. Uses the table's span; the field is named in the message.
+        for table in tables {
+            for field in &table.fields {
+                if !matches!(field.default, Some(DefaultValue::Actor)) {
+                    continue;
+                }
+                let target = match &field.ty {
+                    Type::Ref { table, .. } => Some(table.as_str()),
+                    _ => None,
+                };
+                if anchor_name.is_none() || target != anchor_name {
+                    self.error(
+                        "E047",
+                        format!(
+                            "`= me` on `{}.{}` must reference the `auth` table",
+                            table.name, field.name
+                        ),
+                        spans
+                            .get(&table.name)
+                            .copied()
+                            .unwrap_or(Span::new(0, 0)),
+                    );
+                }
+            }
+        }
         // E045: reject every anchor past the first.
         for extra in anchors.iter().skip(1) {
             self.error(
@@ -1116,9 +1163,13 @@ impl Checker {
                 }
 
                 // E022: required fields with no default must be present.
+                // A `= me` default (RFD 0014) counts as *no default here*:
+                // seed runs before any actor exists (anonymous), so the
+                // runtime cannot stamp it — the seed row must name it.
                 for field in &table.fields {
-                    if !field.optional && field.default.is_none() && !provided.contains(&field.name)
-                    {
+                    let no_seed_default = field.default.is_none()
+                        || matches!(field.default, Some(DefaultValue::Actor));
+                    if !field.optional && no_seed_default && !provided.contains(&field.name) {
                         self.error(
                             "E022",
                             format!(
@@ -1552,8 +1603,13 @@ fn derive_errors(table: &Table, all: &[Table]) -> Vec<DerivedError> {
         // Every required field that can be absent on insert (no default) or
         // cleared on update (any non-key field). Required key fields with a
         // default stay underived: the default satisfies insert and key
-        // immutability protects update — the error is unreachable.
-        let reachable = field.default.is_none() || !table.key.contains(&field.name);
+        // immutability protects update — the error is unreachable. A `= me`
+        // field (RFD 0014) is the exception even as a key: an anonymous
+        // insert cannot supply it, so the required error is reachable and
+        // the floor routes anonymous writes to it (§14.4).
+        let reachable = field.default.is_none()
+            || matches!(field.default, Some(DefaultValue::Actor))
+            || !table.key.contains(&field.name);
         if !field.optional && reachable {
             errors.push(DerivedError {
                 code: format!("{t}_{}_required", field.name),
@@ -1669,6 +1725,52 @@ mod tests {
         );
         // E046: a composite key has no scalar identity
         assert!(codes("auth table m { key (a, b)\n a: int\n b: int }").contains(&"E046"));
+    }
+
+    #[test]
+    fn me_default_rules() {
+        // `= me` on a reference to the anchor lowers to the Actor default,
+        // and a required non-key `= me` derives its `required` error so the
+        // floor can route anonymous writes to it (§14.4).
+        let c = compile(
+            "auth table user { key id: uuid = auto }\n\
+             table post { key id: uuid = auto\n author: user = me\n caption: text? }",
+        )
+        .unwrap();
+        let author = c.table("post").unwrap().field("author").unwrap();
+        assert!(matches!(author.default, Some(DefaultValue::Actor)));
+        assert!(c
+            .table("post")
+            .unwrap()
+            .error_for(ErrorKind::Required, &["author"])
+            .is_some());
+
+        // E047: `= me` on a non-reference field
+        assert!(codes(
+            "auth table user { key id: uuid = auto }\n\
+             table t { key id: uuid = auto\n name: text = me }"
+        )
+        .contains(&"E047"));
+        // E047: `= me` on a reference to a NON-anchor table
+        assert!(codes(
+            "auth table user { key id: uuid = auto }\n\
+             table team { key id: uuid = auto }\n\
+             table t { key id: uuid = auto\n owner: team = me }"
+        )
+        .contains(&"E047"));
+        // E047: `= me` with no anchor declared at all
+        assert!(codes(
+            "table user { key id: uuid = auto }\n\
+             table post { key id: uuid = auto\n author: user = me }"
+        )
+        .contains(&"E047"));
+        // E022: a seed row must name a `= me` column (anonymous at seed time)
+        assert!(codes(
+            "auth table user { key id: uuid = auto\n username: text unique }\n\
+             table post { key id: uuid = auto\n author: user = me\n caption: text? }\n\
+             seed { maya = user { username: \"maya\" }\n post { caption: \"x\" } }"
+        )
+        .contains(&"E022"));
     }
 
     #[test]
