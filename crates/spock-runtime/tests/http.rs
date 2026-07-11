@@ -248,7 +248,10 @@ async fn me_default_stamps_the_actor_on_the_floor() {
     let forge = r#"mutation { insert_note_one(object: {owner: "luis", body: "x"}) { id } }"#;
     let body = gql_as(&base, Some("maya"), forge).await;
     let msg = body["errors"][0]["message"].as_str().unwrap_or("");
-    assert!(msg.contains("owner"), "expected owner rejected as unknown input, got {body}");
+    assert!(
+        msg.contains("owner"),
+        "expected owner rejected as unknown input, got {body}"
+    );
 }
 
 #[tokio::test]

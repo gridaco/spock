@@ -432,8 +432,7 @@ fn map_conflict_error(table: &Table, e: rusqlite::Error) -> ApiError {
 fn check_constraint_code(code: std::os::raw::c_int, msg: &str) -> Option<&str> {
     use rusqlite::ffi;
     if code == ffi::SQLITE_CONSTRAINT_CHECK {
-        msg.strip_prefix("CHECK constraint failed: ")
-            .map(str::trim)
+        msg.strip_prefix("CHECK constraint failed: ").map(str::trim)
     } else {
         None
     }
@@ -446,10 +445,19 @@ fn check_constraint_code(code: std::os::raw::c_int, msg: &str) -> Option<&str> {
 fn invalid_error(table: &Table, derr: &DerivedError) -> ApiError {
     let message = if let [field_name] = derr.fields.as_slice() {
         match table.field(field_name) {
-            Some(Field { ty: Type::Set { values }, .. }) => {
-                format!("`{}.{field_name}` must be one of: {}", table.name, values.join(", "))
+            Some(Field {
+                ty: Type::Set { values },
+                ..
+            }) => {
+                format!(
+                    "`{}.{field_name}` must be one of: {}",
+                    table.name,
+                    values.join(", ")
+                )
             }
-            Some(Field { check: Some(check), .. }) => {
+            Some(Field {
+                check: Some(check), ..
+            }) => {
                 format!("`{}.{field_name}` failed check `{check}`", table.name)
             }
             _ => format!("`{}` value constraint `{}` failed", table.name, derr.code),

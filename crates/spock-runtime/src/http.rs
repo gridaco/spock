@@ -22,8 +22,8 @@ use spock_lang::ir::{FnArity, Table, Type};
 
 use crate::error::ApiError;
 use crate::graphql::{self, SchemaBuildError};
-use crate::{func, write};
 use crate::App;
+use crate::{func, write};
 
 const DEFAULT_LIMIT: u32 = 50;
 const MAX_LIMIT: u32 = 200;

@@ -202,8 +202,10 @@ fn validate_fns(contract: &Contract, conn: &Connection) -> Result<(), EngineErro
             // unknown fails loudly.
             match first_keyword(sql) {
                 Some(kw)
-                    if ["SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "WITH", "VALUES"]
-                        .contains(&kw.to_ascii_uppercase().as_str()) => {}
+                    if [
+                        "SELECT", "INSERT", "UPDATE", "DELETE", "REPLACE", "WITH", "VALUES",
+                    ]
+                    .contains(&kw.to_ascii_uppercase().as_str()) => {}
                 Some(kw) => {
                     return Err(at(format!(
                         "`{kw}` is not a fn statement (a body reads and writes rows: \
@@ -237,7 +239,7 @@ fn validate_fns(contract: &Contract, conn: &Connection) -> Result<(), EngineErro
             for i in 1..=stmt.parameter_count() {
                 let Some(name) = stmt.parameter_name(i) else {
                     return Err(at(
-                        "positional parameters are not allowed; use `:param`".into(),
+                        "positional parameters are not allowed; use `:param`".into()
                     ));
                 };
                 let Some(bare) = name.strip_prefix(':') else {
@@ -399,13 +401,12 @@ fn seed(contract: &Contract, conn: &mut Connection) -> Result<(), EngineError> {
 
         // seed runs before any actor exists (anonymous); a `= me` column
         // must be named explicitly in the row (checker E022, RFD 0014 §14.4).
-        let stored = insert_row(contract, table, conn, &body, None).map_err(|source| {
-            EngineError::Seed {
+        let stored =
+            insert_row(contract, table, conn, &body, None).map_err(|source| EngineError::Seed {
                 index,
                 table: table.name.clone(),
                 source: Box::new(source),
-            }
-        })?;
+            })?;
 
         if let Some(binding) = &row.binding {
             if let Some(key_field) = table.key.first() {
@@ -543,11 +544,9 @@ mod tests {
         let table = contract.table("comment").expect("declared");
 
         let parent_id: String = conn
-            .query_row(
-                "SELECT id FROM comment WHERE body = 'parent'",
-                [],
-                |row| row.get(0),
-            )
+            .query_row("SELECT id FROM comment WHERE body = 'parent'", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         crate::write::delete_row(
             &contract,
@@ -574,48 +573,60 @@ mod tests {
         assert!(open_err("fn f() -> user { unchecked sql(\"SELEC *\") }")
             .contains("not a fn statement"));
         // a real syntax error surfaces SQLite's own message
-        assert!(open_err("fn f() -> user { unchecked sql(\"SELECT FROM WHERE\") }")
-            .contains("does not compile"));
-        // unknown column resolves at prepare
-        assert!(open_err("fn f() -> user { unchecked sql(\"SELECT * FROM user WHERE ghost = 1\") }")
-            .contains("does not compile"));
-        // exactly one statement per escape
         assert!(
-            open_err("fn f() -> user { unchecked sql(\"SELECT * FROM user; SELECT * FROM user\") }")
-                .contains("exactly one SQL statement")
+            open_err("fn f() -> user { unchecked sql(\"SELECT FROM WHERE\") }")
+                .contains("does not compile")
         );
+        // unknown column resolves at prepare
+        assert!(open_err(
+            "fn f() -> user { unchecked sql(\"SELECT * FROM user WHERE ghost = 1\") }"
+        )
+        .contains("does not compile"));
+        // exactly one statement per escape
+        assert!(open_err(
+            "fn f() -> user { unchecked sql(\"SELECT * FROM user; SELECT * FROM user\") }"
+        )
+        .contains("exactly one SQL statement"));
         // empty and comment-only bodies
         assert!(open_err("fn f() -> user { unchecked sql(\"\") }").contains("no SQL statement"));
-        assert!(open_err("fn f() -> user { unchecked sql(\"-- nothing\") }").contains("no SQL statement"));
+        assert!(open_err("fn f() -> user { unchecked sql(\"-- nothing\") }")
+            .contains("no SQL statement"));
         // placeholder spellings: bare `?` is nameless (→ positional error);
         // `?1` and `@a` carry their spelling as the name (→ :param error)
         assert!(
             open_err("fn f(a: int) -> user { unchecked sql(\"SELECT * FROM user LIMIT ?\") }")
                 .contains("positional")
         );
-        assert!(
-            open_err("fn f(a: int) -> user { unchecked sql(\"SELECT * FROM user LIMIT ?1\") }")
-                .contains(":param")
-        );
-        assert!(open_err("fn f(a: int) -> user { unchecked sql(\"SELECT * FROM user LIMIT @a\") }")
-            .contains(":param"));
+        assert!(open_err(
+            "fn f(a: int) -> user { unchecked sql(\"SELECT * FROM user LIMIT ?1\") }"
+        )
+        .contains(":param"));
+        assert!(open_err(
+            "fn f(a: int) -> user { unchecked sql(\"SELECT * FROM user LIMIT @a\") }"
+        )
+        .contains(":param"));
         // both directions of the placeholder check
+        assert!(open_err(
+            "fn f() -> user { unchecked sql(\"SELECT * FROM user WHERE id = :ghost\") }"
+        )
+        .contains("not a parameter"));
         assert!(
-            open_err("fn f() -> user { unchecked sql(\"SELECT * FROM user WHERE id = :ghost\") }")
-                .contains("not a parameter")
+            open_err("fn f(a: int) -> user { unchecked sql(\"SELECT * FROM user\") }")
+                .contains("never used")
         );
-        assert!(open_err("fn f(a: int) -> user { unchecked sql(\"SELECT * FROM user\") }")
-            .contains("never used"));
         // a scalar return is exactly one column, any name
         assert!(open_err("fn f() -> int { unchecked sql(\"SELECT 1, 2\") }")
             .contains("exactly one column"));
         open_ok("fn f() -> int { unchecked sql(\"SELECT count(*) FROM user\") }");
         // column set-equality, duplicates, and DML-without-RETURNING
-        assert!(open_err("fn f() -> user { unchecked sql(\"SELECT id FROM user\") }").contains("do not match"));
         assert!(
-            open_err("fn f() -> user { unchecked sql(\"SELECT id AS username, username FROM user\") }")
-                .contains("duplicate column")
+            open_err("fn f() -> user { unchecked sql(\"SELECT id FROM user\") }")
+                .contains("do not match")
         );
+        assert!(open_err(
+            "fn f() -> user { unchecked sql(\"SELECT id AS username, username FROM user\") }"
+        )
+        .contains("duplicate column"));
         assert!(open_err(
             "mut fn f(username: text) -> user { unchecked sql(\"UPDATE user SET username = :username\") }"
         )

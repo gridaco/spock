@@ -153,11 +153,26 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
     let dup_query: Collide = |a, b, name| SchemaBuildError::DuplicateQueryField { a, b, name };
     for table in &contract.tables {
         let owner = format!("table `{}`", table.name);
-        claim(&mut claimed_roots, table.name.clone(), owner.clone(), dup_query)?;
-        claim(&mut claimed_roots, format!("{}_by_pk", table.name), owner, dup_query)?;
+        claim(
+            &mut claimed_roots,
+            table.name.clone(),
+            owner.clone(),
+            dup_query,
+        )?;
+        claim(
+            &mut claimed_roots,
+            format!("{}_by_pk", table.name),
+            owner,
+            dup_query,
+        )?;
     }
     for f in contract.fns.iter().filter(|f| f.readonly) {
-        claim(&mut claimed_roots, f.name.clone(), format!("fn `{}`", f.name), dup_query)?;
+        claim(
+            &mut claimed_roots,
+            f.name.clone(),
+            format!("fn `{}`", f.name),
+            dup_query,
+        )?;
     }
 
     // Pass 1c — mutation-root field names. Derived CRUD names could once
@@ -165,17 +180,38 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
     // everything registered on the root is claimed — exactly what is
     // registered (a pure-key table claims no update).
     let mut claimed_mutations: HashMap<String, String> = HashMap::new(); // field -> owner
-    let dup_mutation: Collide = |a, b, name| SchemaBuildError::DuplicateMutationField { a, b, name };
+    let dup_mutation: Collide =
+        |a, b, name| SchemaBuildError::DuplicateMutationField { a, b, name };
     for table in &contract.tables {
         let owner = format!("table `{}`", table.name);
-        claim(&mut claimed_mutations, format!("insert_{}_one", table.name), owner.clone(), dup_mutation)?;
+        claim(
+            &mut claimed_mutations,
+            format!("insert_{}_one", table.name),
+            owner.clone(),
+            dup_mutation,
+        )?;
         if has_settable_fields(table) {
-            claim(&mut claimed_mutations, format!("update_{}_by_pk", table.name), owner.clone(), dup_mutation)?;
+            claim(
+                &mut claimed_mutations,
+                format!("update_{}_by_pk", table.name),
+                owner.clone(),
+                dup_mutation,
+            )?;
         }
-        claim(&mut claimed_mutations, format!("delete_{}_by_pk", table.name), owner, dup_mutation)?;
+        claim(
+            &mut claimed_mutations,
+            format!("delete_{}_by_pk", table.name),
+            owner,
+            dup_mutation,
+        )?;
     }
     for f in contract.fns.iter().filter(|f| !f.readonly) {
-        claim(&mut claimed_mutations, f.name.clone(), format!("fn `{}`", f.name), dup_mutation)?;
+        claim(
+            &mut claimed_mutations,
+            f.name.clone(),
+            format!("fn `{}`", f.name),
+            dup_mutation,
+        )?;
     }
 
     // Pass 2 — object types (declared fields, forward refs, reverse
@@ -1041,7 +1077,11 @@ fn fn_field(contract: &Contract, f: &FnDef) -> Field {
             };
             let scalar = f.returns.scalar;
             let wrap = |v: Json| -> async_graphql::Result<FieldValue<'static>> {
-                if scalar { leaf(v) } else { Ok(FieldValue::owned_any(v)) }
+                if scalar {
+                    leaf(v)
+                } else {
+                    Ok(FieldValue::owned_any(v))
+                }
             };
             Ok(match f.returns.arity {
                 FnArity::One => Some(wrap(result)?),
@@ -1149,13 +1189,24 @@ mod tests {
         // insert_input: every field, all nullable — required-ness is the
         // runtime's (the derived error stays un-shadowed)
         let insert_input = sdl_block(&sdl, "input user_insert_input");
-        for field in ["id: uuid", "username: String", "bio: String", "joined_at: timestamp"] {
-            assert!(insert_input.contains(&field.to_string()), "{insert_input:?}");
+        for field in [
+            "id: uuid",
+            "username: String",
+            "bio: String",
+            "joined_at: timestamp",
+        ] {
+            assert!(
+                insert_input.contains(&field.to_string()),
+                "{insert_input:?}"
+            );
         }
 
         // set_input: non-key fields only, all nullable
         let set_input = sdl_block(&sdl, "input user_set_input");
-        assert!(!set_input.iter().any(|l| l.starts_with("id:")), "{set_input:?}");
+        assert!(
+            !set_input.iter().any(|l| l.starts_with("id:")),
+            "{set_input:?}"
+        );
         for field in ["username: String", "bio: String", "joined_at: timestamp"] {
             assert!(set_input.contains(&field.to_string()), "{set_input:?}");
         }
@@ -1166,7 +1217,10 @@ mod tests {
 
         // mutation shapes (graphql.md §5)
         let insert = sdl_line(&sdl, "insert_user_one(");
-        assert!(insert.contains("(object: user_insert_input!): user!"), "{insert}");
+        assert!(
+            insert.contains("(object: user_insert_input!): user!"),
+            "{insert}"
+        );
         let update = sdl_line(&sdl, "update_user_by_pk(");
         assert!(
             update.contains("(pk_columns: user_pk_columns_input!, _set: user_set_input!): user!"),
@@ -1175,7 +1229,10 @@ mod tests {
 
         // composite keys: full key args on delete and on the by-pk query
         let delete = sdl_line(&sdl, "delete_follow_by_pk(");
-        assert!(delete.contains("follower: uuid!, target: uuid!"), "{delete}");
+        assert!(
+            delete.contains("follower: uuid!, target: uuid!"),
+            "{delete}"
+        );
         let by_pk = sdl_line(&sdl, "follow_by_pk(");
         assert!(
             by_pk.contains("follower: uuid!, target: uuid!): follow"),
@@ -1219,8 +1276,8 @@ mod tests {
         // `uuid`/`timestamp` never get this far — they are type keywords
         // the parser already rejects as table names (L010)
         for table in ["query", "mutation", "subscription"] {
-            let err = build(&format!("table {table} {{ key id: uuid = auto\n a: int }}"))
-                .unwrap_err();
+            let err =
+                build(&format!("table {table} {{ key id: uuid = auto\n a: int }}")).unwrap_err();
             assert!(
                 matches!(err, SchemaBuildError::ReservedTableName { .. }),
                 "{table}: {err}"

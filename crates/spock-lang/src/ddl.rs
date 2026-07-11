@@ -431,7 +431,10 @@ mod tests {
             "{user}"
         );
         // the row validator inlines both params positionally
-        let follow = statements.iter().find(|s| s.contains("\"follow\"")).unwrap();
+        let follow = statements
+            .iter()
+            .find(|s| s.contains("\"follow\""))
+            .unwrap();
         assert!(
             follow.contains(
                 "CONSTRAINT \"follow_follower_target_invalid\" CHECK (\"follower\" <> \"target\")"
@@ -481,8 +484,7 @@ mod tests {
 
     #[test]
     fn emits_real_for_float() {
-        let contract =
-            compile("table tag { key id: uuid = auto\n x: float\n y: float? }").unwrap();
+        let contract = compile("table tag { key id: uuid = auto\n x: float\n y: float? }").unwrap();
         let statements = ddl(&contract);
         assert!(statements[0].contains("\"x\" REAL NOT NULL"));
         assert!(statements[0].contains("\"y\" REAL,"));
@@ -500,7 +502,8 @@ mod tests {
         )
         .unwrap();
         let statements = ddl(&contract);
-        assert!(statements[1]
-            .contains("FOREIGN KEY (\"parent\") REFERENCES \"comment\" (\"id\") ON DELETE SET NULL"));
+        assert!(statements[1].contains(
+            "FOREIGN KEY (\"parent\") REFERENCES \"comment\" (\"id\") ON DELETE SET NULL"
+        ));
     }
 }

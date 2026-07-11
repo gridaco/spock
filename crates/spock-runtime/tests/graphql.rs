@@ -340,7 +340,12 @@ async fn the_graphql_fns() {
     assert_eq!(resp["data"]["author_stats"]["posts"], 2);
 
     // -- many arity: the author owns LIMIT ------------------------------------
-    let resp = gql(&base, "query { recent_posts(n: 1) { caption } }", Value::Null).await;
+    let resp = gql(
+        &base,
+        "query { recent_posts(n: 1) { caption } }",
+        Value::Null,
+    )
+    .await;
     assert_no_errors(&resp);
     assert_eq!(resp["data"]["recent_posts"].as_array().unwrap().len(), 1);
 
@@ -355,7 +360,10 @@ async fn the_graphql_fns() {
     assert_eq!(resp["data"]["post_count"], 2);
     let resp = gql(&base, "query { captions }", Value::Null).await;
     assert_no_errors(&resp);
-    assert_eq!(resp["data"]["captions"], json!(["first light", "golden hour"]));
+    assert_eq!(
+        resp["data"]["captions"],
+        json!(["first light", "golden hour"])
+    );
 
     // -- one arity: the write returns the row ---------------------------------
     let resp = gql(
@@ -686,9 +694,7 @@ async fn the_graphql_mutations() {
     // -- composite by-pk query, then unfollow (the composite motivator) --------
     let resp = gql(
         &base,
-        &format!(
-            r#"{{ follow_by_pk(follower: "{luis_id}", target: "{maya_id}") {{ since }} }}"#
-        ),
+        &format!(r#"{{ follow_by_pk(follower: "{luis_id}", target: "{maya_id}") {{ since }} }}"#),
         Value::Null,
     )
     .await;
@@ -696,9 +702,7 @@ async fn the_graphql_mutations() {
     assert!(resp["data"]["follow_by_pk"]["since"].is_string());
     let resp = gql(
         &base,
-        &format!(
-            r#"{{ follow_by_pk(follower: "{maya_id}", target: "{luis_id}") {{ since }} }}"#
-        ),
+        &format!(r#"{{ follow_by_pk(follower: "{maya_id}", target: "{luis_id}") {{ since }} }}"#),
         Value::Null,
     )
     .await;
@@ -787,20 +791,45 @@ table follow {
 
     // field check: a bad username on the floor → user_username_invalid, and
     // the message names the validator fn
-    let resp = gql(&base, r#"mutation { insert_user_one(object: { username: "Bad Name!" }) { id } }"#, Value::Null).await;
-    assert_eq!(resp["errors"][0]["extensions"]["code"], "user_username_invalid");
+    let resp = gql(
+        &base,
+        r#"mutation { insert_user_one(object: { username: "Bad Name!" }) { id } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        resp["errors"][0]["extensions"]["code"],
+        "user_username_invalid"
+    );
     assert_eq!(resp["errors"][0]["extensions"]["kind"], "invalid");
-    assert!(resp["errors"][0]["message"].as_str().unwrap().contains("valid_username"));
+    assert!(resp["errors"][0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("valid_username"));
 
     // a good one, and a second user for the row check
-    let a = gql(&base, r#"mutation { insert_user_one(object: { username: "maya" }) { id } }"#, Value::Null).await;
+    let a = gql(
+        &base,
+        r#"mutation { insert_user_one(object: { username: "maya" }) { id } }"#,
+        Value::Null,
+    )
+    .await;
     assert_no_errors(&a);
-    let id = a["data"]["insert_user_one"]["id"].as_str().unwrap().to_string();
+    let id = a["data"]["insert_user_one"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // row check: a self-follow on the floor → follow_follower_target_invalid
     let resp = gql(&base, &format!(r#"mutation {{ insert_follow_one(object: {{ follower: "{id}", target: "{id}" }}) {{ follower {{ id }} }} }}"#), Value::Null).await;
-    assert_eq!(resp["errors"][0]["extensions"]["code"], "follow_follower_target_invalid");
-    assert_eq!(resp["errors"][0]["extensions"]["fields"], json!(["follower", "target"]));
+    assert_eq!(
+        resp["errors"][0]["extensions"]["code"],
+        "follow_follower_target_invalid"
+    );
+    assert_eq!(
+        resp["errors"][0]["extensions"]["fields"],
+        json!(["follower", "target"])
+    );
 
     // the validator is an ordinary read fn on the Query root
     let resp = gql(&base, r#"{ valid_username(name: "noor.k") }"#, Value::Null).await;

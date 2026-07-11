@@ -161,28 +161,40 @@ impl Checker {
                 if f.is_key {
                     self.error(
                         "E033",
-                        format!("`key` on record field `{}` (records have no keys)", f.name.name),
+                        format!(
+                            "`key` on record field `{}` (records have no keys)",
+                            f.name.name
+                        ),
                         f.name.span,
                     );
                 }
                 if f.unique {
                     self.error(
                         "E033",
-                        format!("`unique` on record field `{}` (records are not stored)", f.name.name),
+                        format!(
+                            "`unique` on record field `{}` (records are not stored)",
+                            f.name.name
+                        ),
                         f.name.span,
                     );
                 }
                 if let Some(d) = &f.default {
                     self.error(
                         "E033",
-                        format!("default on record field `{}` (records are read shapes)", f.name.name),
+                        format!(
+                            "default on record field `{}` (records are read shapes)",
+                            f.name.name
+                        ),
                         d.span(),
                     );
                 }
                 if let Some(c) = &f.on_delete {
                     self.error(
                         "E033",
-                        format!("`on delete` on record field `{}` (records hold no references)", f.name.name),
+                        format!(
+                            "`on delete` on record field `{}` (records hold no references)",
+                            f.name.name
+                        ),
                         c.span,
                     );
                 }
@@ -468,7 +480,11 @@ impl Checker {
                             );
                             continue;
                         }
-                        if field.default.as_ref().is_some_and(DefaultValue::is_engine_minted) {
+                        if field
+                            .default
+                            .as_ref()
+                            .is_some_and(DefaultValue::is_engine_minted)
+                        {
                             self.error(
                                 "E042",
                                 format!("`check` on `{}`, which is defaulted `auto`/`now`/`me` — an engine-minted value cannot be proven against a validator", f.name.name),
@@ -479,7 +495,9 @@ impl Checker {
                         let field_ty = resolve_value_type(&field.ty, tables).clone();
                         self.validate_validator(check, fns, &[field_ty], tables);
                     }
-                    ast::TableItem::Check { fields, fn_name, .. } => {
+                    ast::TableItem::Check {
+                        fields, fn_name, ..
+                    } => {
                         // the group was already validated (fields exist) in
                         // lower_table; resolve each field's value type
                         let mut expected: Vec<Type> = Vec::new();
@@ -527,7 +545,9 @@ impl Checker {
         if !f.readonly {
             self.error(
                 "E042",
-                format!("validator `{name}` is a `mut fn`; a validator must be an unmarked (read) fn"),
+                format!(
+                    "validator `{name}` is a `mut fn`; a validator must be an unmarked (read) fn"
+                ),
                 span,
             );
         }
@@ -741,7 +761,7 @@ impl Checker {
             uniques,
             checks,
             anchor: decl.auth.is_some(), // RFD 0014; E-ACT01/E-ACT02 in phase B
-            errors: Vec::new(), // filled in phase B
+            errors: Vec::new(),          // filled in phase B
         })
     }
 
@@ -907,7 +927,10 @@ impl Checker {
             } else if !seen.insert(m.value.as_str()) {
                 self.error(
                     "E043",
-                    format!("closed-set type of `{field}` repeats the value `{}`", m.value),
+                    format!(
+                        "closed-set type of `{field}` repeats the value `{}`",
+                        m.value
+                    ),
                     m.span,
                 );
             }
@@ -1036,10 +1059,7 @@ impl Checker {
                             "`= me` on `{}.{}` must reference the `auth` table",
                             table.name, field.name
                         ),
-                        spans
-                            .get(&table.name)
-                            .copied()
-                            .unwrap_or(Span::new(0, 0)),
+                        spans.get(&table.name).copied().unwrap_or(Span::new(0, 0)),
                     );
                 }
             }
@@ -1048,8 +1068,7 @@ impl Checker {
         for extra in anchors.iter().skip(1) {
             self.error(
                 "E045",
-                "more than one `auth table`: the actor space has one identity table"
-                    .to_string(),
+                "more than one `auth table`: the actor space has one identity table".to_string(),
                 extra.auth.expect("filtered to auth tables"),
             );
         }
@@ -1798,10 +1817,7 @@ mod tests {
             ["E043"]
         );
         // E043: a set may not be a key (keeps sets off the value_type-via-ref path)
-        assert_eq!(
-            codes("table t { key s: \"a\" | \"b\" }"),
-            ["E043"]
-        );
+        assert_eq!(codes("table t { key s: \"a\" | \"b\" }"), ["E043"]);
         // E009: a default must be a member
         assert_eq!(
             codes("table t { key id: uuid = auto\n s: \"a\" | \"b\" = \"c\" }"),
@@ -1813,13 +1829,12 @@ mod tests {
             ["E023"]
         );
         // L-B: a set may not be a record field (E034) or a fn param (E036)
+        assert_eq!(codes("record r { s: \"a\" | \"b\" }"), ["E034"]);
         assert_eq!(
-            codes("record r { s: \"a\" | \"b\" }"),
-            ["E034"]
-        );
-        assert_eq!(
-            codes("table t { key id: uuid = auto\n n: int }\n\
-                   fn f(s: \"a\" | \"b\") -> t { unchecked sql(\"SELECT 1\") }"),
+            codes(
+                "table t { key id: uuid = auto\n n: int }\n\
+                   fn f(s: \"a\" | \"b\") -> t { unchecked sql(\"SELECT 1\") }"
+            ),
             ["E036"]
         );
     }
@@ -1846,13 +1861,20 @@ mod tests {
             .error_for(ErrorKind::Invalid, &["follower", "target"])
             .is_some());
         assert_eq!(
-            contract.table("user").unwrap().field("username").unwrap().check.as_deref(),
+            contract
+                .table("user")
+                .unwrap()
+                .field("username")
+                .unwrap()
+                .check
+                .as_deref(),
             Some("nonempty")
         );
     }
 
     // a well-formed validator, reused by the law tests below
-    const NONEMPTY: &str = "fn nonempty(s: text) -> bool { unchecked sql(\"SELECT length(:s) > 0\") }\n";
+    const NONEMPTY: &str =
+        "fn nonempty(s: text) -> bool { unchecked sql(\"SELECT length(:s) > 0\") }\n";
 
     #[test]
     fn validator_law_violations() {
@@ -1863,37 +1885,49 @@ mod tests {
         );
         // E042: a `mut fn` is not a validator
         assert_eq!(
-            codes("mut fn v(s: text) -> bool { unchecked sql(\"SELECT length(:s) > 0\") }\n\
-                   table t { key id: uuid = auto\n s: text check v }"),
+            codes(
+                "mut fn v(s: text) -> bool { unchecked sql(\"SELECT length(:s) > 0\") }\n\
+                   table t { key id: uuid = auto\n s: text check v }"
+            ),
             ["E042"]
         );
         // E042: a validator must return bool
         assert_eq!(
-            codes("fn v(s: text) -> int { unchecked sql(\"SELECT length(:s)\") }\n\
-                   table t { key id: uuid = auto\n s: text check v }"),
+            codes(
+                "fn v(s: text) -> int { unchecked sql(\"SELECT length(:s)\") }\n\
+                   table t { key id: uuid = auto\n s: text check v }"
+            ),
             ["E042"]
         );
         // E042: a WHERE clause cannot inline into a CHECK (L-K)
         assert_eq!(
-            codes("fn v(s: text) -> bool { unchecked sql(\"SELECT 1 WHERE length(:s) > 0\") }\n\
-                   table t { key id: uuid = auto\n s: text check v }"),
+            codes(
+                "fn v(s: text) -> bool { unchecked sql(\"SELECT 1 WHERE length(:s) > 0\") }\n\
+                   table t { key id: uuid = auto\n s: text check v }"
+            ),
             ["E042"]
         );
         // E042: a non-deterministic function cannot live in a CHECK (L-N)
         assert_eq!(
-            codes("fn v(s: text) -> bool { unchecked sql(\"SELECT :s > spock_now()\") }\n\
-                   table t { key id: uuid = auto\n s: text check v }"),
+            codes(
+                "fn v(s: text) -> bool { unchecked sql(\"SELECT :s > spock_now()\") }\n\
+                   table t { key id: uuid = auto\n s: text check v }"
+            ),
             ["E042"]
         );
         // E042: param type must match the field's value type
         assert_eq!(
-            codes("fn v(n: int) -> bool { unchecked sql(\"SELECT :n > 0\") }\n\
-                   table t { key id: uuid = auto\n s: text check v }"),
+            codes(
+                "fn v(n: int) -> bool { unchecked sql(\"SELECT :n > 0\") }\n\
+                   table t { key id: uuid = auto\n s: text check v }"
+            ),
             ["E042"]
         );
         // E042: a check may not attach to a set-typed field
         assert_eq!(
-            codes(&format!("{NONEMPTY}table t {{ key id: uuid = auto\n s: \"a\" | \"b\" check nonempty }}")),
+            codes(&format!(
+                "{NONEMPTY}table t {{ key id: uuid = auto\n s: \"a\" | \"b\" check nonempty }}"
+            )),
             ["E042"]
         );
         // E042: a check may not attach to an auto/now-defaulted field
@@ -1903,8 +1937,10 @@ mod tests {
         );
         // arity: a field check binds exactly one param
         assert_eq!(
-            codes("fn v(a: uuid, b: uuid) -> bool { unchecked sql(\"SELECT :a <> :b\") }\n\
-                   table t { key id: uuid = auto\n s: text check v }"),
+            codes(
+                "fn v(a: uuid, b: uuid) -> bool { unchecked sql(\"SELECT :a <> :b\") }\n\
+                   table t { key id: uuid = auto\n s: text check v }"
+            ),
             ["E042"]
         );
     }
@@ -2145,7 +2181,10 @@ mod tests {
         let t = contract.table("t").unwrap();
         assert!(matches!(
             &t.field("u").unwrap().ty,
-            Type::Ref { on_delete: OnDelete::SetNull, .. }
+            Type::Ref {
+                on_delete: OnDelete::SetNull,
+                ..
+            }
         ));
         let user = contract.table("user").unwrap();
         assert!(user.error_for(ErrorKind::Restricted, &[]).is_none());
@@ -2295,7 +2334,10 @@ mod tests {
         assert!(matches!(&rename.params[0].ty, Type::Ref { table, .. } if table == "user"));
         assert_eq!(rename.errors, vec!["user_username_taken", "not_found"]);
         assert_eq!(rename.returns.arity, FnArity::One);
-        assert_eq!(contract.fn_def("tally").unwrap().returns.arity, FnArity::Many);
+        assert_eq!(
+            contract.fn_def("tally").unwrap().returns.arity,
+            FnArity::Many
+        );
         // a fn may share a table's name — separate namespaces
         assert!(compile(&format!(
             "{USER}\
@@ -2359,7 +2401,9 @@ mod tests {
     fn e036_bad_param_types() {
         // unknown type
         assert_eq!(
-            codes(&format!("{USER}fn f(x: ghost) -> user {{ unchecked sql(\"S\") }}")),
+            codes(&format!(
+                "{USER}fn f(x: ghost) -> user {{ unchecked sql(\"S\") }}"
+            )),
             vec!["E036"]
         );
         // record as param

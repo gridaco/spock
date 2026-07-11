@@ -100,9 +100,8 @@ impl Parser {
                 TokenKind::KwSeed => seeds.push(self.seed_block()?),
                 TokenKind::Eof => break,
                 _ => {
-                    return Err(
-                        self.unexpected("`table`, `auth table`, `record`, `fn`, `mut fn`, or `seed`")
-                    );
+                    return Err(self
+                        .unexpected("`table`, `auth table`, `record`, `fn`, `mut fn`, or `seed`"));
                 }
             }
         }
@@ -377,7 +376,10 @@ impl Parser {
                 self.peek().span,
             ));
         }
-        self.expect(TokenKind::Comma, "`,` (a row check names two or more fields)")?;
+        self.expect(
+            TokenKind::Comma,
+            "`,` (a row check names two or more fields)",
+        )?;
         fields.push(self.ident("a field name")?);
         while self.peek().kind == TokenKind::Comma {
             self.bump();
@@ -387,7 +389,8 @@ impl Parser {
         // The validator name is a bare trailing ident with no delimiter, so
         // omitting it would swallow the next field's name — guard the common
         // case (a field line follows) with a message at the group (L-D).
-        if matches!(self.peek().kind, TokenKind::Ident(_)) && self.peek2().kind == TokenKind::Colon {
+        if matches!(self.peek().kind, TokenKind::Ident(_)) && self.peek2().kind == TokenKind::Colon
+        {
             return Err(Diagnostic::new(
                 "L010",
                 "row check is missing its validator fn name: write `check (a, b) fn_name`",
@@ -569,14 +572,20 @@ impl Parser {
         };
         let start = first.span;
         let mut end = first.span;
-        let mut members = vec![SetMember { value, span: first.span }];
+        let mut members = vec![SetMember {
+            value,
+            span: first.span,
+        }];
         while self.peek().kind == TokenKind::Pipe {
             self.bump();
             let tok = self.bump();
             match tok.kind {
                 TokenKind::Str(value) => {
                     end = tok.span;
-                    members.push(SetMember { value, span: tok.span });
+                    members.push(SetMember {
+                        value,
+                        span: tok.span,
+                    });
                 }
                 _ => {
                     return Err(Diagnostic::new(
@@ -781,7 +790,9 @@ mod tests {
         let TableItem::Field(status) = &table.items[2] else {
             panic!("expected field");
         };
-        assert!(matches!(&status.default, Some(DefaultExpr::Lit(Lit::Str(s, _))) if s == "pending"));
+        assert!(
+            matches!(&status.default, Some(DefaultExpr::Lit(Lit::Str(s, _))) if s == "pending")
+        );
         // the singleton case is a *parse*, deferred to the checker (E043)
         let one = parse_ok("table t { key id: uuid = auto\n s: \"only\" }");
         let TableItem::Field(s) = &one.tables[0].items[1] else {
@@ -812,7 +823,10 @@ mod tests {
         };
         assert!(matches!(&username.check, Some(i) if i.name == "valid_username"));
         assert!(username.unique); // check comes before unique
-        let TableItem::Check { fields, fn_name, .. } = &file.tables[1].items[3] else {
+        let TableItem::Check {
+            fields, fn_name, ..
+        } = &file.tables[1].items[3]
+        else {
             panic!("expected a row check");
         };
         assert_eq!(fields.len(), 2);
@@ -831,9 +845,8 @@ mod tests {
         let d = parse_err("table t { key id: uuid = auto\n a: t\n check distinct(a) }");
         assert!(d.message.contains("row check"), "{}", d.message);
         // an omitted validator swallows the next field → targeted message
-        let d = parse_err(
-            "table t { key (a, b)\n a: t\n b: t\n check (a, b)\n c: timestamp = now }",
-        );
+        let d =
+            parse_err("table t { key (a, b)\n a: t\n b: t\n check (a, b)\n c: timestamp = now }");
         assert!(d.message.contains("missing its validator"), "{}", d.message);
         // the misordered `unique check`
         let d = parse_err("table t { key id: uuid = auto\n s: text unique check v }");
@@ -1028,7 +1041,10 @@ mod tests {
     #[test]
     fn rejects_malformed_fns() {
         // missing arrow
-        assert_eq!(parse_err("fn f() user { unchecked sql(\"x\") }").code, "L010");
+        assert_eq!(
+            parse_err("fn f() user { unchecked sql(\"x\") }").code,
+            "L010"
+        );
         // body must open with the marker
         let d = parse_err("fn f() -> t { nosql(\"x\") }");
         assert!(d.message.contains("expected `unchecked`"), "{}", d.message);
