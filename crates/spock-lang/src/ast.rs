@@ -20,6 +20,9 @@ pub struct File {
 pub struct TableDecl {
     pub name: Ident,
     pub items: Vec<TableItem>,
+    /// `auth table ...` — the identity anchor (RFD 0014). `Some(span)` marks
+    /// the `auth` modifier's span (for E-ACT01); `None` is an ordinary table.
+    pub auth: Option<Span>,
     pub span: Span,
 }
 

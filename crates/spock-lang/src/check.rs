@@ -58,6 +58,9 @@ impl Checker {
         // Phase B: cross-table validation (needs every table's key resolved).
         self.check_ref_targets(&tables, &spans, file);
         self.check_key_cycles(&tables, &spans);
+        // The identity anchor (RFD 0014): E045 ≤1 `auth table`, E046 its key
+        // is a single scalar column. Cross-table, so it lives here.
+        self.check_anchor(&tables, file);
 
         // Derived errors (§6.1) — needs inbound-ref knowledge, so done last.
         let derived: Vec<Vec<DerivedError>> =
@@ -736,6 +739,7 @@ impl Checker {
             fields,
             uniques,
             checks,
+            anchor: decl.auth.is_some(), // RFD 0014; E-ACT01/E-ACT02 in phase B
             errors: Vec::new(), // filled in phase B
         })
     }
@@ -980,6 +984,53 @@ impl Checker {
                             );
                         }
                     }
+                }
+            }
+        }
+    }
+
+    /// The identity anchor (RFD 0014, `auth table`):
+    /// - **E045** — at most one anchor: the actor space has one identity table.
+    /// - **E046** — the anchor's key is a single scalar (builtin) column;
+    ///   `spock_actor()` returns one value, so a composite / ref / set key
+    ///   has no scalar identity.
+    fn check_anchor(&mut self, tables: &[Table], file: &ast::File) {
+        let anchors: Vec<&ast::TableDecl> =
+            file.tables.iter().filter(|d| d.auth.is_some()).collect();
+        // E045: reject every anchor past the first.
+        for extra in anchors.iter().skip(1) {
+            self.error(
+                "E045",
+                "more than one `auth table`: the actor space has one identity table"
+                    .to_string(),
+                extra.auth.expect("filtered to auth tables"),
+            );
+        }
+        // E046: the first anchor's key must be a single scalar builtin column.
+        if let Some(decl) = anchors.first() {
+            if let Some(table) = tables.iter().find(|t| t.name == decl.name.name) {
+                let scalar_single = table.key.len() == 1
+                    && table.single_key().is_some_and(|f| {
+                        matches!(
+                            f.ty,
+                            Type::Text
+                                | Type::Int
+                                | Type::Float
+                                | Type::Bool
+                                | Type::Timestamp
+                                | Type::Uuid
+                        )
+                    });
+                if !scalar_single {
+                    self.error(
+                        "E046",
+                        format!(
+                            "`auth table {}` must have a single scalar key column \
+                             (spock_actor() returns one value)",
+                            table.name
+                        ),
+                        decl.auth.expect("anchor has an auth span"),
+                    );
                 }
             }
         }
@@ -1598,6 +1649,26 @@ mod tests {
         assert!(user.error_for(ErrorKind::Restricted, &[]).is_some());
         // username has no default and is required
         assert!(user.error_for(ErrorKind::Required, &["username"]).is_some());
+    }
+
+    #[test]
+    fn auth_table_anchor_rules() {
+        // a uuid single-key anchor: marked in the IR and discoverable
+        let c = compile("auth table user { key id: uuid = auto\n username: text unique }").unwrap();
+        assert!(c.table("user").unwrap().anchor);
+        assert_eq!(c.anchor().map(|t| t.name.as_str()), Some("user"));
+        // a natural single-scalar (text) key is a valid anchor too
+        assert!(compile("auth table account { key handle: text }").is_ok());
+        // E045: at most one anchor
+        assert_eq!(
+            codes(
+                "auth table user { key id: uuid = auto }\n\
+                 auth table admin { key id: uuid = auto }"
+            ),
+            ["E045"]
+        );
+        // E046: a composite key has no scalar identity
+        assert!(codes("auth table m { key (a, b)\n a: int\n b: int }").contains(&"E046"));
     }
 
     #[test]

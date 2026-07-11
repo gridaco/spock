@@ -74,6 +74,18 @@ impl Parser {
         loop {
             match self.peek().kind {
                 TokenKind::KwTable => tables.push(self.table_decl()?),
+                TokenKind::KwAuth => {
+                    // `auth table ...` — the identity anchor (RFD 0014).
+                    // Mirrors the `mut fn` modifier dispatch below.
+                    let start = self.bump().span;
+                    if self.peek().kind != TokenKind::KwTable {
+                        return Err(self.unexpected("`table` (only a table can be `auth`)"));
+                    }
+                    let mut decl = self.table_decl()?;
+                    decl.auth = Some(start);
+                    decl.span = start.to(decl.span);
+                    tables.push(decl);
+                }
                 TokenKind::KwRecord => records.push(self.record_decl()?),
                 TokenKind::KwFn => fns.push(self.fn_decl(false)?),
                 TokenKind::KwMut => {
@@ -88,7 +100,9 @@ impl Parser {
                 TokenKind::KwSeed => seeds.push(self.seed_block()?),
                 TokenKind::Eof => break,
                 _ => {
-                    return Err(self.unexpected("`table`, `record`, `fn`, `mut fn`, or `seed`"));
+                    return Err(
+                        self.unexpected("`table`, `auth table`, `record`, `fn`, `mut fn`, or `seed`")
+                    );
                 }
             }
         }
@@ -116,6 +130,7 @@ impl Parser {
         Ok(TableDecl {
             name,
             items,
+            auth: None,
             span: start.to(end),
         })
     }
@@ -911,6 +926,20 @@ mod tests {
         let d = parse_err("mut table user { key id: uuid = auto }");
         assert_eq!(d.code, "L010");
         assert!(d.message.contains("only a fn"), "{}", d.message);
+    }
+
+    #[test]
+    fn parses_auth_table_anchor() {
+        let file = parse_ok(
+            "auth table user { key id: uuid = auto }\n\
+             table post { key id: uuid = auto }",
+        );
+        assert!(file.tables[0].auth.is_some());
+        assert!(file.tables[1].auth.is_none());
+        // `auth` marks tables only
+        let d = parse_err("auth fn f() -> t { unchecked sql(\"x\") }");
+        assert_eq!(d.code, "L010");
+        assert!(d.message.contains("only a table"), "{}", d.message);
     }
 
     #[test]

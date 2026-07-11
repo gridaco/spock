@@ -35,6 +35,11 @@ pub struct Table {
     /// `spock: "v0"`; parallel to `uniques`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<TableCheck>,
+    /// The identity anchor (RFD 0014): `true` on the one `auth table`. Its
+    /// single scalar key is what `spock_actor()` returns and `= me` stamps.
+    /// Additive under `spock: "v0"` — `default` keeps pre-actor JSON loading.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub anchor: bool,
     /// Derived errors (§6.1). Never hand-written.
     pub errors: Vec<DerivedError>,
 }
@@ -314,6 +319,13 @@ impl Contract {
         self.fns.iter().find(|f| f.name == name)
     }
 
+    /// The identity anchor table (RFD 0014), if one is declared (`auth
+    /// table`). At most one exists (E-ACT01). `spock_actor()` returns its
+    /// single scalar key (E-ACT02); `= me` stamps it.
+    pub fn anchor(&self) -> Option<&Table> {
+        self.tables.iter().find(|t| t.anchor)
+    }
+
     /// The normalized `(name, type, optional)` field list of a fn output
     /// shape — a table or a record. One lookup shared by engine
     /// validation, execution row mapping, GraphQL, and the TS emission.
@@ -452,6 +464,7 @@ mod tests {
                 ],
                 uniques: vec![],
                 checks: vec![],
+                anchor: false,
                 errors: vec![DerivedError {
                     code: "user_already_exists".into(),
                     kind: ErrorKind::Key,
