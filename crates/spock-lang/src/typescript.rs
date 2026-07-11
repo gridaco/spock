@@ -220,7 +220,11 @@ pub fn typescript(contract: &Contract) -> Result<String, TsGenError> {
     out.push_str("\n/** Reserved non-derived codes (docs/spec/v0.md §6.1). */\n");
     out.push_str("export type reserved_error =\n");
     for (i, code) in crate::ir::RESERVED_CODES.iter().enumerate() {
-        let end = if i + 1 == crate::ir::RESERVED_CODES.len() { ";" } else { "" };
+        let end = if i + 1 == crate::ir::RESERVED_CODES.len() {
+            ";"
+        } else {
+            ""
+        };
         let _ = writeln!(out, "  | \"{code}\"{end}");
     }
 
@@ -393,7 +397,11 @@ fn ts_string_lit(s: &str) -> String {
 
 /// `interface <t>` — the row, as reads return it.
 fn emit_row(out: &mut String, contract: &Contract, table: &Table) {
-    let _ = writeln!(out, "\n/** One `{}` row, as reads return it. */", table.name);
+    let _ = writeln!(
+        out,
+        "\n/** One `{}` row, as reads return it. */",
+        table.name
+    );
     let _ = writeln!(out, "export interface {} {{", table.name);
     for f in &table.fields {
         // a checked field carries its validator's name (RFD 0013) — the
@@ -541,7 +549,10 @@ mod tests {
             .skip_while(|l| !l.starts_with("export interface user_update"))
             .take_while(|l| !l.starts_with('}'))
             .collect();
-        assert!(!block.iter().any(|l| l.trim_start().starts_with("id")), "{block:?}");
+        assert!(
+            !block.iter().any(|l| l.trim_start().starts_with("id")),
+            "{block:?}"
+        );
         assert!(block.contains(&"  username?: string;"), "{block:?}"); // no `| null`
         assert!(block.contains(&"  bio?: string | null;"), "{block:?}");
     }
@@ -555,7 +566,9 @@ mod tests {
         assert!(ts.contains("\"follow_already_exists\""), "{ts}");
         assert!(ts.contains("| reserved_error;"), "{ts}");
         assert!(
-            ts.contains("user: { row: user; insert: user_insert; update: user_update; error: user_error };"),
+            ts.contains(
+                "user: { row: user; insert: user_insert; update: user_update; error: user_error };"
+            ),
             "{ts}"
         );
     }
@@ -578,9 +591,15 @@ mod tests {
     fn reserved_table_name_fails_generation() {
         // type-position keywords (`keyof` etc.) would emit non-compiling
         // TS; `reserved` collides through its DERIVED name `reserved_error`
-        for table in ["function", "string", "contract", "keyof", "readonly", "infer", "reserved"] {
-            let err = emit(&format!("table {table} {{ key id: uuid = auto\n a: int }}")).unwrap_err();
-            assert!(matches!(err, TsGenError::ReservedName { .. }), "{table}: {err}");
+        for table in [
+            "function", "string", "contract", "keyof", "readonly", "infer", "reserved",
+        ] {
+            let err =
+                emit(&format!("table {table} {{ key id: uuid = auto\n a: int }}")).unwrap_err();
+            assert!(
+                matches!(err, TsGenError::ReservedName { .. }),
+                "{table}: {err}"
+            );
         }
     }
 
@@ -657,7 +676,12 @@ export interface contract {
         )
         .unwrap();
         // record interface
-        assert!(ts.contains("export interface stats {\n  posts: number;\n  latest: timestamp | null;\n}"), "{ts}");
+        assert!(
+            ts.contains(
+                "export interface stats {\n  posts: number;\n  latest: timestamp | null;\n}"
+            ),
+            "{ts}"
+        );
         // args: required, ref-as-target-key, optional-with-null
         assert!(ts.contains("export interface rename_user_args {\n  user: user[\"id\"];\n  name: string;\n  note?: string | null;\n}"), "{ts}");
         // zero-param fn still gets an (empty) args interface
@@ -681,7 +705,9 @@ export interface contract {
             "{ts}"
         );
         assert!(
-            ts.contains("    tally: { args: tally_args; returns: stats[]; error: never; readonly: true };"),
+            ts.contains(
+                "    tally: { args: tally_args; returns: stats[]; error: never; readonly: true };"
+            ),
             "{ts}"
         );
     }

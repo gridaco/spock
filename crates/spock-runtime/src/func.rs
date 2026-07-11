@@ -143,9 +143,7 @@ pub fn call(
                             .iter()
                             .find(|(n, _, _)| *n == col.as_str())
                             .map(|(_, ty, optional)| (contract.value_type(ty), *optional))
-                            .ok_or_else(|| {
-                                ApiError::internal("contract drift: unvalidated column")
-                            })
+                            .ok_or_else(|| ApiError::internal("contract drift: unvalidated column"))
                     })
                     .collect::<Result<_, _>>()?
             }
@@ -478,9 +476,21 @@ seed {
         let (contract, mut conn) = setup();
         // maybe: hit and null miss
         let f = contract.fn_def("find_user").unwrap();
-        let row = call(&contract, f, &mut conn, &args(&[("username", "maya".into())])).unwrap();
+        let row = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("username", "maya".into())]),
+        )
+        .unwrap();
         assert_eq!(row["bio"], "photographer");
-        let miss = call(&contract, f, &mut conn, &args(&[("username", "ghost".into())])).unwrap();
+        let miss = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("username", "ghost".into())]),
+        )
+        .unwrap();
         assert!(miss.is_null());
         // many
         let f = contract.fn_def("all_users").unwrap();
@@ -489,7 +499,13 @@ seed {
         // record return: an aggregate as a shape
         let maya = user_id(&contract, &mut conn, "maya");
         let f = contract.fn_def("user_stats").unwrap();
-        let stats = call(&contract, f, &mut conn, &args(&[("user", maya.clone().into())])).unwrap();
+        let stats = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("user", maya.clone().into())]),
+        )
+        .unwrap();
         assert_eq!(stats["posts"], 1);
         // float param binds Real; the result maps back as a JSON number
         let f = contract.fn_def("double").unwrap();
@@ -509,11 +525,29 @@ seed {
         // -> text?: a value... (bio is a nullable column: a stored NULL and
         // a missing row both surface as null)
         let f = contract.fn_def("bio_of").unwrap();
-        let hit = call(&contract, f, &mut conn, &args(&[("username", "maya".into())])).unwrap();
+        let hit = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("username", "maya".into())]),
+        )
+        .unwrap();
         assert_eq!(hit, "photographer");
-        let none = call(&contract, f, &mut conn, &args(&[("username", "luis".into())])).unwrap();
+        let none = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("username", "luis".into())]),
+        )
+        .unwrap();
         assert!(none.is_null());
-        let miss = call(&contract, f, &mut conn, &args(&[("username", "ghost".into())])).unwrap();
+        let miss = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("username", "ghost".into())]),
+        )
+        .unwrap();
         assert!(miss.is_null());
         // -> [text]: bare values in order
         let f = contract.fn_def("usernames").unwrap();
@@ -608,14 +642,23 @@ seed {
             &contract,
             f,
             &mut conn,
-            &args(&[("author", maya.clone().into()), ("caption", "second".into())]),
+            &args(&[
+                ("author", maya.clone().into()),
+                ("caption", "second".into()),
+            ]),
         )
         .unwrap();
         assert_eq!(n, 2); // the seed post + this one
-        // one transaction: a violated `-> t` arity rolls EVERY statement
-        // back, including earlier effects
+                          // one transaction: a violated `-> t` arity rolls EVERY statement
+                          // back, including earlier effects
         let f = contract.fn_def("insert_then_miss").unwrap();
-        let err = call(&contract, f, &mut conn, &args(&[("author", maya.clone().into())])).unwrap_err();
+        let err = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("author", maya.clone().into())]),
+        )
+        .unwrap_err();
         assert_eq!(err.code, "not_found");
         let f = contract.fn_def("post_and_count").unwrap();
         let n = call(
@@ -635,9 +678,24 @@ seed {
         // a read fn refuses too — SELECT + spock_refuse stays readonly,
         // proven by the engine accepting checked_bio at open()
         let f = contract.fn_def("checked_bio").unwrap();
-        let err = call(&contract, f, &mut conn, &args(&[("username", "luis".into())])).unwrap_err();
-        assert_eq!((err.code.as_str(), err.kind, err.status), ("bio_missing", "refused", 409));
-        let hit = call(&contract, f, &mut conn, &args(&[("username", "maya".into())])).unwrap();
+        let err = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("username", "luis".into())]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            (err.code.as_str(), err.kind, err.status),
+            ("bio_missing", "refused", 409)
+        );
+        let hit = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("username", "maya".into())]),
+        )
+        .unwrap();
         assert_eq!(hit, "photographer");
         // a minted refusal fires with its own name — no more collapsed
         // not_found lies (v0-FEEDBACK G2)
@@ -655,23 +713,44 @@ seed {
             &contract,
             f,
             &mut conn,
-            &args(&[("user", maya.clone().into()), ("username", "maya_ok".into())]),
+            &args(&[
+                ("user", maya.clone().into()),
+                ("username", "maya_ok".into()),
+            ]),
         )
         .unwrap();
         assert_eq!(row["username"], "maya_ok");
         // an unminted raise is the body breaking its signature
         let f = contract.fn_def("rogue").unwrap();
-        let err = call(&contract, f, &mut conn, &args(&[("author", maya.clone().into())])).unwrap_err();
+        let err = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("author", maya.clone().into())]),
+        )
+        .unwrap_err();
         assert_eq!(err.code, "internal");
         assert!(err.message.contains("never_declared"), "{}", err.message);
         // a derived code cannot be raised — evidence is not borrowable
         let f = contract.fn_def("counterfeit").unwrap();
-        let err = call(&contract, f, &mut conn, &args(&[("author", maya.clone().into())])).unwrap_err();
+        let err = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("author", maya.clone().into())]),
+        )
+        .unwrap_err();
         assert_eq!(err.code, "internal");
         assert!(err.message.contains("own mechanism"), "{}", err.message);
         // a refusal rolls back everything before it — one transaction
         let f = contract.fn_def("post_then_refuse").unwrap();
-        let err = call(&contract, f, &mut conn, &args(&[("author", maya.clone().into())])).unwrap_err();
+        let err = call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("author", maya.clone().into())]),
+        )
+        .unwrap_err();
         assert_eq!(err.code, "always_no");
         let f = contract.fn_def("post_and_count").unwrap();
         let n = call(

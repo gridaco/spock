@@ -322,8 +322,8 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             while i < bytes.len() && bytes[i].is_ascii_digit() {
                 i += 1;
             }
-            let is_float = bytes.get(i) == Some(&b'.')
-                && bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
+            let is_float =
+                bytes.get(i) == Some(&b'.') && bytes.get(i + 1).is_some_and(u8::is_ascii_digit);
             if is_float {
                 i += 1;
                 while i < bytes.len() && bytes[i].is_ascii_digit() {
