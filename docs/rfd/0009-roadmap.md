@@ -113,9 +113,9 @@ until doctrine asks (graphql.md §7).
 
 ## 3. The order
 
-Tier-1 rename → codegen proof → `fn` → **fn v2 (RFD 0012)** → filter RFD →
-Tier 2 + REST writes → auth — with track 9 filling gaps and track 8
-trailing usage throughout.
+Tier-1 rename → codegen proof → `fn` → **fn v2 (RFD 0012)** →
+**value constraints (RFD 0013)** → filter RFD → Tier 2 + REST writes →
+auth — with track 9 filling gaps and track 8 trailing usage throughout.
 
 (Revised July 2026: fn v2 — declared refusals, multi-statement bodies,
 read/write polarity — jumped ahead of the filter RFD on the dogfood
@@ -123,6 +123,12 @@ evidence (v0-FEEDBACK G2/G3/G11), by the third rule below. The filter
 RFD's scope grew in exchange: pagination/cursor discipline for *all*
 row-returning surfaces — tables, future views, and read fns — was
 deliberately kept out of fn v2 and assigned to the universal query layer.)
+
+(Revised again July 2026: the value tier — closed-set types and
+validator-fn `check`s, RFD 0013 — jumped ahead of the filter RFD by the
+same third rule. It resolves the `format` question §4 deferred, and it
+un-collapses the fn-guard refusals the borrowed floor cannot keep
+(v0-FEEDBACK G1/G13). The filter RFD is next.)
 
 Four rules generate this ordering; if the ordering is ever revisited, argue
 with the rules, not the sequence:
@@ -157,16 +163,19 @@ with the rules, not the sequence:
 - **Filter dialect.** Recommendation: one predicate IR, two mirrored
   frontends (Hasura `bool_exp`, PostgREST operators) — doctrine applied,
   but it is contract surface, so it is recorded here until ratified.
-- **`format` — column formats as a language feature** (deferred July
-  2026, dogfood follow-up). A declared value-shape on a column — the SQL
-  `DOMAIN`/`CHECK` family: closed text sets (v0-FEEDBACK G1), length and
-  charset rules, ranges — would subsume the enum question and column
-  validation in one concept, extend the derived-error story (a format
-  violation names itself), and un-collapse many fn guard refusals for
-  free: a format violation is a real constraint violation, which the
-  cross-table error router already knows how to name. Needs real
-  research before it is shaped: SQL domains, refinement-type precedents,
-  how formats compose with `unique` and defaults, nominal (named,
-  reusable) vs structural (inline). Decision deliberately not made; the
-  decision-free table-tier items (`set null`, `float`, scalar returns,
-  escape-reachable defaults) shipped without waiting for it.
+- ~~**`format` — column formats as a language feature**~~ **Resolved —
+  RFD 0013** (July 2026). The research ran (judged design panel: curated
+  format vocabulary vs raw-SQL check vs named domain — all three rejected)
+  and the answer is neither a format vocabulary nor a domain grammar but
+  two constructs governed by a new doctrine law (**LLM-writability**: the
+  surface must be SQL-exact or radically simple, never a bespoke mini-
+  grammar): a **closed-set type** (`status: "pending" | "ready"`) for the
+  enum case (G1), owned end-to-end by the checker (seed/default checked,
+  TS emits the literal union); and a **validator fn** referenced by
+  `check` (field and cross-column) for length/charset/range/non-empty/
+  ordering, inline-expanded into a named SQLite CHECK whose name is the
+  derived `<table>_<fields>_invalid` code. A violation is kind `invalid`,
+  422, and un-collapses the floor-leaked fn refusals (G1/G13) for free.
+  Curated named formats (`email`) stay deferred until vocabulary
+  versioning is solved; nominal `domain` declarations stay deferred until
+  reuse demand appears (a validator fn is already the reusable unit).
