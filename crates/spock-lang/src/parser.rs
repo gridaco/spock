@@ -430,12 +430,24 @@ impl Parser {
         let check = if self.peek().kind == TokenKind::KwCheck
             && self.peek2().kind != TokenKind::LParen
         {
-            self.bump();
+            let check_kw = self.bump().span;
             if let TokenKind::Str(_) = self.peek().kind {
                 return Err(Diagnostic::new(
                     "L010",
                     "`check` references a validator fn by name (`check valid_x`); inline SQL is not allowed — declare `fn valid_x(...) -> bool { ... }`",
                     self.peek().span,
+                ));
+            }
+            // An omitted validator name would swallow the next field's name —
+            // guard the common case (a field line follows) at the `check`
+            // keyword, mirroring the row-check path (L-D).
+            if matches!(self.peek().kind, TokenKind::Ident(_))
+                && self.peek2().kind == TokenKind::Colon
+            {
+                return Err(Diagnostic::new(
+                    "L010",
+                    "field check is missing its validator fn name: write `name: type check fn_name`",
+                    check_kw,
                 ));
             }
             let name = self.ident("a validator fn name")?;
@@ -810,6 +822,10 @@ mod tests {
         // the misordered `unique check`
         let d = parse_err("table t { key id: uuid = auto\n s: text unique check v }");
         assert!(d.message.contains("field check"), "{}", d.message);
+        // a field check with the validator name omitted → targeted message
+        // at the `check`, not a swallow of the next field
+        let d = parse_err("table t { key id: uuid = auto\n username: text check\n pw: text }");
+        assert!(d.message.contains("missing its validator"), "{}", d.message);
     }
 
     #[test]

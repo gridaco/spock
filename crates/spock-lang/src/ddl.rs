@@ -144,7 +144,58 @@ fn inline_validator(contract: &Contract, fn_name: &str, columns: &[&str]) -> Opt
         .map(|p| p.name.as_str())
         .zip(columns.iter().map(|c| format!("\"{c}\"")))
         .collect();
-    Some(substitute_params(strip_select(body), &map).trim().to_string())
+    let clause = substitute_params(strip_select(body), &map);
+    Some(trim_check_expr(clause.trim()))
+}
+
+/// Drop trailing statement terminators (`;`) and trailing comments from an
+/// inlined CHECK expression, so it splices cleanly inside `CHECK (…)` (a
+/// trailing `;` is a syntax error there, and a trailing `-- comment` would
+/// eat the closing paren). String- and comment-aware: a `;`, `--`, or `/*`
+/// inside a string literal is preserved. Returns the slice up to the last
+/// meaningful character.
+fn trim_check_expr(expr: &str) -> String {
+    let bytes = expr.as_bytes();
+    let mut i = 0;
+    let mut last_meaningful = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\'' {
+                        if bytes.get(i + 1) == Some(&b'\'') {
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                last_meaningful = i;
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+            }
+            b';' => i += 1,
+            c if c.is_ascii_whitespace() => i += 1,
+            _ => {
+                i += 1;
+                last_meaningful = i;
+            }
+        }
+    }
+    expr[..last_meaningful].to_string()
 }
 
 /// The `SELECT <expr>` that evaluates a field validator with its parameter
@@ -196,7 +247,10 @@ fn strip_select(sql: &str) -> &str {
         }
         break;
     }
-    if i + 6 <= bytes.len() && sql[i..i + 6].eq_ignore_ascii_case("SELECT") {
+    // compare on bytes, not a &str slice — the first non-ws/comment byte may
+    // begin a multibyte char that straddles offset i+6 (a &str slice there
+    // panics; a &[u8] slice does not)
+    if i + 6 <= bytes.len() && bytes[i..i + 6].eq_ignore_ascii_case(b"SELECT") {
         &sql[i + 6..]
     } else {
         &sql[i..]
@@ -374,6 +428,45 @@ mod tests {
             ),
             "{follow}"
         );
+    }
+
+    #[test]
+    fn inline_expansion_trims_trailing_terminator_and_comment() {
+        // a trailing `;` or `-- comment` in a validator body must not corrupt
+        // the spliced CHECK (the `;` is a syntax error there, the comment
+        // would eat the closing paren)
+        for body in [
+            "SELECT :n > 0;",
+            "SELECT :n > 0 -- ok",
+            "SELECT :n > 0 ; -- ok",
+        ] {
+            let contract = compile(&format!(
+                "fn v(n: int) -> bool {{ unchecked sql(\"{body}\") }}\n\
+                 table t {{ key id: uuid = auto\n n: int check v }}"
+            ))
+            .unwrap();
+            let sql = &ddl(&contract)[0];
+            assert!(
+                sql.contains("CONSTRAINT \"t_n_invalid\" CHECK (\"n\" > 0)"),
+                "body `{body}` produced: {sql}"
+            );
+        }
+    }
+
+    #[test]
+    fn strip_select_handles_a_multibyte_leading_byte() {
+        // a non-SELECT-leading body whose first run straddles byte offset 6
+        // with a multibyte char must not panic strip_select — it falls
+        // through to the fallback expression, verbatim (a raw triple-quoted
+        // string so the `€` reaches the body unescaped)
+        let contract = compile(
+            "fn v(s: text) -> bool { unchecked sql(\"\"\"ABCDE\u{20ac}\"\"\") }\n\
+             table t { key id: uuid = auto\n s: text check v }",
+        )
+        .unwrap();
+        // does not panic; the (invalid) body is emitted for the engine to reject
+        let sql = &ddl(&contract)[0];
+        assert!(sql.contains("CHECK (ABCDE\u{20ac})"), "{sql}");
     }
 
     #[test]

@@ -67,13 +67,11 @@ impl Checker {
         }
         // Derived codes are the runtime routing keys (a CHECK message carries
         // only the constraint name); the underscore-join is non-injective, so
-        // enforce contract-wide uniqueness (RFD 0013 L-C, E044). Only on an
-        // otherwise-clean program: a duplicate table name (E001) already
-        // makes two tables derive the same codes — that is the E001, not a
-        // second, spurious collision.
-        if self.diags.is_empty() {
-            self.check_derived_uniqueness(&tables, &spans);
-        }
+        // enforce contract-wide uniqueness (RFD 0013 L-C, E044). Runs
+        // unconditionally — a real collision must not hide behind an unrelated
+        // diagnostic — but skips repeated table names, whose identical codes
+        // are the duplicate-name error (E001), not a second collision.
+        self.check_derived_uniqueness(&tables, &spans);
 
         // Seed (§4 E020–E028), against the lowered tables.
         let seed = self.check_seed(file, &tables);
@@ -419,7 +417,14 @@ impl Checker {
     /// separator can be injective when identifiers may contain `_`).
     fn check_derived_uniqueness(&mut self, tables: &[Table], spans: &HashMap<String, Span>) {
         let mut seen: HashMap<&str, &str> = HashMap::new();
+        let mut seen_tables: HashSet<&str> = HashSet::new();
         for table in tables {
+            // a repeated table name is E001; its codes collide with the
+            // first occurrence's, but that is the duplicate name, not a
+            // distinct-declaration collision — skip it here
+            if !seen_tables.insert(table.name.as_str()) {
+                continue;
+            }
             for err in &table.errors {
                 if let Some(prev) = seen.insert(err.code.as_str(), table.name.as_str()) {
                     self.error(
@@ -554,18 +559,10 @@ impl Checker {
                     span,
                 );
             }
-            const NONDET: [&str; 4] = ["RANDOM", "RANDOMBLOB", "SPOCK_NOW", "SPOCK_UUID"];
-            let uses_now = sql.to_ascii_lowercase().contains("'now'");
-            if let Some(fun) = words.iter().find(|w| NONDET.contains(&w.as_str())) {
+            if let Some(what) = nondeterministic(sql) {
                 self.error(
                     "E042",
-                    format!("validator `{name}` calls the non-deterministic function `{}` — a CHECK must be deterministic (RFD 0013)", fun.to_ascii_lowercase()),
-                    span,
-                );
-            } else if uses_now {
-                self.error(
-                    "E042",
-                    format!("validator `{name}` uses `'now'` — a CHECK must be deterministic (RFD 0013)"),
+                    format!("validator `{name}` uses the non-deterministic `{what}` — a CHECK must be deterministic (RFD 0013)"),
                     span,
                 );
             }
@@ -1296,6 +1293,20 @@ fn sql_words(sql: &str) -> Vec<String> {
                 }
                 i += 2;
             }
+            // A bound parameter (`:name`, `@name`, `$name`) is a value the fn
+            // author named — never SQL structure. Skip the sigil and its name
+            // so a param named `from`/`select`/`random` is not read as a
+            // clause keyword or a non-deterministic builtin.
+            b':' | b'@' | b'$'
+                if bytes
+                    .get(i + 1)
+                    .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_') =>
+            {
+                i += 1;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+            }
             c if c.is_ascii_alphabetic() || c == b'_' => {
                 let start = i;
                 while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
@@ -1307,6 +1318,135 @@ fn sql_words(sql: &str) -> Vec<String> {
         }
     }
     words
+}
+
+/// A description of a non-deterministic construct in a validator body, if
+/// any (RFD 0013 L-N). SQLite does not reject most of these at DDL-prepare
+/// — `CURRENT_TIMESTAMP` has no backstop at all, and `datetime('now')` /
+/// `unixepoch()` fail at insert as a `SQLITE_ERROR` the runtime cannot route
+/// as `invalid` — so the checker owns determinism. String- and
+/// comment-aware, and paren-context-aware, so a `'now'` used as ordinary
+/// data (`:s <> 'now'`, `IN ('now', ...)`) is not flagged; only:
+///   - the bare non-deterministic keywords/functions;
+///   - a `'now'` literal used inside a date/time-family call; and
+///   - a zero-argument date/time-family call (defaults to the current time).
+fn nondeterministic(sql: &str) -> Option<String> {
+    const BARE: [&str; 7] = [
+        "RANDOM",
+        "RANDOMBLOB",
+        "SPOCK_NOW",
+        "SPOCK_UUID",
+        "CURRENT_TIMESTAMP",
+        "CURRENT_DATE",
+        "CURRENT_TIME",
+    ];
+    const DATE_FNS: [&str; 7] = [
+        "DATE",
+        "TIME",
+        "DATETIME",
+        "JULIANDAY",
+        "STRFTIME",
+        "UNIXEPOCH",
+        "TIMEDIFF",
+    ];
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    // the last identifier read (a date/time fn awaiting its `(`)
+    let mut pending: Option<String> = None;
+    // per open paren: (opened by a date/time fn?, saw any argument char?)
+    let mut stack: Vec<(bool, bool)> = Vec::new();
+    let mark_arg = |stack: &mut Vec<(bool, bool)>| {
+        if let Some(top) = stack.last_mut() {
+            top.1 = true;
+        }
+    };
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' => {
+                let start = i + 1;
+                i += 1;
+                let mut end = start;
+                while i < bytes.len() {
+                    if bytes[i] == b'\'' {
+                        if bytes.get(i + 1) == Some(&b'\'') {
+                            i += 2;
+                            continue;
+                        }
+                        end = i;
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                mark_arg(&mut stack);
+                if sql[start..end].eq_ignore_ascii_case("now") && stack.iter().any(|(d, _)| *d) {
+                    return Some("datetime('now')".into());
+                }
+                pending = None;
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 2;
+            }
+            b':' | b'@' | b'$'
+                if bytes
+                    .get(i + 1)
+                    .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_') =>
+            {
+                mark_arg(&mut stack);
+                i += 1;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                pending = None;
+            }
+            b'(' => {
+                let is_date = pending.as_deref().is_some_and(|w| DATE_FNS.contains(&w));
+                mark_arg(&mut stack);
+                stack.push((is_date, false));
+                pending = None;
+                i += 1;
+            }
+            b')' => {
+                if let Some((is_date, saw_arg)) = stack.pop() {
+                    if is_date && !saw_arg {
+                        return Some("a zero-argument date/time function".into());
+                    }
+                }
+                mark_arg(&mut stack);
+                pending = None;
+                i += 1;
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                let word = sql[start..i].to_ascii_uppercase();
+                if BARE.contains(&word.as_str()) {
+                    return Some(word.to_ascii_lowercase());
+                }
+                mark_arg(&mut stack);
+                pending = Some(word);
+            }
+            c => {
+                if !c.is_ascii_whitespace() {
+                    mark_arg(&mut stack);
+                    pending = None;
+                }
+                i += 1;
+            }
+        }
+    }
+    None
 }
 
 /// Resolve a type to its value type against a table list (checker-side
@@ -1603,6 +1743,63 @@ mod tests {
                    table t { key id: uuid = auto\n s: text check v }"),
             ["E042"]
         );
+    }
+
+    #[test]
+    fn validator_scan_distinguishes_params_and_data_from_sql() {
+        // param names that are SQL keywords are NOT read as clauses (the
+        // scan skips `:name`); the bodies are valid
+        for p in ["from", "select", "random", "order", "where"] {
+            let src = format!(
+                "fn v({p}: int) -> bool {{ unchecked sql(\"SELECT :{p} > 0\") }}\n\
+                 table t {{ key id: uuid = auto\n n: int check v }}"
+            );
+            assert!(compile(&src).is_ok(), "param `{p}` should be fine");
+        }
+        // a `'now'` used as ordinary data is deterministic — not rejected
+        assert!(compile(
+            "fn v(s: text) -> bool { unchecked sql(\"SELECT :s <> 'now' AND :s NOT IN ('now','admin')\") }\n\
+             table u { key id: uuid = auto\n name: text check v }"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validator_determinism_covers_current_and_zero_arg_clocks() {
+        // CURRENT_TIMESTAMP has no SQLite backstop — the checker must catch it
+        for expr in [
+            "SELECT :t <= CURRENT_TIMESTAMP",
+            "SELECT :t <= current_date",
+            "SELECT :t > datetime('now')",
+            "SELECT :t > strftime('%s','now')",
+            "SELECT :t < unixepoch()", // zero-arg clock read
+            "SELECT :t < datetime()",  // zero-arg clock read
+        ] {
+            let src = format!(
+                "fn v(t: text) -> bool {{ unchecked sql(\"{expr}\") }}\n\
+                 table ev {{ key id: uuid = auto\n at: text check v }}"
+            );
+            assert_eq!(codes(&src), ["E042"], "expr `{expr}` should be E042");
+        }
+        // a deterministic date call with a literal arg is fine
+        assert!(compile(
+            "fn v(t: text) -> bool { unchecked sql(\"SELECT :t = strftime('%Y', :t)\") }\n\
+             table ev { key id: uuid = auto\n at: text check v }"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn e044_surfaces_even_with_an_unrelated_error() {
+        // a real derived-code collision must not hide behind an unrelated
+        // diagnostic (E003 here) — both are reported
+        let src = "fn nz(x: int) -> bool { unchecked sql(\"SELECT :x > 0\") }\n\
+                   fn dp(a: int, b: int) -> bool { unchecked sql(\"SELECT :a <> :b\") }\n\
+                   table t { key id: uuid = auto\n a: int\n b: int\n a_b: int check nz\n\
+                     bad: nosuchtype\n check (a, b) dp }";
+        let cs = codes(src);
+        assert!(cs.contains(&"E044"), "{cs:?}");
+        assert!(cs.contains(&"E003"), "{cs:?}");
     }
 
     #[test]

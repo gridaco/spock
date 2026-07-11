@@ -159,12 +159,18 @@ arity, param types matching the field value types positionally.
   guarantees exactly one result row, so a validator called as an ordinary read
   fn returns `true`/`false`, never `not_found`.
 - **Determinism discipline.** A validator may not reference a non-deterministic
-  function. SQLite does **not** reject these at DDL-prepare (see §4), so the
-  checker owns it: a scan rejects the spock builtins `spock_now`/`spock_uuid`
-  and the SQLite non-deterministic set (`random`, `randomblob`, and
-  `datetime`/`date`/`time`/`julianday`/`strftime` with a non-literal or `'now'`
-  argument). SQLite's insert-time rejection is a backstop, but the compile
-  error names the fix.
+  function. The checker owns this entirely — SQLite gives no reliable backstop:
+  `CURRENT_TIMESTAMP`/`CURRENT_DATE`/`CURRENT_TIME` are accepted in a CHECK at
+  *both* prepare and insert (a silently wall-clock-dependent constraint), and
+  `datetime('now')`/`unixepoch()` fail only at insert as a bare `SQLITE_ERROR`
+  the runtime cannot route as `invalid` (it would 500). So a string- and
+  comment-aware scan rejects: the bare non-deterministic keywords and functions
+  (`CURRENT_TIMESTAMP`/`CURRENT_DATE`/`CURRENT_TIME`, `random`, `randomblob`,
+  `spock_now`, `spock_uuid`); a `'now'` literal used *inside* a date/time-family
+  call (`date`/`time`/`datetime`/`julianday`/`strftime`/`unixepoch`/`timediff`);
+  and a zero-argument date/time call (which defaults to the current time). A
+  `'now'` used as ordinary data (`:s <> 'now'`, `IN ('now', …)`) is deterministic
+  and left alone. The compile error names the fix.
 - **Optional-field binding is allowed.** A param bound to an optional field may
   be NULL; the inlined expression follows SQL tri-valued logic, so a NULL value
   short-circuits the whole CHECK to *pass* — the desired semantics for
@@ -224,10 +230,14 @@ at load." Probed empirically, that is only partly true:
 - A **double-quoted identifier that is not a column** is a hard prepare error
   (no DQS leniency inside CHECK). Good — a mistyped column in a validator fails
   at load, not silently.
-- A **non-deterministic** function is **not** rejected at DDL-prepare:
-  `random()` is silently accepted, and `datetime('now')` is rejected only at
-  the first INSERT, never at CREATE TABLE. So determinism cannot be left to the
-  engine — hence the checker's determinism scan (§3.3).
+- A **non-deterministic** function is **not** rejected at DDL-prepare, and the
+  engine gives no usable backstop: `random()` and `CURRENT_TIMESTAMP` are
+  silently accepted at both prepare and insert (a wall-clock-dependent
+  constraint ships), while `datetime('now')`/`unixepoch()` are rejected only at
+  the first INSERT and only as a bare `SQLITE_ERROR` — not `SQLITE_CONSTRAINT_CHECK`
+  — so the runtime cannot route it as `invalid` and would surface a 500. So
+  determinism cannot be left to the engine at all — hence the checker's
+  determinism scan (§3.3) owns it wholly.
 
 Two further load-time proofs the engine does not give for free, added to
 `spock check` and `spock run` alike (both open the engine):
