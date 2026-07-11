@@ -22,15 +22,19 @@ Cross-references like v1-L1 point into `v1-FEEDBACK.md`.
 **Status.** The decision-free table-tier items shipped days after this
 review and the example now uses them — G4 (engine builtins + DDL
 defaults), G7's set-null half, G9 (scalar returns), G10 (float) are
-marked *taken* below, and W3 dissolved with G4 as predicted. G1 and the
-column-validation half of the story are deferred behind a deliberate
-design question — a `format` concept (SQL `DOMAIN`/CHECK family) that
-would subsume both; recorded in RFD 0009 §4. **fn v2 followed (RFD
-0012)**: G2, G3, and G11 are *taken* — the example now mints its
-refusals, spans tables, and files its reads under Query — W1 softened
-with them, and the upgrade surfaced one new wall (G17: statements
-cannot pass values). Pagination (G16) was *deliberately deferred* to
-the universal query layer by decision, not omission.
+marked *taken* below, and W3 dissolved with G4 as predicted. **fn v2
+followed (RFD 0012)**: G2, G3, and G11 are *taken* — the example now
+mints its refusals, spans tables, and files its reads under Query — W1
+softened with them, and the upgrade surfaced one new wall (G17:
+statements cannot pass values). Pagination (G16) was *deliberately
+deferred* to the universal query layer by decision, not omission.
+**The value tier followed (RFD 0013)**: G1 is *taken* — the six
+closed-set columns are literal-union types (checker-owned: seed/default
+checked, TS unions), and the column-validation half is `check`
+validator fns — so seven fn-guard refusals (`invalid_username`,
+`empty_body`, `body_too_long`, `empty_reason`, `self_follow`×2,
+`self_block`, `self_restrict`) retired into table constraints the floor
+enforces too (G13's leak, closed for these — see G13).
 
 ---
 
@@ -47,6 +51,14 @@ rejects bad seed literals, insert_input un-shadows to a union type,
 a new derived error names the violation.
 → v0.x: a closed-set text type (`text in ("pending" | "ready" | …)` or
 similar) — smallest possible RFD; transitions stay v1.
+*Taken* (RFD 0013), and simpler than the sketch: the type **is** the
+literal union — `status: "pending" | "ready" | "failed"`, TypeScript's
+own syntax, no new keyword. The checker owns it end to end (bad seed
+literals are E023, bad defaults E009, the TS artifact emits the union),
+and a violation is the derived `<table>_<field>_invalid` code, kind
+`invalid`, 422. The column-validation half (username charset/length,
+body/reason non-empty, the 0.0–1.0 media_tag range, self-pair
+distinctness) is its sibling: a `check` naming a validator fn.
 
 **G2 · A fn cannot name its refusals.** The `!` clause vocabulary is
 derived codes ∪ the reserved five (E039), and — precisely — there is no
@@ -73,9 +85,12 @@ single feature for fn honesty; pairs with G3 as one RFD.
 derived nor reserved is the fn's own refusal, raised via the engine
 builtin `spock_refuse('<code>')` — and routed only if minted by that
 fn, so derived codes stay evidence (the fake-violation trick this
-entry feared is now structurally dead). `follow`'s three refusals
-carry three names; the file mints 15 distinct refusal codes across
-12 fns (23 declarations, 23 raise sites), verified live.
+entry feared is now structurally dead). `follow`'s refusals carry
+their own names. The file minted 15 distinct refusal codes at fn v2;
+the value tier (RFD 0013) then retired seven of them into table
+`check`s (see Status), leaving 8 — the cross-table/state rules
+(`blocked`, `account_private`, `request_denied`, …) a row-local CHECK
+cannot see, which is exactly the boundary between the two mechanisms.
 
 **G3 · One statement means one table.** The hardest wall, hit four ways:
 
@@ -230,6 +245,15 @@ keep, because the floor cannot filter. Harmless in v0's open tier
 → v0.x: ratifies the filter sub-language as the roadmap's next language
 work — and says its scope must include *policy* filtering (row
 visibility), not just query predicates.
+*Partly closed* (RFD 0013): the leak had two kinds. The **value** kind —
+a bad username, an empty body, a self-follow — was a guard the floor
+ignored; those are now table `check`s and closed-set types the floor
+*must* enforce, because they are engine constraints, not fn code. Seven
+such guards retired. The **visibility/state** kind — archived-excluded,
+blocked-excluded, private-only — is cross-row/cross-table and stays the
+filter/policy layer's job (a row-local CHECK cannot see it). So the tier
+split the leak cleanly: constraints for value rules, policy for
+visibility.
 
 **G14 · Cross-table invariants beyond the FK.** To be precise about
 what a ref already buys: `post.author: user` *is* a declared, enforced
@@ -369,12 +393,15 @@ rule.
 example in one number, exactly what RFD 0011 §4 wanted the ledger to be.
 Every G2/G3 disposition that moves logic from SQL to contract moves that
 number toward zero.
-*Sharpened* by fn v2: the ledger counts **escapes** now (`67 unchecked
-escapes` after the upgrade — multi-statement bodies made the honest
-unit the statement, not the body). Note the direction: taking G3 moved
-the number *up*, truthfully — the debt was always there, hidden in
-flows the language refused to express. The number still trends to zero
-the day native statements arrive.
+*Sharpened* by fn v2: the ledger counts **escapes** now (67 after the
+upgrade — multi-statement bodies made the honest unit the statement,
+not the body). Note the direction: taking G3 moved the number *up*,
+truthfully — the debt was always there, hidden in flows the language
+refused to express. The value tier (RFD 0013) then moved it to **65**:
+seven refusal-guard escapes retired into table `check`s, six validator
+fns added (each one escape) — the debt shifting from opaque guards to
+declared constraints. The number still trends to zero the day native
+statements arrive.
 
 **C6 · Natural text keys work end to end.** `hashtag { key tag: text }` —
 refs bind the text key, `post_hashtag` seeds by handle, GraphQL surfaces
@@ -403,8 +430,15 @@ the next v0.x milestone, as one coherent unit:
 2. **Table-tier small batch**: G1 closed text sets, G7 `set null`,
    G9 scalar returns, G10 float, G4 DDL defaults + engine builtins.
    Each is small; together they delete most of the apology comments in
-   `v0.spock`. ***Taken*** except G1, deferred behind `format`.
+   `v0.spock`. ***Taken*** — G1 last, as the value tier (RFD 0013):
+   closed-set types plus validator-fn `check`s, which also retired seven
+   fn-guard refusals and closed G13's value half.
 3. **Constraint tier 2** (after the batch): G6 partial unique, G5 one-of.
+   The value tier reserved a **row-level `check (a, b) fn`** for the
+   cross-column rules it couldn't inline as columns — timestamp orderings
+   (`responded_at >= requested_at`), conditional presence
+   (`(kind='video') = (duration_ms IS NOT NULL)`), and G5's one-of half;
+   the mechanism (name==code CHECK routing) is already live.
 4. Already-planned tracks, priorities re-ratified by this exercise:
    the **filter sub-language** must cover policy/row visibility (G13)
    and own read-page discipline — cursor, ordering, ceiling (G16,

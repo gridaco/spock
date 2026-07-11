@@ -31,12 +31,45 @@
 //     the same contract
 
 // ---------------------------------------------------------------------------
+// rules — value validators (RFD 0013)
+//
+// A validator is an ordinary read fn returning bool; a `check` inline-expands
+// it into a named CHECK the whole floor obeys, un-collapsing the guards the
+// borrowed floor could never keep (G1/G13, taken). Each is reused across
+// tables — the nominal-domain payoff with no new declaration form. They stay
+// callable as read fns, so a client can pre-validate against the same rule.
+// ---------------------------------------------------------------------------
+
+fn valid_username(name: text) -> bool {
+  unchecked sql("""SELECT :name NOT GLOB '*[^a-z0-9._]*' AND length(:name) BETWEEN 1 AND 30""")
+}
+fn valid_body(body: text) -> bool {
+  // non-empty after trimming whitespace, and within the length cap — the
+  // two add_comment refusals (empty_body, body_too_long) as one rule
+  unchecked sql("""SELECT length(trim(:body, ' ' || char(9, 10, 13))) >= 1 AND length(:body) <= 2200""")
+}
+fn nonempty(s: text) -> bool {
+  // non-empty once surrounding whitespace is trimmed (a spaces-only value
+  // is empty) — matches the retired empty_reason guard
+  unchecked sql("""SELECT length(trim(:s, ' ' || char(9, 10, 13))) > 0""")
+}
+fn unit_interval(v: float) -> bool {
+  unchecked sql("""SELECT :v BETWEEN 0.0 AND 1.0""")
+}
+fn non_negative(n: int) -> bool {
+  unchecked sql("""SELECT :n >= 0""")
+}
+fn distinct_pair(a: uuid, b: uuid) -> bool {
+  unchecked sql("""SELECT :a <> :b""")
+}
+
+// ---------------------------------------------------------------------------
 // people and places
 // ---------------------------------------------------------------------------
 
 table user {
   key id: uuid = auto
-  username: text unique
+  username: text check valid_username unique
   full_name: text?
   bio: text?
   private: bool = false
@@ -63,16 +96,17 @@ table post {
 }
 
 // a carousel is ordered media under one post; "a post needs at least one
-// media" is not sayable (G14), and kind/status are open text (G1)
+// media" is not sayable (G14). kind/status are closed-set types now (G1,
+// taken); the 0..range on position is a validator (RFD 0013).
 table media {
   key id: uuid = auto
   post: post on delete cascade
-  position: int
-  kind: text                   // "image" | "video"
+  position: int check non_negative
+  kind: "image" | "video"
   width: int?
   height: int?
   duration_ms: int?
-  status: text = "pending"     // "pending" | "ready" | "failed"
+  status: "pending" | "ready" | "failed" = "pending"
   unique (post, position)
 }
 
@@ -85,15 +119,17 @@ table follow {
   follower: user
   target: user
   since: timestamp = now
+  check (follower, target) distinct_pair
 }
 
 table follow_request {
   key (requester, target)
   requester: user
   target: user
-  status: text = "pending"     // "pending" | "approved" | "denied" (G1)
+  status: "pending" | "approved" | "denied" = "pending"   // G1, taken
   requested_at: timestamp = now
   responded_at: timestamp?
+  check (requester, target) distinct_pair
 }
 
 table block {
@@ -101,6 +137,7 @@ table block {
   blocker: user
   blocked: user
   at: timestamp = now
+  check (blocker, blocked) distinct_pair
 }
 
 table restriction {
@@ -108,6 +145,7 @@ table restriction {
   restricting: user
   restricted: user
   at: timestamp = now
+  check (restricting, restricted) distinct_pair
 }
 
 // ---------------------------------------------------------------------------
@@ -128,8 +166,8 @@ table comment {
   // survives with its parent link nulled — G7's set-null half, taken
   parent: comment? on delete set null
   author: user
-  body: text
-  status: text = "visible"     // "visible" | "held" (G1)
+  body: text check valid_body
+  status: "visible" | "held" = "visible"   // G1, taken
   at: timestamp = now
 }
 
@@ -150,8 +188,8 @@ table media_tag {
   key id: uuid = auto
   media: media on delete cascade
   tagged: user
-  x: float                     // 0.0 – 1.0 placement; the range is unspoken (G1/format)
-  y: float
+  x: float check unit_interval   // 0.0–1.0 placement — a validator now (RFD 0013)
+  y: float check unit_interval
   at: timestamp = now
   removed_at: timestamp?
   unique (media, tagged)
@@ -214,8 +252,8 @@ table report {
   post: post? on delete set null
   comment: comment? on delete set null
   profile: user?
-  reason: text
-  status: text = "open"        // "open" | "reviewed" | "actioned" (G1)
+  reason: text check nonempty
+  status: "open" | "reviewed" | "actioned" = "open"   // G1, taken
   at: timestamp = now
 }
 
@@ -223,7 +261,7 @@ table notification {
   key id: uuid = auto
   recipient: user
   actor: user
-  kind: text                   // "follow" | "follow_request" | "like" | "comment" | "mention" | "tag" (G1)
+  kind: "follow" | "follow_request" | "like" | "comment" | "mention" | "tag"   // G1, taken
   post: post? on delete cascade
   comment: comment? on delete cascade
   at: timestamp = now
@@ -237,18 +275,18 @@ table notification {
 // signature is the contract; the body is a sequence of SQL escapes (RFD
 // 0012): guards refuse by name via spock_refuse, effects span tables,
 // the last statement answers. Unmarked fns are reads (engine-enforced);
-// `mut` marks the writes. G2, G3, G11 — taken.
+// `mut` marks the writes. G2, G3, G11 — taken. The value rules that used
+// to hide in these guards — usernames, comment bodies, report reasons,
+// self-pairs — are now table `check`s the floor enforces too (RFD 0013),
+// so seven refusals retired here (G1/G13, taken).
 // ---------------------------------------------------------------------------
 
-// the PRD's "invalid usernames are rejected" finally has a name: the
-// guard is a minted refusal, and a bad name no longer masquerades as a
-// missing user (G2, taken). `not_found` is left meaning what it says.
-mut fn rename_user(user: user, username: text) -> user ! invalid_username | user_username_taken | not_found {
-  unchecked sql("""
-    SELECT spock_refuse('invalid_username')
-    WHERE NOT (length(:username) BETWEEN 1 AND 30
-               AND :username NOT GLOB '*[^a-z0-9._]*')
-  """)
+// the PRD's "invalid usernames are rejected" is now the field's own
+// `check valid_username` (RFD 0013, taken): the floor's insert_user_one
+// enforces it too, and rename's UPDATE trips the same named CHECK — the
+// `invalid_username` refusal and its guard are retired. `not_found` is
+// left meaning what it says.
+mut fn rename_user(user: user, username: text) -> user ! user_username_taken | user_username_invalid | not_found {
   unchecked sql("""
     UPDATE user SET username = :username
     WHERE id = :user
@@ -256,16 +294,15 @@ mut fn rename_user(user: user, username: text) -> user ! invalid_username | user
   """)
 }
 
-// follow, public profiles only. The three refusals G2 counted now carry
-// their own names. Idempotent re-follow still needs care — an existing
+// follow, public profiles only. A self-follow is now the table's
+// `check (follower, target) distinct_pair` (RFD 0013, taken); `blocked`
+// and `account_private` stay refusals — cross-table state a CHECK cannot
+// see. Idempotent re-follow still needs care — an existing
 // edge whose target later went private must be returned, not refused —
 // but the exemption is now a visible NOT EXISTS on each guard instead
 // of W1's leading already-exists escape (W1, softened). A missing
 // target falls through to the FK: `bad_request`, truthfully.
-mut fn follow(follower: user, target: user) -> follow ! self_follow | blocked | account_private {
-  unchecked sql("""
-    SELECT spock_refuse('self_follow') WHERE :follower = :target
-  """)
+mut fn follow(follower: user, target: user) -> follow ! blocked | account_private {
   unchecked sql("""
     SELECT spock_refuse('blocked')
     WHERE NOT EXISTS (SELECT 1 FROM follow
@@ -304,10 +341,7 @@ mut fn unfollow(follower: user, target: user) -> follow? {
 // guards carry the same existing-row exemption as follow/like/save: a
 // pending request whose target later went public (or got floor-blocked)
 // is returned, not refused — re-request stays idempotent.
-mut fn request_follow(requester: user, target: user) -> follow_request ! self_follow | blocked | account_public {
-  unchecked sql("""
-    SELECT spock_refuse('self_follow') WHERE :requester = :target
-  """)
+mut fn request_follow(requester: user, target: user) -> follow_request ! blocked | account_public {
   unchecked sql("""
     SELECT spock_refuse('blocked')
     WHERE NOT EXISTS (SELECT 1 FROM follow_request
@@ -392,10 +426,7 @@ mut fn deny_follow_request(requester: user, target: user) -> follow_request ! re
 
 // blocking severs the relationship both ways (PRD): follows and pending
 // requests die in the same transaction the block lands in (G3, taken)
-mut fn block_user(blocker: user, blocked: user) -> block ! self_block {
-  unchecked sql("""
-    SELECT spock_refuse('self_block') WHERE :blocker = :blocked
-  """)
+mut fn block_user(blocker: user, blocked: user) -> block {
   unchecked sql("""
     DELETE FROM follow
     WHERE (follower = :blocker AND target = :blocked)
@@ -422,10 +453,7 @@ mut fn unblock(blocker: user, blocked: user) -> block? {
   """)
 }
 
-mut fn restrict_user(restricting: user, restricted: user) -> restriction ! self_restrict {
-  unchecked sql("""
-    SELECT spock_refuse('self_restrict') WHERE :restricting = :restricted
-  """)
+mut fn restrict_user(restricting: user, restricted: user) -> restriction {
   unchecked sql("""
     INSERT INTO restriction (restricting, restricted)
     VALUES (:restricting, :restricted)
@@ -550,14 +578,7 @@ mut fn unsave_post(user: user, post: post) -> save? {
 // `not_found` is declared because it is reachable here: the answering
 // INSERT..SELECT needs the post row (for the held CASE), so a missing
 // post is the arity miss, not the siblings' FK bad_request.
-mut fn add_comment(author: user, post: post, body: text, parent: comment?) -> comment ! empty_body | body_too_long | parent_mismatch | blocked | account_private | not_found {
-  unchecked sql("""
-    SELECT spock_refuse('empty_body')
-    WHERE length(trim(:body, ' ' || char(9, 10, 13))) = 0
-  """)
-  unchecked sql("""
-    SELECT spock_refuse('body_too_long') WHERE length(:body) > 2200
-  """)
+mut fn add_comment(author: user, post: post, body: text, parent: comment?) -> comment ! parent_mismatch | blocked | account_private | comment_body_invalid | not_found {
   unchecked sql("""
     SELECT spock_refuse('parent_mismatch')
     WHERE :parent IS NOT NULL
@@ -661,13 +682,11 @@ mut fn delete_post(post: post, author: user) -> post? {
 }
 
 // id, status, and timestamp all ride their declared defaults (G4, taken);
-// an empty reason refuses by name instead of masquerading as not_found.
+// the empty-reason rule is now `reason: text check nonempty` (RFD 0013) —
+// the floor's insert_report_one enforces it too, and this INSERT trips the
+// same named CHECK, so the empty_reason refusal is retired.
 // "No unbounded duplicates per reporter and target" stays unsaid (G5, G6)
-mut fn report_post(reporter: user, post: post, reason: text) -> report ! empty_reason {
-  unchecked sql("""
-    SELECT spock_refuse('empty_reason')
-    WHERE length(trim(:reason, ' ' || char(9, 10, 13))) = 0
-  """)
+mut fn report_post(reporter: user, post: post, reason: text) -> report ! report_reason_invalid {
   unchecked sql("""
     INSERT INTO report (reporter, post, reason)
     VALUES (:reporter, :post, :reason)

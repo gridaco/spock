@@ -274,11 +274,16 @@ Writability is provenance, derived per field
 (`docs/rfd/0003-write-through-views.md`).
 
 ```spock
+// a value rule is an ordinary read fn; a `check` inline-expands it into a
+// named engine constraint the whole surface obeys (RFD 0013)
+fn nonempty(s: text) -> bool { unchecked sql("""SELECT length(:s) > 0""") }
+
 // durable truth
 table post {
     id: uuid
-    title: text
+    title: text check nonempty          // validator fn, enforced on every write
     body: text
+    visibility: "public" | "private" | "unlisted" = "public"   // a closed-set type
     published: bool
 }
 
