@@ -20,14 +20,15 @@ pub fn ddl(contract: &Contract) -> Vec<String> {
             for field in &table.fields {
                 let storage = contract.storage_type(&field.ty).sql();
                 let null = if field.optional { "" } else { " NOT NULL" };
-                let default = match &field.default {
-                    // `= me` (RFD 0014) emits NO DDL DEFAULT: spock_actor() is
-                    // DIRECTONLY and cannot sit in a DEFAULT clause. The
-                    // runtime materializes the actor on the write path; an
-                    // escape names spock_actor() itself (§14.3).
-                    None | Some(DefaultValue::Actor) => String::new(),
-                    Some(d) => format!(" DEFAULT {}", default_sql(d)),
-                };
+                // `= me` (RFD 0014) has no DDL DEFAULT — `default_sql` returns
+                // None: spock_actor() is DIRECTONLY, so the runtime stamps the
+                // actor on the write path and an escape names spock_actor().
+                let default = field
+                    .default
+                    .as_ref()
+                    .and_then(default_sql)
+                    .map(|expr| format!(" DEFAULT {expr}"))
+                    .unwrap_or_default();
                 lines.push(format!("  \"{}\" {storage}{null}{default}", field.name));
             }
 
@@ -113,20 +114,20 @@ pub fn ddl(contract: &Contract) -> Vec<String> {
         .collect()
 }
 
-/// A default value as a SQLite DEFAULT expression.
-fn default_sql(default: &DefaultValue) -> String {
-    match default {
+/// A default value as a SQLite DEFAULT expression, or `None` for `= me`
+/// (RFD 0014): `spock_actor()` is DIRECTONLY, so `me` has no DDL DEFAULT —
+/// the runtime materializes it on the write path instead.
+fn default_sql(default: &DefaultValue) -> Option<String> {
+    Some(match default {
         DefaultValue::Auto => "(spock_uuid())".into(),
         DefaultValue::Now => "(spock_now())".into(),
-        // `= me` emits no DEFAULT clause — the call site short-circuits it,
-        // so this is never reached (the actor is materialized at write time).
-        DefaultValue::Actor => unreachable!("`= me` emits no DEFAULT clause"),
+        DefaultValue::Actor => return None,
         DefaultValue::Str { value } => format!("'{}'", value.replace('\'', "''")),
         DefaultValue::Int { value } => value.to_string(),
         // {:?} keeps the decimal point (`2.0`, not `2`) — literals verbatim
         DefaultValue::Float { value } => format!("{value:?}"),
         DefaultValue::Bool { value } => if *value { "1" } else { "0" }.into(),
-    }
+    })
 }
 
 fn quote_list(names: &[String]) -> String {
@@ -216,11 +217,12 @@ pub fn field_check_default_probe(
 ) -> Option<String> {
     let field = contract.table(table_name)?.field(field_name)?;
     let fn_name = field.check.as_ref()?;
-    let value = match field.default.as_ref()? {
-        // engine-minted defaults have no literal to probe against a check
-        DefaultValue::Auto | DefaultValue::Now | DefaultValue::Actor => return None,
-        lit => default_sql(lit),
-    };
+    let d = field.default.as_ref()?;
+    // engine-minted defaults have no literal to probe against a check
+    if d.is_engine_minted() {
+        return None;
+    }
+    let value = default_sql(d)?;
     let f = contract.fn_def(fn_name)?;
     let param = f.params.first()?;
     let map: HashMap<&str, String> = std::iter::once((param.name.as_str(), value)).collect();

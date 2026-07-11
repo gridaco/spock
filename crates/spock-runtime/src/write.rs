@@ -39,30 +39,18 @@ pub fn insert_row(
                 // spock_now() — one clock, one id format, both paths
                 Some(DefaultValue::Auto) => SqlValue::Text(crate::value::new_uuid()),
                 Some(DefaultValue::Now) => SqlValue::Text(crate::value::now_utc()),
-                // `= me` (RFD 0014): stamp the request actor. A required
-                // column with no actor (anonymous) routes to the derived
-                // `required` error HERE — not a NULL that the floor's
-                // map_conflict_error can't translate (it would 500). §14.4.
-                Some(DefaultValue::Actor) => match &actor {
-                    Some(a) => a.clone(),
-                    None if field.optional => SqlValue::Null,
-                    None => {
-                        let err = table
-                            .error_for(ErrorKind::Required, &[&field.name])
-                            .ok_or_else(|| ApiError::internal("missing derived required error"))?;
-                        return Err(ApiError::derived(
-                            &table.name,
-                            err,
-                            format!("{}.{} is required", table.name, field.name),
-                        ));
-                    }
-                },
+                // `= me` (RFD 0014): stamp the request actor. When anonymous it
+                // falls through to the no-default arms below — an
+                // unauthenticated `= me` is exactly a missing required field,
+                // routed to the derived `required` error there (not a NULL the
+                // floor's map_conflict_error would 500 on). §14.4.
+                Some(DefaultValue::Actor) if actor.is_some() => actor.clone().unwrap(),
                 Some(DefaultValue::Str { value }) => SqlValue::Text(value.clone()),
                 Some(DefaultValue::Int { value }) => SqlValue::Integer(*value),
                 Some(DefaultValue::Float { value }) => SqlValue::Real(*value),
                 Some(DefaultValue::Bool { value }) => SqlValue::Integer(*value as i64),
-                None if field.optional => SqlValue::Null,
-                None => {
+                None | Some(DefaultValue::Actor) if field.optional => SqlValue::Null,
+                None | Some(DefaultValue::Actor) => {
                     let err = table
                         .error_for(ErrorKind::Required, &[&field.name])
                         .ok_or_else(|| ApiError::internal("missing derived required error"))?;

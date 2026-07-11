@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use crate::ir::{Contract, DefaultValue, FnArity, FnDef, Record, Table, Type};
+use crate::ir::{Contract, FnArity, FnDef, Record, Table, Type};
 
 /// Names the emission may never assign to a table: JavaScript reserved
 /// words (invalid as type names), TypeScript's predeclared type names,
@@ -421,7 +421,7 @@ fn emit_insert(out: &mut String, contract: &Contract, table: &Table) {
     for f in &table.fields {
         // `= me` fields (RFD 0014) leave the client write surface: the
         // runtime stamps the actor, and the client may not set it.
-        if matches!(f.default, Some(DefaultValue::Actor)) {
+        if f.is_actor_default() {
             continue;
         }
         let ty = value_ts(contract, &f.ty);
@@ -448,7 +448,7 @@ fn emit_update(out: &mut String, contract: &Contract, table: &Table) {
     for f in &table.fields {
         // keys are immutable; `= me` fields are stamped once and never
         // reassigned by a client (RFD 0014) — both leave the update surface.
-        if table.key.contains(&f.name) || matches!(f.default, Some(DefaultValue::Actor)) {
+        if table.key.contains(&f.name) || f.is_actor_default() {
             continue;
         }
         let null = if f.optional { " | null" } else { "" };

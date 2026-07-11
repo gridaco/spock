@@ -37,7 +37,7 @@ use async_graphql_value::Value as AstValue;
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Map, Value as Json};
 use spock_lang::ir::{
-    Contract, DefaultValue, DerivedError, ErrorKind, Field as IrField, FnArity, FnDef, Table, Type,
+    Contract, DerivedError, ErrorKind, Field as IrField, FnArity, FnDef, Table, Type,
 };
 use time::format_description::well_known::Rfc3339;
 
@@ -305,13 +305,7 @@ fn has_settable_fields(table: &Table) -> bool {
     table
         .fields
         .iter()
-        .any(|f| !table.key.contains(&f.name) && !is_actor_default(f))
-}
-
-/// A `= me` field (RFD 0014): stamped by the runtime, removed from the
-/// client insert/update surface.
-fn is_actor_default(field: &IrField) -> bool {
-    matches!(field.default, Some(DefaultValue::Actor))
+        .any(|f| !table.key.contains(&f.name) && !f.is_actor_default())
 }
 
 /// A root's collision error, built from (prior owner, new owner, field).
@@ -366,7 +360,7 @@ fn insert_input_type(contract: &Contract, table: &Table) -> InputObject {
     for f in &table.fields {
         // `= me` fields (RFD 0014) leave the client insert surface: the
         // runtime stamps the actor, so a client cannot forge them.
-        if is_actor_default(f) {
+        if f.is_actor_default() {
             continue;
         }
         input = input.field(InputValue::new(
@@ -385,7 +379,7 @@ fn set_input_type(contract: &Contract, table: &Table) -> InputObject {
     for f in &table.fields {
         // keys are immutable; `= me` fields are stamped once and never
         // reassigned by a client (RFD 0014) — both leave the update surface.
-        if table.key.contains(&f.name) || is_actor_default(f) {
+        if table.key.contains(&f.name) || f.is_actor_default() {
             continue;
         }
         input = input.field(InputValue::new(
@@ -417,7 +411,6 @@ fn gql<E: std::fmt::Display>(e: E) -> async_graphql::Error {
 /// `Request::data` by the HTTP layer (never the schema-global `.data`, which
 /// would bleed across requests — §14.3). Resolvers read it with
 /// `ctx.data_opt::<CurrentActor>()`.
-#[derive(Clone, Default)]
 pub struct CurrentActor(pub Option<SqlValue>);
 
 /// The current actor from the resolver context, or `None` when anonymous /

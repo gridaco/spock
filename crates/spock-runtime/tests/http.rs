@@ -69,18 +69,7 @@ seed {
 
 /// Compile, materialize, serve on an ephemeral port; return the base URL.
 async fn start() -> String {
-    let contract = spock_lang::compile(PROGRAM).expect("program compiles");
-    let conn = engine::open(&contract, None).expect("engine opens and seeds");
-    let app = Arc::new(App::new(contract, conn));
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind ephemeral port");
-    let addr = listener.local_addr().expect("local addr");
-    tokio::spawn(async move {
-        http::serve(app, listener).await.expect("serve");
-    });
-    format!("http://{addr}")
+    start_program(PROGRAM).await
 }
 
 async fn get(base: &str, path: &str) -> (u16, Value) {

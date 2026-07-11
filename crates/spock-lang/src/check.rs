@@ -468,10 +468,7 @@ impl Checker {
                             );
                             continue;
                         }
-                        if matches!(
-                            field.default,
-                            Some(DefaultValue::Auto | DefaultValue::Now | DefaultValue::Actor)
-                        ) {
+                        if field.default.as_ref().is_some_and(DefaultValue::is_engine_minted) {
                             self.error(
                                 "E042",
                                 format!("`check` on `{}`, which is defaulted `auto`/`now`/`me` — an engine-minted value cannot be proven against a validator", f.name.name),
@@ -1022,14 +1019,17 @@ impl Checker {
         // exist. Uses the table's span; the field is named in the message.
         for table in tables {
             for field in &table.fields {
-                if !matches!(field.default, Some(DefaultValue::Actor)) {
+                if !field.is_actor_default() {
                     continue;
                 }
+                // Phase A only lowers `= me` to Actor on a ref, so `target` is
+                // always `Some`; when no anchor is declared `anchor_name` is
+                // `None`, and `Some != None` already fires.
                 let target = match &field.ty {
                     Type::Ref { table, .. } => Some(table.as_str()),
                     _ => None,
                 };
-                if anchor_name.is_none() || target != anchor_name {
+                if target != anchor_name {
                     self.error(
                         "E047",
                         format!(
@@ -1054,20 +1054,13 @@ impl Checker {
             );
         }
         // E046: the first anchor's key must be a single scalar builtin column.
+        // `single_key()` already returns None for a composite key, and a
+        // scalar is anything but a reference or a set.
         if let Some(decl) = anchors.first() {
             if let Some(table) = tables.iter().find(|t| t.name == decl.name.name) {
-                let scalar_single = table.key.len() == 1
-                    && table.single_key().is_some_and(|f| {
-                        matches!(
-                            f.ty,
-                            Type::Text
-                                | Type::Int
-                                | Type::Float
-                                | Type::Bool
-                                | Type::Timestamp
-                                | Type::Uuid
-                        )
-                    });
+                let scalar_single = table
+                    .single_key()
+                    .is_some_and(|f| !matches!(f.ty, Type::Ref { .. } | Type::Set { .. }));
                 if !scalar_single {
                     self.error(
                         "E046",
@@ -1167,8 +1160,7 @@ impl Checker {
                 // seed runs before any actor exists (anonymous), so the
                 // runtime cannot stamp it — the seed row must name it.
                 for field in &table.fields {
-                    let no_seed_default = field.default.is_none()
-                        || matches!(field.default, Some(DefaultValue::Actor));
+                    let no_seed_default = field.default.is_none() || field.is_actor_default();
                     if !field.optional && no_seed_default && !provided.contains(&field.name) {
                         self.error(
                             "E022",
@@ -1607,9 +1599,8 @@ fn derive_errors(table: &Table, all: &[Table]) -> Vec<DerivedError> {
         // field (RFD 0014) is the exception even as a key: an anonymous
         // insert cannot supply it, so the required error is reachable and
         // the floor routes anonymous writes to it (§14.4).
-        let reachable = field.default.is_none()
-            || matches!(field.default, Some(DefaultValue::Actor))
-            || !table.key.contains(&field.name);
+        let reachable =
+            field.default.is_none() || field.is_actor_default() || !table.key.contains(&field.name);
         if !field.optional && reachable {
             errors.push(DerivedError {
                 code: format!("{t}_{}_required", field.name),
