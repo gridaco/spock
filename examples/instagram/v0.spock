@@ -67,7 +67,10 @@ fn distinct_pair(a: uuid, b: uuid) -> bool {
 // people and places
 // ---------------------------------------------------------------------------
 
-table user {
+// the identity anchor (RFD 0014): `user.id` is the actor. `spock_actor()`
+// returns it and `= me` stamps it; a dev `X-Spock-Actor` header (or a seed
+// persona) selects who is calling — the seam a verified JWT later fills.
+auth table user {
   key id: uuid = auto
   username: text check valid_username unique
   full_name: text?
@@ -88,7 +91,10 @@ table location {
 
 table post {
   key id: uuid = auto
-  author: user
+  // `= me` (RFD 0014): the floor stamps the author from the session and a
+  // client cannot forge it — `author` leaves post_insert_input. G12's
+  // authorship-forgery half, closed on the floor.
+  author: user = me
   caption: text?
   location: location?
   archived_at: timestamp?      // archive keeps likes/comments; delete cascades them
@@ -652,19 +658,22 @@ mut fn remove_media_tag(tag: media_tag, actor: user) -> media_tag? {
   """)
 }
 
-mut fn archive_post(post: post, author: user) -> post? {
+// the author archives their own post — the actor is the seam now, not a
+// client-asserted param (RFD 0014, G12 sound): a non-author matches no row
+// (arity miss = not_found), anonymous (NULL) likewise.
+mut fn archive_post(post: post) -> post? {
   unchecked sql("""
     UPDATE post
     SET archived_at = coalesce(archived_at, spock_now())
-    WHERE id = :post AND author = :author
+    WHERE id = :post AND author = spock_actor()
     RETURNING *
   """)
 }
 
-mut fn unarchive_post(post: post, author: user) -> post? {
+mut fn unarchive_post(post: post) -> post? {
   unchecked sql("""
     UPDATE post SET archived_at = NULL
-    WHERE id = :post AND author = :author
+    WHERE id = :post AND author = spock_actor()
     RETURNING *
   """)
 }
@@ -673,10 +682,10 @@ mut fn unarchive_post(post: post, author: user) -> post? {
 // likes, comments, saves, collection entries, hashtag links, mentions,
 // tags, notifications — while reports survive with nulled links (the
 // set-null half of G7; soft delete remains the full audit answer)
-mut fn delete_post(post: post, author: user) -> post? {
+mut fn delete_post(post: post) -> post? {
   unchecked sql("""
     DELETE FROM post
-    WHERE id = :post AND author = :author
+    WHERE id = :post AND author = spock_actor()
     RETURNING *
   """)
 }
