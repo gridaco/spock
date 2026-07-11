@@ -338,6 +338,9 @@ fn scalar_name(contract: &Contract, ty: &Type) -> &'static str {
         Type::Bool => TypeRef::BOOLEAN,
         Type::Uuid => "uuid",
         Type::Timestamp => "timestamp",
+        // A closed set stays a GraphQL String (Tier-1 fidelity, no minted
+        // enum); membership is enforced by the write path and the CHECK.
+        Type::Set { .. } => TypeRef::STRING,
         Type::Ref { .. } => unreachable!("value_type never returns a ref"),
     }
 }
@@ -604,6 +607,9 @@ fn arg_to_sql(
         Type::Timestamp => time::OffsetDateTime::parse(arg.string()?, &Rfc3339)
             .ok()
             .map(|t| SqlValue::Text(crate::value::canon_timestamp(t))),
+        // A set arg is textual; a set is never a key, so this is reached
+        // only if a set field ever becomes an argument — coerce like text.
+        Type::Set { .. } => Some(SqlValue::Text(arg.string()?.to_string())),
         Type::Ref { .. } => unreachable!("value_type never returns a ref"),
     })
 }
@@ -817,6 +823,8 @@ fn insert_one_field(table: &Table) -> Field {
                 .first()
                 .and_then(|f| table.field(f))
                 .is_some_and(|f| f.default.is_none()),
+            // a value-constraint (set or check) always fires on insert
+            ErrorKind::Invalid => true,
             _ => false,
         },
         &[],
@@ -867,6 +875,9 @@ fn update_by_pk_field(table: &Table) -> Field {
             ErrorKind::Unique | ErrorKind::RefNotFound => true,
             // required is update-reachable by clearing any non-key field
             ErrorKind::Required => e.fields.first().is_some_and(|f| !table.key.contains(f)),
+            // a value-constraint is update-reachable iff any of its fields
+            // is settable (non-key) — an all-key check cannot fire (L-J)
+            ErrorKind::Invalid => e.fields.iter().any(|f| !table.key.contains(f)),
             _ => false,
         },
         &["not_found"],

@@ -58,6 +58,16 @@ pub enum Type {
         table: String,
         on_delete: OnDelete,
     },
+    /// A closed-set text refinement: the value is one of `values` (RFD
+    /// 0013). Storage is TEXT; membership is enforced by a derived
+    /// `<table>_<field>_invalid` CHECK and, on the floor write path, by a
+    /// pre-engine membership check. Never reachable through a `Ref` — a
+    /// set type may not be a key (E043), so `value_type` never yields it
+    /// via a reference. Additive under `spock: "v0"`: a consumer that does
+    /// not know `kind: "set"` rejects it rather than guessing (§6).
+    Set {
+        values: Vec<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,6 +118,10 @@ pub enum ErrorKind {
     Required,
     RefNotFound,
     Restricted,
+    /// A value-constraint violation (RFD 0013): a closed-set membership
+    /// miss or a validator-fn `check` failure. Status 422 — intrinsic to
+    /// the payload, not a conflict with existing state.
+    Invalid,
 }
 
 /// A named wire shape (§3): scalar fields only — SQL result columns are
@@ -319,7 +333,7 @@ impl Contract {
     /// reference chains. Key-cycle-free by the checker (E017).
     pub fn storage_type(&self, ty: &Type) -> StorageType {
         match ty {
-            Type::Text | Type::Uuid | Type::Timestamp => StorageType::Text,
+            Type::Text | Type::Uuid | Type::Timestamp | Type::Set { .. } => StorageType::Text,
             Type::Int => StorageType::Integer,
             Type::Float => StorageType::Real,
             Type::Bool => StorageType::Integer,
@@ -499,6 +513,19 @@ mod tests {
             back.seed[0].fields.get("username"),
             Some(SeedValue::Str(s)) if s == "maya"
         ));
+    }
+
+    /// A closed-set type serializes as `{"kind":"set","values":[...]}` and
+    /// round-trips (RFD 0013 §7 — additive under `spock: "v0"`).
+    #[test]
+    fn set_type_serde_roundtrip() {
+        let ty = Type::Set {
+            values: vec!["pending".into(), "ready".into()],
+        };
+        let json = serde_json::to_string(&ty).unwrap();
+        assert_eq!(json, r#"{"kind":"set","values":["pending","ready"]}"#);
+        let back: Type = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ty);
     }
 
     /// A contract serialized before `fns`/`records` existed still loads —

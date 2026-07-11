@@ -5,7 +5,7 @@
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{Map, Value as Json};
-use spock_lang::ir::{Contract, DefaultValue, ErrorKind, OnDelete, Table, Type};
+use spock_lang::ir::{Contract, DefaultValue, DerivedError, ErrorKind, OnDelete, Table, Type};
 
 use crate::error::ApiError;
 use crate::value::{json_to_sql, sql_to_json};
@@ -401,8 +401,50 @@ fn map_conflict_error(table: &Table, e: rusqlite::Error) -> ApiError {
                 );
             }
         }
+        // A value-constraint CHECK (RFD 0013): the constraint name is the
+        // derived `invalid` code — the whole routing channel. A single-table
+        // write can only trip its own CHECKs, so this table has it.
+        if let Some(code) = check_constraint_code(err.extended_code, msg) {
+            if let Some(derr) = table
+                .errors
+                .iter()
+                .find(|d| d.kind == ErrorKind::Invalid && d.code == code)
+            {
+                return ApiError::derived(&table.name, derr, invalid_message(table, derr));
+            }
+        }
     }
     sqlite_internal(e)
+}
+
+/// The `CHECK constraint failed: <name>` code, if `code`/`msg` are one —
+/// the name spock lowered the constraint with is the derived `invalid`
+/// code verbatim (RFD 0013), so no parsing beyond the prefix is needed.
+fn check_constraint_code(code: std::os::raw::c_int, msg: &str) -> Option<&str> {
+    use rusqlite::ffi;
+    if code == ffi::SQLITE_CONSTRAINT_CHECK {
+        msg.strip_prefix("CHECK constraint failed: ")
+            .map(str::trim)
+    } else {
+        None
+    }
+}
+
+/// A human message for an `invalid` derived error. A closed-set field names
+/// its allowed values; a validator-`check` names the fn (RFD 0013 §5).
+fn invalid_message(table: &Table, derr: &DerivedError) -> String {
+    if let [field_name] = derr.fields.as_slice() {
+        if let Some(field) = table.field(field_name) {
+            if let Type::Set { values } = &field.ty {
+                return format!(
+                    "`{}.{field_name}` must be one of: {}",
+                    table.name,
+                    values.join(", ")
+                );
+            }
+        }
+    }
+    format!("`{}` value constraint `{}` failed", table.name, derr.code)
 }
 
 /// Map an engine delete error. Direct restricts are pre-checked; a cascade
@@ -506,6 +548,19 @@ pub(crate) fn map_fn_engine_error(contract: &Contract, e: rusqlite::Error) -> Ap
                 "foreign key constraint failed (the statement referenced a missing row \
                  or removed a referenced one; sqlite reports no table detail)",
             );
+        }
+        // A value-constraint CHECK (RFD 0013): the constraint name is the
+        // derived `invalid` code, globally unique because it embeds its
+        // table (E044) — scan every table's errors for it.
+        if let Some(check_code) = check_constraint_code(code, msg) {
+            if let Some((table, derr)) = contract.tables.iter().find_map(|t| {
+                t.errors
+                    .iter()
+                    .find(|d| d.kind == ErrorKind::Invalid && d.code == check_code)
+                    .map(|d| (t, d))
+            }) {
+                return ApiError::derived(&table.name, derr, invalid_message(table, derr));
+            }
         }
     }
     sqlite_internal(e)

@@ -717,3 +717,46 @@ async fn the_graphql_mutations() {
     let resp = gql(&base, "{ follow { since } }", Value::Null).await;
     assert_eq!(resp["data"]["follow"].as_array().unwrap().len(), 0);
 }
+
+/// A closed-set field: the floor rejects an off-set value with the derived
+/// `<t>_<f>_invalid` error (RFD 0013), 422/kind `invalid`, and accepts a
+/// member. Set values stay GraphQL `String`.
+#[tokio::test]
+async fn closed_set_membership() {
+    const P: &str = r#"
+table media {
+  key id: uuid = auto
+  status: "pending" | "ready" | "failed" = "pending"
+}
+"#;
+    let contract = spock_lang::compile(P).expect("program compiles");
+    let conn = engine::open(&contract, None).expect("engine opens");
+    let app = Arc::new(App::new(contract, conn));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { http::serve(app, listener).await.unwrap() });
+    let base = format!("http://{addr}");
+
+    // off-set value → derived invalid error, not type_mismatch, not internal
+    let resp = gql(
+        &base,
+        r#"mutation { insert_media_one(object: { status: "pnding" }) { id } }"#,
+        Value::Null,
+    )
+    .await;
+    let ext = &resp["errors"][0]["extensions"];
+    assert_eq!(ext["code"], "media_status_invalid");
+    assert_eq!(ext["kind"], "invalid");
+    assert_eq!(ext["table"], "media");
+    assert_eq!(ext["fields"][0], "status");
+
+    // a member is accepted and echoed back
+    let resp = gql(
+        &base,
+        r#"mutation { insert_media_one(object: { status: "ready" }) { status } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["insert_media_one"]["status"], "ready");
+}

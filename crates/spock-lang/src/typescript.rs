@@ -361,7 +361,34 @@ fn value_ts(contract: &Contract, ty: &Type) -> String {
             // references always target single-key tables (checker E010)
             format!("{}[\"{}\"]", target.name, target.key[0])
         }
+        // A closed set is its literal union (RFD 0013) — G1's "un-shadow
+        // `string` to the exact values". Members are user strings, so they
+        // are JS-escaped: the emission never emits code that will not compile.
+        Type::Set { values } => values
+            .iter()
+            .map(|v| ts_string_lit(v))
+            .collect::<Vec<_>>()
+            .join(" | "),
     }
+}
+
+/// A TypeScript string literal: double-quoted, with the characters the
+/// lexer can admit escaped (`\`, `"`, newline, tab, carriage return).
+fn ts_string_lit(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// `interface <t>` — the row, as reads return it.
@@ -455,6 +482,23 @@ mod tests {
         assert!(ts.contains("  bio: string | null;"), "{ts}");
         assert!(ts.contains("  invited_by: user[\"id\"] | null;"), "{ts}");
         assert!(ts.contains("  joined_at: timestamp;"), "{ts}");
+    }
+
+    #[test]
+    fn closed_sets_emit_literal_unions() {
+        // the row, the insert input, and the update input all carry the
+        // exact values, not `string` — G1's un-shadow; a member with a `"`
+        // is JS-escaped so the emission compiles
+        let ts = emit(
+            "table media { key id: uuid = auto\n\
+               kind: \"image\" | \"say \\\"hi\\\"\"\n\
+               status: \"pending\" | \"ready\" = \"pending\" }",
+        )
+        .unwrap();
+        assert!(ts.contains(r#"  kind: "image" | "say \"hi\"";"#), "{ts}");
+        assert!(ts.contains(r#"  status: "pending" | "ready";"#), "{ts}");
+        // insert marks the set field required (no default), update optional
+        assert!(ts.contains(r#"  kind: "image" | "say \"hi\"";"#), "{ts}");
     }
 
     #[test]

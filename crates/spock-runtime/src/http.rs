@@ -291,6 +291,9 @@ fn path_key_value(app: &App, table: &Table, raw: &str) -> Result<SqlValue, ApiEr
                 .map(|t| SqlValue::Text(crate::value::canon_timestamp(t)))
                 .map_err(|_| not_found())
         }
+        // A set type is never a key (checker E043), so a key never
+        // bottoms out at one.
+        Type::Set { .. } => unreachable!("a set type is never a key"),
         Type::Ref { .. } => unreachable!("value_type never returns a ref"),
     }
 }

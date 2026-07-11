@@ -146,6 +146,7 @@ pub fn kind_str(kind: ErrorKind) -> &'static str {
         ErrorKind::Required => "required",
         ErrorKind::RefNotFound => "ref_not_found",
         ErrorKind::Restricted => "restricted",
+        ErrorKind::Invalid => "invalid",
     }
 }
 

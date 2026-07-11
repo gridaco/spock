@@ -3,7 +3,7 @@
 
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use serde_json::Value as Json;
-use spock_lang::ir::{Contract, Field, Table, Type};
+use spock_lang::ir::{Contract, ErrorKind, Field, Table, Type};
 use time::format_description::well_known::Rfc3339;
 
 use crate::error::ApiError;
@@ -96,6 +96,12 @@ pub fn json_to_sql_scalar(value_type: &Type, value: &Json) -> Result<SqlValue, &
             },
             _ => Err("an RFC 3339 timestamp string"),
         },
+        // A closed set stores as text; membership is enforced by the
+        // caller (`json_to_sql`), which has the derived `invalid` error.
+        Type::Set { .. } => match value {
+            Json::String(s) => Ok(SqlValue::Text(s.clone())),
+            _ => Err("a string"),
+        },
         Type::Ref { .. } => unreachable!("value_type never returns a ref"),
     }
 }
@@ -108,8 +114,31 @@ pub fn json_to_sql(
     field: &Field,
     value: &Json,
 ) -> Result<SqlValue, ApiError> {
-    json_to_sql_scalar(contract.value_type(&field.ty), value)
-        .map_err(|expected| ApiError::type_mismatch(&table.name, &field.name, expected))
+    let value_type = contract.value_type(&field.ty);
+    let sql = json_to_sql_scalar(value_type, value)
+        .map_err(|expected| ApiError::type_mismatch(&table.name, &field.name, expected))?;
+    // Closed-set membership on the floor write path (RFD 0013): the same
+    // derived `<t>_<f>_invalid` the CHECK is named with — so a floor write
+    // and an escape-body write (which reaches only the engine) reject an
+    // off-set value with byte-identical errors.
+    if let (Type::Set { values }, SqlValue::Text(s)) = (value_type, &sql) {
+        if !values.iter().any(|m| m == s) {
+            let err = table
+                .error_for(ErrorKind::Invalid, &[field.name.as_str()])
+                .expect("checked: a set field derives an invalid error");
+            return Err(ApiError::derived(
+                &table.name,
+                err,
+                format!(
+                    "`{}.{}` must be one of: {}",
+                    table.name,
+                    field.name,
+                    values.join(", ")
+                ),
+            ));
+        }
+    }
+    Ok(sql)
 }
 
 /// Render one SQLite column value as JSON, governed by a *value* type.

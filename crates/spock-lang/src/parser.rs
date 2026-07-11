@@ -428,6 +428,11 @@ impl Parser {
     }
 
     fn type_expr(&mut self) -> Result<TypeExpr, Diagnostic> {
+        // A string literal at type position opens a closed-set type
+        // (`"a" | "b"`) — the checker enforces its laws (RFD 0013).
+        if let TokenKind::Str(_) = self.peek().kind {
+            return self.set_type();
+        }
         let tok = self.peek().clone();
         let kind = match &tok.kind {
             TokenKind::KwText => TypeExprKind::Text,
@@ -443,6 +448,42 @@ impl Parser {
         Ok(TypeExpr {
             kind,
             span: tok.span,
+        })
+    }
+
+    // set_type = string { "|" string } — the singleton/dup/empty laws are
+    // the checker's (E043), so the production admits one-or-more here.
+    fn set_type(&mut self) -> Result<TypeExpr, Diagnostic> {
+        let first = self.bump();
+        let TokenKind::Str(value) = first.kind else {
+            unreachable!("set_type entered on a string token")
+        };
+        let start = first.span;
+        let mut end = first.span;
+        let mut members = vec![SetMember { value, span: first.span }];
+        while self.peek().kind == TokenKind::Pipe {
+            self.bump();
+            let tok = self.bump();
+            match tok.kind {
+                TokenKind::Str(value) => {
+                    end = tok.span;
+                    members.push(SetMember { value, span: tok.span });
+                }
+                _ => {
+                    return Err(Diagnostic::new(
+                        "L010",
+                        format!(
+                            "expected another set member (a string literal), found {}",
+                            tok.kind.describe()
+                        ),
+                        tok.span,
+                    ));
+                }
+            }
+        }
+        Ok(TypeExpr {
+            kind: TypeExprKind::Set(members),
+            span: start.to(end),
         })
     }
 
@@ -605,6 +646,41 @@ mod tests {
         // `set` must be followed by `null`
         let d = parse_err("table t { key id: uuid = auto\n a: t? on delete set }");
         assert!(d.message.contains("`null`"), "{}", d.message);
+    }
+
+    #[test]
+    fn parses_closed_set_types() {
+        let file = parse_ok(
+            "table media {\n\
+               key id: uuid = auto\n\
+               kind: \"image\" | \"video\"\n\
+               status: \"pending\" | \"ready\" | \"failed\" = \"pending\"\n\
+             }",
+        );
+        let table = &file.tables[0];
+        let TableItem::Field(kind) = &table.items[1] else {
+            panic!("expected field");
+        };
+        let TypeExprKind::Set(members) = &kind.ty.kind else {
+            panic!("expected a set type");
+        };
+        assert_eq!(members.len(), 2);
+        assert_eq!(members[0].value, "image");
+        assert_eq!(members[1].value, "video");
+        // a set field still takes a default and it round-trips as a string
+        let TableItem::Field(status) = &table.items[2] else {
+            panic!("expected field");
+        };
+        assert!(matches!(&status.default, Some(DefaultExpr::Lit(Lit::Str(s, _))) if s == "pending"));
+        // the singleton case is a *parse*, deferred to the checker (E043)
+        let one = parse_ok("table t { key id: uuid = auto\n s: \"only\" }");
+        let TableItem::Field(s) = &one.tables[0].items[1] else {
+            panic!("expected field");
+        };
+        assert!(matches!(&s.ty.kind, TypeExprKind::Set(m) if m.len() == 1));
+        // a dangling `|` wants another member
+        let d = parse_err("table t { key id: uuid = auto\n s: \"a\" | }");
+        assert!(d.message.contains("set member"), "{}", d.message);
     }
 
     #[test]

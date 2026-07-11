@@ -66,6 +66,17 @@ pub enum TypeExprKind {
     Uuid,
     /// A reference: the named table's key.
     Named(String),
+    /// A closed-set type: `"a" | "b" | ...` (RFD 0013). Members carry
+    /// spans for per-member diagnostics (E043). The checker enforces ≥2
+    /// distinct non-empty members and rejects the type outside a stored
+    /// table field (E034/E036/E043).
+    Set(Vec<SetMember>),
+}
+
+#[derive(Clone, Debug)]
+pub struct SetMember {
+    pub value: String,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]

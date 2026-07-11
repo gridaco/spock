@@ -178,6 +178,14 @@ impl Checker {
                         );
                         continue;
                     }
+                    ast::TypeExprKind::Set(_) => {
+                        self.error(
+                            "E034",
+                            format!("record field `{}` must be a builtin scalar; a closed-set type is not permitted (records are wire read shapes)", f.name.name),
+                            f.ty.span,
+                        );
+                        continue;
+                    }
                 };
                 fields.push(RecordField {
                     name: f.name.name.clone(),
@@ -285,6 +293,14 @@ impl Checker {
                             on_delete: OnDelete::Restrict,
                         }
                     }
+                    ast::TypeExprKind::Set(_) => {
+                        self.error(
+                            "E036",
+                            format!("fn parameter `{}` cannot be a closed-set type; a set type is a table-field type in v0 (RFD 0013)", p.name.name),
+                            p.ty.span,
+                        );
+                        continue;
+                    }
                 };
                 params.push(FnParam {
                     name: p.name.name.clone(),
@@ -314,7 +330,9 @@ impl Checker {
                         ast::TypeExprKind::Bool => "bool",
                         ast::TypeExprKind::Timestamp => "timestamp",
                         ast::TypeExprKind::Uuid => "uuid",
-                        ast::TypeExprKind::Named(_) => unreachable!("parser never scalars a name"),
+                        ast::TypeExprKind::Named(_) | ast::TypeExprKind::Set(_) => {
+                            unreachable!("parser never scalars a name or set")
+                        }
                     };
                     (name.to_string(), true)
                 }
@@ -442,13 +460,23 @@ impl Checker {
             Vec::new()
         };
 
-        // Key fields must not be optional (E008).
+        // Key fields must not be optional (E008), nor a closed-set type
+        // (E043, RFD 0013 L-B): forbidding a set key keeps `value_type`
+        // from ever yielding a set through a reference, so a validator's
+        // ref param always bottoms out at a builtin scalar.
         for name in &key {
             if let Some(field) = fields.iter().find(|f| &f.name == name) {
                 if field.optional {
                     self.error(
                         "E008",
                         format!("key field `{name}` cannot be optional"),
+                        field_spans[name],
+                    );
+                }
+                if matches!(field.ty, Type::Set { .. }) {
+                    self.error(
+                        "E043",
+                        format!("key field `{name}` cannot be a closed-set type"),
                         field_spans[name],
                     );
                 }
@@ -538,6 +566,7 @@ impl Checker {
                         .unwrap_or(OnDelete::Restrict),
                 }
             }
+            ast::TypeExprKind::Set(members) => self.lower_set(members, &f.name.name, f.ty.span),
         };
 
         let is_ref = matches!(ty, Type::Ref { .. });
@@ -590,6 +619,42 @@ impl Checker {
         })
     }
 
+    /// Lower a closed-set type (RFD 0013), reporting its laws (E043): at
+    /// least two members, each non-empty, all distinct. The `Type::Set` is
+    /// returned even when a law fails so the default/seed checks against it
+    /// do not cascade a second, confusing diagnostic.
+    fn lower_set(&mut self, members: &[ast::SetMember], field: &str, span: Span) -> Type {
+        if members.len() < 2 {
+            self.error(
+                "E043",
+                format!(
+                    "closed-set type of `{field}` needs at least two values \
+                     (a one-value set is a constant, not a choice)"
+                ),
+                span,
+            );
+        }
+        let mut seen: HashSet<&str> = HashSet::new();
+        for m in members {
+            if m.value.is_empty() {
+                self.error(
+                    "E043",
+                    format!("closed-set type of `{field}` has an empty value (members must be non-empty)"),
+                    m.span,
+                );
+            } else if !seen.insert(m.value.as_str()) {
+                self.error(
+                    "E043",
+                    format!("closed-set type of `{field}` repeats the value `{}`", m.value),
+                    m.span,
+                );
+            }
+        }
+        Type::Set {
+            values: members.iter().map(|m| m.value.clone()).collect(),
+        }
+    }
+
     fn lower_default(
         &mut self,
         expr: &ast::DefaultExpr,
@@ -611,6 +676,23 @@ impl Checker {
             }
             (ast::DefaultExpr::Lit(ast::Lit::Bool(v, _)), Type::Bool) => {
                 ok(DefaultValue::Bool { value: *v })
+            }
+            // The set IS the type: a string default must be one of its
+            // members, else the default violates the field's own type (E009).
+            (ast::DefaultExpr::Lit(ast::Lit::Str(v, _)), Type::Set { values }) => {
+                if values.iter().any(|m| m == v) {
+                    ok(DefaultValue::Str { value: v.clone() })
+                } else {
+                    self.error(
+                        "E009",
+                        format!(
+                            "default `{v}` for `{field}` is not one of its values ({})",
+                            values.join(" | ")
+                        ),
+                        expr.span(),
+                    );
+                    None
+                }
             }
             _ => {
                 self.error(
@@ -836,6 +918,28 @@ impl Checker {
                 };
                 match (lit, value_type) {
                     (ast::Lit::Str(v, _), Type::Text) => Some(SeedValue::Str(v.clone())),
+                    // A closed-set value type: the literal must be a member
+                    // (the same law the floor and the derived CHECK enforce).
+                    (ast::Lit::Str(v, span), Type::Set { values }) => {
+                        if values.iter().any(|m| m == v) {
+                            Some(SeedValue::Str(v.clone()))
+                        } else {
+                            self.error(
+                                "E023",
+                                format!(
+                                    "seed value `{v}` for `{}` is not one of its values ({})",
+                                    field.name,
+                                    values.join(" | ")
+                                ),
+                                *span,
+                            );
+                            None
+                        }
+                    }
+                    (_, Type::Set { values }) => {
+                        mismatch(self, &format!("one of {}", values.join(" | ")));
+                        None
+                    }
                     (ast::Lit::Str(v, span), Type::Uuid) => match uuid::Uuid::parse_str(v) {
                         Ok(u) => Some(SeedValue::Str(u.to_string())),
                         Err(_) => {
@@ -971,6 +1075,18 @@ fn derive_errors(table: &Table, all: &[Table]) -> Vec<DerivedError> {
             });
         }
     }
+    // Closed-set membership (RFD 0013): the field's value must be one of
+    // the declared members. Same code the derived CHECK is named with.
+    for field in &table.fields {
+        if matches!(field.ty, Type::Set { .. }) {
+            errors.push(DerivedError {
+                code: format!("{t}_{}_invalid", field.name),
+                kind: ErrorKind::Invalid,
+                fields: vec![field.name.clone()],
+                status: 422,
+            });
+        }
+    }
     let restricted = all.iter().any(|other| {
         other.fields.iter().any(|f| {
             matches!(
@@ -1026,6 +1142,66 @@ mod tests {
         assert!(user.error_for(ErrorKind::Restricted, &[]).is_some());
         // username has no default and is required
         assert!(user.error_for(ErrorKind::Required, &["username"]).is_some());
+    }
+
+    #[test]
+    fn closed_sets_derive_invalid_and_check_their_values() {
+        // a valid set field: derives `<t>_<f>_invalid`, TEXT storage
+        let contract = compile(
+            "table media { key id: uuid = auto\n\
+               status: \"pending\" | \"ready\" | \"failed\" = \"pending\" }",
+        )
+        .unwrap();
+        let media = contract.table("media").unwrap();
+        let derr = media.error_for(ErrorKind::Invalid, &["status"]).unwrap();
+        assert_eq!(derr.code, "media_status_invalid");
+        assert_eq!(derr.status, 422);
+        assert!(matches!(
+            &media.field("status").unwrap().ty,
+            Type::Set { values } if values == &["pending", "ready", "failed"]
+        ));
+    }
+
+    #[test]
+    fn closed_set_laws() {
+        // E043: singleton, duplicate, and empty members
+        assert_eq!(
+            codes("table t { key id: uuid = auto\n s: \"only\" }"),
+            ["E043"]
+        );
+        assert_eq!(
+            codes("table t { key id: uuid = auto\n s: \"a\" | \"a\" }"),
+            ["E043"]
+        );
+        assert_eq!(
+            codes("table t { key id: uuid = auto\n s: \"a\" | \"\" }"),
+            ["E043"]
+        );
+        // E043: a set may not be a key (keeps sets off the value_type-via-ref path)
+        assert_eq!(
+            codes("table t { key s: \"a\" | \"b\" }"),
+            ["E043"]
+        );
+        // E009: a default must be a member
+        assert_eq!(
+            codes("table t { key id: uuid = auto\n s: \"a\" | \"b\" = \"c\" }"),
+            ["E009"]
+        );
+        // E023: a seed literal must be a member
+        assert_eq!(
+            codes("table t { key id: uuid = auto\n s: \"a\" | \"b\" }\n seed { t { s: \"c\" } }"),
+            ["E023"]
+        );
+        // L-B: a set may not be a record field (E034) or a fn param (E036)
+        assert_eq!(
+            codes("record r { s: \"a\" | \"b\" }"),
+            ["E034"]
+        );
+        assert_eq!(
+            codes("table t { key id: uuid = auto\n n: int }\n\
+                   fn f(s: \"a\" | \"b\") -> t { unchecked sql(\"SELECT 1\") }"),
+            ["E036"]
+        );
     }
 
     #[test]

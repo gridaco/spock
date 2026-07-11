@@ -37,6 +37,24 @@ pub fn ddl(contract: &Contract) -> Vec<String> {
                 lines.push(format!("  UNIQUE ({})", quote_list(group)));
             }
 
+            // Closed-set membership → a named CHECK whose name is the
+            // derived `<table>_<field>_invalid` code (RFD 0013): the name
+            // is the whole runtime routing channel. Members are string
+            // literals, escaped by doubling `'` (the DEFAULT-clause law).
+            for field in &table.fields {
+                if let Type::Set { values } = &field.ty {
+                    let list = values
+                        .iter()
+                        .map(|v| format!("'{}'", v.replace('\'', "''")))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    lines.push(format!(
+                        "  CONSTRAINT \"{}_{}_invalid\" CHECK (\"{}\" IN ({list}))",
+                        table.name, field.name, field.name
+                    ));
+                }
+            }
+
             for field in &table.fields {
                 if let Type::Ref { table: target, on_delete } = &field.ty {
                     let target_key = &contract
@@ -155,6 +173,28 @@ mod tests {
         assert!(sql.contains("\"status\" TEXT NOT NULL DEFAULT 'it''s fine'"));
         assert!(sql.contains("\"tries\" INTEGER NOT NULL DEFAULT 3"));
         assert!(sql.contains("\"weight\" REAL NOT NULL DEFAULT 0.5"));
+    }
+
+    #[test]
+    fn emits_set_check_constraint() {
+        // members with an apostrophe must be single-quote-doubled (the
+        // DEFAULT-clause law), or the generated DDL fails to prepare.
+        let contract = compile(
+            "table media {\n\
+               key id: uuid = auto\n\
+               kind: \"image\" | \"it's video\"\n\
+             }",
+        )
+        .unwrap();
+        let sql = &ddl(&contract)[0];
+        // TEXT storage, and a named CHECK whose name is the derived code
+        assert!(sql.contains("\"kind\" TEXT NOT NULL"));
+        assert!(
+            sql.contains(
+                "CONSTRAINT \"media_kind_invalid\" CHECK (\"kind\" IN ('image', 'it''s video'))"
+            ),
+            "{sql}"
+        );
     }
 
     #[test]

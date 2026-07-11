@@ -203,6 +203,12 @@ mutation's description) before any request was made. Reserved
 non-derived codes: `not_found`, `type_mismatch`, `unknown_field`,
 `bad_request`, `internal`.
 
+A value-constraint violation (RFD 0013) carries `kind: "invalid"`, code
+`<table>_<field>_invalid`. A **closed-set** field stays a GraphQL
+`String` — Spock mints no enum type; the allowed values live in the
+generated TypeScript literal union and in the mutation description, and
+an off-set value is the `invalid` error above.
+
 ## 7. The conformance ladder
 
 - **Tier 1 — single-row core** (the v0 target): everything in §3–§6.
