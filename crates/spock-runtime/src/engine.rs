@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use rusqlite::types::Value as SqlValue;
 use rusqlite::Connection;
 use serde_json::{Map, Value as Json};
 use spock_lang::ddl::ddl;
@@ -54,7 +55,7 @@ pub fn open(contract: &Contract, path: Option<&Path>) -> Result<Connection, Engi
     };
 
     conn.pragma_update(None, "foreign_keys", true)?;
-    register_builtins(&conn)?;
+    register_builtins(contract, &conn)?;
     for statement in ddl(contract) {
         conn.execute_batch(&statement)?;
     }
@@ -105,7 +106,7 @@ pub(crate) const REFUSE_SENTINEL: &str = "SPOCK_REFUSE:";
 /// channel: it always errors when evaluated, so a guard that selects
 /// zero rows never fires it. Registered before DDL: the emitted DEFAULT
 /// clauses reference the mints.
-fn register_builtins(conn: &Connection) -> Result<(), EngineError> {
+fn register_builtins(contract: &Contract, conn: &Connection) -> Result<(), EngineError> {
     use rusqlite::functions::FunctionFlags;
     // non-deterministic by nature: neither DETERMINISTIC (they change per
     // call) nor DIRECTONLY (DEFAULT clauses must be able to call them)
@@ -130,7 +131,33 @@ fn register_builtins(conn: &Connection) -> Result<(), EngineError> {
             ))
         },
     )?;
+    // `spock_actor()` (RFD 0014): the current actor's key, NULL when
+    // anonymous. Registered ONLY when a table is `auth`-marked — so a body
+    // that calls it without an anchor fails at prepare ("no such function"),
+    // which *is* the identity-needs-a-consumer rule (E-ACT03). At load the
+    // value is NULL; `func::call` re-binds it per request (§4.3). DIRECTONLY
+    // like `spock_refuse`, NOT like `spock_now`: the actor is request-scoped
+    // state, correct only inside a `func::call`, never in a DEFAULT/CHECK the
+    // actor-blind floor evaluates (§4.2).
+    if contract.anchor().is_some() {
+        register_actor(conn, None)?;
+    }
     Ok(())
+}
+
+/// Bind `spock_actor()` to `actor` (NULL when anonymous) on `conn`. Called
+/// once at load (NULL) and re-called by `func::call` per request with the
+/// resolved actor — SQLite replaces the same-named function, and the single
+/// serialized connection makes the re-bind race-free (RFD 0014 §4.3).
+pub(crate) fn register_actor(conn: &Connection, actor: Option<SqlValue>) -> rusqlite::Result<()> {
+    use rusqlite::functions::FunctionFlags;
+    let value = actor.unwrap_or(SqlValue::Null);
+    conn.create_scalar_function(
+        "spock_actor",
+        0,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DIRECTONLY,
+        move |_| Ok(value.clone()),
+    )
 }
 
 /// Validate every fn's SQL escapes at load (§7.4), after DDL (tables must
@@ -473,6 +500,7 @@ mod tests {
             f,
             &mut conn,
             &serde_json::Map::from_iter([("body".to_string(), "hi".into())]),
+            None,
         )
         .expect("insert with omitted defaults");
         // a v7 uuid from the engine's own mint, not a hand-rolled v4
@@ -486,7 +514,7 @@ mod tests {
 
         // and the builtins are directly callable from a body
         let f = contract.fn_def("stamp").expect("declared");
-        let now = crate::func::call(&contract, f, &mut conn, &serde_json::Map::new())
+        let now = crate::func::call(&contract, f, &mut conn, &serde_json::Map::new(), None)
             .expect("spock_now() resolves in an escape body");
         time::OffsetDateTime::parse(now.as_str().unwrap(), &Rfc3339).expect("rfc 3339");
     }
@@ -645,6 +673,7 @@ mod tests {
             f,
             &mut conn,
             &serde_json::Map::from_iter([("username".to_string(), "maya".into())]),
+            None,
         )
         .expect_err("NULL under a required field is a contract break");
         assert_eq!(err.code, "internal");

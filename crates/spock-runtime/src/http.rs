@@ -12,6 +12,7 @@ use std::sync::Arc;
 use async_graphql::dynamic::Schema;
 use async_graphql::http::GraphiQLSource;
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::Html;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -47,7 +48,10 @@ pub fn router(app: Arc<App>) -> Result<Router, StartupError> {
     let schema = graphql::schema(app.clone())?;
     let gql = Router::new()
         .route("/graphql/v1", get(graphiql).post(graphql_post))
-        .with_state(schema);
+        .with_state(GqlState {
+            schema,
+            app: app.clone(),
+        });
     Ok(Router::new()
         .route("/~contract", get(contract))
         .route("/~health", get(health))
@@ -66,13 +70,31 @@ pub async fn serve(app: Arc<App>, listener: tokio::net::TcpListener) -> std::io:
     axum::serve(listener, router).await
 }
 
+/// The GraphQL route's state: the derived schema plus the app, so
+/// `graphql_post` can resolve the per-request actor from the header before
+/// executing (RFD 0014 §4.3). The schema carries the app in its own global
+/// data for resolvers; the *actor* rides `Request::data` per request, never
+/// the schema-global channel (§14.3 — that would bleed across requests).
+#[derive(Clone)]
+struct GqlState {
+    schema: Schema,
+    app: Arc<App>,
+}
+
 // POST /graphql/v1 — execute a query (§8.2); errors render as GraphQL's own
 // `errors[]`, not the §8.1 envelope
 async fn graphql_post(
-    State(schema): State<Schema>,
+    State(state): State<GqlState>,
+    headers: HeaderMap,
     Json(request): Json<async_graphql::Request>,
 ) -> Json<async_graphql::Response> {
-    Json(schema.execute(request).await)
+    let actor = resolve_actor(&state.app, &headers);
+    Json(
+        state
+            .schema
+            .execute(request.data(graphql::CurrentActor(actor)))
+            .await,
+    )
 }
 
 // GET /graphql/v1 — GraphiQL. Its JS/CSS load from a CDN: blank offline,
@@ -105,9 +127,11 @@ async fn not_found() -> ApiError {
 async fn rpc_call(
     State(app): State<Arc<App>>,
     Path(name): Path<String>,
+    headers: HeaderMap,
     body: String,
 ) -> Result<Json<JsonValue>, ApiError> {
     let f = resolve_fn(&app, &name)?;
+    let actor = resolve_actor(&app, &headers);
     let args: Map<String, JsonValue> = if body.trim().is_empty() {
         Map::new()
     } else {
@@ -120,7 +144,7 @@ async fn rpc_call(
             Err(e) => return Err(ApiError::bad_request(format!("malformed JSON body: {e}"))),
         }
     };
-    run_rpc(&app, f, &args)
+    run_rpc(&app, f, &args, actor)
 }
 
 // GET /rest/v1/rpc/{fn} — call a *read* fn with query-string arguments
@@ -132,9 +156,11 @@ async fn rpc_call(
 async fn rpc_get(
     State(app): State<Arc<App>>,
     Path(name): Path<String>,
+    headers: HeaderMap,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<JsonValue>, ApiError> {
     let f = resolve_fn(&app, &name)?;
+    let actor = resolve_actor(&app, &headers);
     if !f.readonly {
         return Err(ApiError::method_not_allowed(format!(
             "fn `{name}` is `mut`; call it with POST"
@@ -150,7 +176,7 @@ async fn rpc_get(
         };
         args.insert(key, value);
     }
-    run_rpc(&app, f, &args)
+    run_rpc(&app, f, &args, actor)
 }
 
 fn resolve_fn<'a>(app: &'a App, name: &str) -> Result<&'a spock_lang::ir::FnDef, ApiError> {
@@ -159,18 +185,31 @@ fn resolve_fn<'a>(app: &'a App, name: &str) -> Result<&'a spock_lang::ir::FnDef,
         .ok_or_else(|| ApiError::not_found(format!("no fn `{name}` in this contract")))
 }
 
+/// The current actor from the `X-Spock-Actor` header (RFD 0014 §4.3), the
+/// dev seam a verified JWT later fills. `None` (anonymous) when there is no
+/// anchor, no header, or a value that does not parse as the anchor's key
+/// type — canonicalized exactly like a by-key path segment so an uppercased
+/// or braced uuid still matches the stored lowercase-canonical key. Never a
+/// 404: a malformed header is anonymous, not an error.
+fn resolve_actor(app: &App, headers: &HeaderMap) -> Option<SqlValue> {
+    let anchor = app.contract.anchor()?;
+    let raw = headers.get("x-spock-actor")?.to_str().ok()?;
+    path_key_value(app, anchor, raw).ok()
+}
+
 /// The shared rpc execution tail: one locked call, arity-shaped envelope.
 fn run_rpc(
     app: &App,
     f: &spock_lang::ir::FnDef,
     args: &Map<String, JsonValue>,
+    actor: Option<SqlValue>,
 ) -> Result<Json<JsonValue>, ApiError> {
     let result = {
         let mut db = app
             .db
             .lock()
             .map_err(|_| ApiError::internal("db lock poisoned"))?;
-        func::call(&app.contract, f, &mut db, args)?
+        func::call(&app.contract, f, &mut db, args, actor)?
     };
     Ok(Json(match f.returns.arity {
         // list results share the REST list envelope

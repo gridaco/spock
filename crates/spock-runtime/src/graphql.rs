@@ -394,6 +394,19 @@ fn gql<E: std::fmt::Display>(e: E) -> async_graphql::Error {
     async_graphql::Error::new(e.to_string())
 }
 
+/// The per-request actor (RFD 0014), injected into each GraphQL request via
+/// `Request::data` by the HTTP layer (never the schema-global `.data`, which
+/// would bleed across requests — §14.3). Resolvers read it with
+/// `ctx.data_opt::<CurrentActor>()`.
+#[derive(Clone, Default)]
+pub struct CurrentActor(pub Option<SqlValue>);
+
+/// The current actor from the resolver context, or `None` when anonymous /
+/// unset. Cloned because `SqlValue` is not `Copy`.
+fn actor_of(ctx: &ResolverContext<'_>) -> Option<SqlValue> {
+    ctx.data_opt::<CurrentActor>().and_then(|a| a.0.clone())
+}
+
 fn app_of<'a>(ctx: &ResolverContext<'a>) -> Result<&'a Arc<App>, async_graphql::Error> {
     ctx.data::<Arc<App>>()
 }
@@ -1004,9 +1017,10 @@ fn fn_field(contract: &Contract, f: &FnDef) -> Field {
                 }
                 args.insert(p.name.clone(), v.deserialize::<Json>()?);
             }
+            let actor = actor_of(&ctx);
             let result = {
                 let mut db = app.db.lock().map_err(|_| gql("db lock poisoned"))?;
-                func::call(contract, f, &mut db, &args).map_err(api_error_to_gql)?
+                func::call(contract, f, &mut db, &args, actor).map_err(api_error_to_gql)?
             };
             let scalar = f.returns.scalar;
             let wrap = |v: Json| -> async_graphql::Result<FieldValue<'static>> {

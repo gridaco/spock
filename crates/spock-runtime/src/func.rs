@@ -54,6 +54,7 @@ pub fn call(
     f: &FnDef,
     conn: &mut Connection,
     args: &Map<String, Json>,
+    actor: Option<SqlValue>,
 ) -> Result<Json, ApiError> {
     // unknown arguments are rejected; missing required ones refuse early
     for name in args.keys() {
@@ -76,6 +77,15 @@ pub fn call(
             }
         };
         binds.push((format!(":{}", p.name), value));
+    }
+
+    // re-bind `spock_actor()` to this request's actor before the tx opens
+    // (RFD 0014 §4.3). Only when an anchor exists — otherwise the builtin
+    // is unregistered and no validated body references it (E-ACT03). The
+    // single serialized connection makes the per-call re-bind race-free.
+    if contract.anchor().is_some() {
+        crate::engine::register_actor(conn, actor)
+            .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
     }
 
     // one transaction spans the whole body: IMMEDIATE for `mut` fns (the
@@ -345,6 +355,88 @@ seed {
             .iter()
             .map(|(k, v)| (k.to_string(), v.clone()))
             .collect()
+    }
+
+    /// Test shim (shadows `super::call`): these fixtures declare no anchor,
+    /// so every call runs anonymous — the actor is always `None`. Actor-aware
+    /// behavior is covered by the runtime's dedicated actor tests.
+    fn call(
+        contract: &Contract,
+        f: &FnDef,
+        conn: &mut Connection,
+        args: &Map<String, Json>,
+    ) -> Result<Json, ApiError> {
+        super::call(contract, f, conn, args, None)
+    }
+
+    #[test]
+    fn spock_actor_reads_the_request_actor() {
+        // a natural (text) anchor key lets the test control the actor value
+        let contract = spock_lang::compile(
+            "auth table account { key handle: text }\n\
+             fn whoami() -> text? { unchecked sql(\"SELECT spock_actor()\") }\n\
+             seed { account { handle: \"maya\" } }",
+        )
+        .expect("compiles");
+        let mut conn = engine::open(&contract, None).expect("loads");
+        let f = contract.fn_def("whoami").unwrap();
+        // anonymous (no actor) → NULL
+        assert!(super::call(&contract, f, &mut conn, &Map::new(), None)
+            .unwrap()
+            .is_null());
+        // impersonated → the actor's key, verbatim
+        let maya = super::call(
+            &contract,
+            f,
+            &mut conn,
+            &Map::new(),
+            Some(SqlValue::Text("maya".into())),
+        )
+        .unwrap();
+        assert_eq!(maya, "maya");
+    }
+
+    #[test]
+    fn spock_actor_stamps_a_written_column() {
+        let contract = spock_lang::compile(
+            "auth table account { key handle: text }\n\
+             table note { key id: uuid = auto\n owner: account\n body: text }\n\
+             mut fn add_note(body: text) -> note {\n\
+               unchecked sql(\"INSERT INTO note (owner, body) VALUES (spock_actor(), :body) RETURNING *\")\n\
+             }\n\
+             seed { account { handle: \"maya\" } }",
+        )
+        .expect("compiles");
+        let mut conn = engine::open(&contract, None).expect("loads");
+        let f = contract.fn_def("add_note").unwrap();
+        let note = super::call(
+            &contract,
+            f,
+            &mut conn,
+            &args(&[("body", "hi".into())]),
+            Some(SqlValue::Text("maya".into())),
+        )
+        .unwrap();
+        // the actor was stamped into the stored `owner` column, unforgeable
+        assert_eq!(note["owner"], "maya");
+        assert_eq!(note["body"], "hi");
+    }
+
+    #[test]
+    fn spock_actor_without_an_anchor_fails_at_load() {
+        // E-ACT03: with no `auth table`, spock_actor() is never registered, so
+        // a body that calls it fails to prepare at load — identity needs a
+        // consumer, enforced mechanically.
+        let contract = spock_lang::compile(
+            "table t { key id: uuid = auto }\n\
+             fn whoami() -> uuid? { unchecked sql(\"SELECT spock_actor()\") }",
+        )
+        .expect("compiles");
+        let err = engine::open(&contract, None).expect_err("no anchor → spock_actor unresolved");
+        assert!(
+            format!("{err}").contains("spock_actor"),
+            "expected a 'no such function: spock_actor' load error, got: {err}"
+        );
     }
 
     fn user_id(contract: &Contract, conn: &mut Connection, username: &str) -> String {
