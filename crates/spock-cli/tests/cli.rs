@@ -49,6 +49,25 @@ fn check_renders_diagnostics_and_fails() {
 }
 
 #[test]
+fn check_is_the_full_load_proof() {
+    // `check` now materializes in memory, so a body that compiles but
+    // cannot load (an unknown table) fails at check time (RFD 0013) —
+    // no server ever starts.
+    let dir = std::env::temp_dir().join("spock-cli-test-loadproof");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = write_program(
+        &dir,
+        "table t { key id: uuid = auto }\n\
+         fn broken() -> [t] { unchecked sql(\"SELECT * FROM ghost\") }",
+    );
+    spock()
+        .args(["check", path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no such table: ghost"));
+}
+
+#[test]
 fn build_emits_the_contract() {
     let dir = std::env::temp_dir().join("spock-cli-test-build");
     std::fs::create_dir_all(&dir).unwrap();

@@ -138,13 +138,37 @@ fn quote_list(names: &[String]) -> String {
 fn inline_validator(contract: &Contract, fn_name: &str, columns: &[&str]) -> Option<String> {
     let f = contract.fn_def(fn_name)?;
     let body = f.sql.first()?;
-    let map: HashMap<&str, &str> = f
+    let map: HashMap<&str, String> = f
         .params
         .iter()
         .map(|p| p.name.as_str())
-        .zip(columns.iter().copied())
+        .zip(columns.iter().map(|c| format!("\"{c}\"")))
         .collect();
     Some(substitute_params(strip_select(body), &map).trim().to_string())
+}
+
+/// The `SELECT <expr>` that evaluates a field validator with its parameter
+/// bound to the field's *literal default* — the load's default-vs-check
+/// proof (RFD 0013 L-G). `None` when the field has no check, no default, or
+/// an engine-minted (`auto`/`now`) default (a `check` on which is E042).
+pub fn field_check_default_probe(
+    contract: &Contract,
+    table_name: &str,
+    field_name: &str,
+) -> Option<String> {
+    let field = contract.table(table_name)?.field(field_name)?;
+    let fn_name = field.check.as_ref()?;
+    let value = match field.default.as_ref()? {
+        DefaultValue::Auto | DefaultValue::Now => return None,
+        lit => default_sql(lit),
+    };
+    let f = contract.fn_def(fn_name)?;
+    let param = f.params.first()?;
+    let map: HashMap<&str, String> = std::iter::once((param.name.as_str(), value)).collect();
+    let expr = substitute_params(strip_select(f.sql.first()?), &map)
+        .trim()
+        .to_string();
+    Some(format!("SELECT {expr}"))
 }
 
 /// Everything after the leading `SELECT` (skipping leading whitespace and
@@ -183,7 +207,7 @@ fn strip_select(sql: &str) -> &str {
 /// (longest-match identifier run) and never inside a single-quoted string
 /// literal (RFD 0013 L-Q). Slices are copied verbatim, so UTF-8 members
 /// survive.
-fn substitute_params(expr: &str, map: &HashMap<&str, &str>) -> String {
+fn substitute_params(expr: &str, map: &HashMap<&str, String>) -> String {
     let bytes = expr.as_bytes();
     let mut out = String::with_capacity(expr.len());
     let mut i = 0;
@@ -212,11 +236,7 @@ fn substitute_params(expr: &str, map: &HashMap<&str, &str>) -> String {
                     j += 1;
                 }
                 match map.get(&expr[start..j]) {
-                    Some(col) => {
-                        out.push('"');
-                        out.push_str(col);
-                        out.push('"');
-                    }
+                    Some(replacement) => out.push_str(replacement),
                     None => out.push_str(&expr[i..j]),
                 }
                 i = j;

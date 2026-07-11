@@ -59,8 +59,39 @@ pub fn open(contract: &Contract, path: Option<&Path>) -> Result<Connection, Engi
         conn.execute_batch(&statement)?;
     }
     validate_fns(contract, &conn)?;
+    check_defaults(contract, &conn)?;
     seed(contract, &mut conn)?;
     Ok(conn)
+}
+
+/// Prove every field validator against its own literal default (RFD 0013
+/// L-G). SQLite does not evaluate a `DEFAULT` against a `CHECK` until a row
+/// uses the default, so a default that violates its own validator would
+/// ship silently and reject every insert that omits the field (which the
+/// generated insert type marks optional). Evaluate it once, at load.
+fn check_defaults(contract: &Contract, conn: &Connection) -> Result<(), EngineError> {
+    for table in &contract.tables {
+        for field in &table.fields {
+            let Some(probe) =
+                spock_lang::ddl::field_check_default_probe(contract, &table.name, &field.name)
+            else {
+                continue;
+            };
+            // NULL passes a CHECK (tri-valued logic); only an explicit
+            // false (0) fails the load.
+            let value: Option<i64> = conn.query_row(&probe, [], |row| row.get(0))?;
+            if value == Some(0) {
+                return Err(EngineError::Fn {
+                    name: field.check.clone().unwrap_or_default(),
+                    message: format!(
+                        "the default for `{}.{}` fails its own `check` — every insert that omits `{}` would be rejected",
+                        table.name, field.name, field.name
+                    ),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The message prefix `spock_refuse` errors with — the raise channel's
@@ -377,6 +408,27 @@ mod tests {
 
     fn open_ok(fn_src: &str) {
         let contract = spock_lang::compile(&format!("{BASE}{fn_src}")).expect("compiles");
+        open(&contract, None).expect("loads");
+    }
+
+    #[test]
+    fn default_is_proven_against_its_check() {
+        // a literal default that violates its own field validator fails the
+        // load — SQLite would not catch it until the first defaulted insert
+        let contract = spock_lang::compile(
+            "fn nonempty(s: text) -> bool { unchecked sql(\"SELECT length(:s) > 0\") }\n\
+             table t { key id: uuid = auto\n reason: text check nonempty = \"\" }",
+        )
+        .expect("compiles");
+        let err = open(&contract, None).unwrap_err().to_string();
+        assert!(err.contains("fails its own `check`"), "{err}");
+
+        // a member-valid default loads clean
+        let contract = spock_lang::compile(
+            "fn nz(s: text) -> bool { unchecked sql(\"SELECT length(:s) > 0\") }\n\
+             table t { key id: uuid = auto\n reason: text check nz = \"ok\" }",
+        )
+        .expect("compiles");
         open(&contract, None).expect("loads");
     }
 

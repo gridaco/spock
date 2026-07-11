@@ -64,6 +64,15 @@ fn main() -> ExitCode {
             let Some(contract) = load(&file) else {
                 return ExitCode::FAILURE;
             };
+            // The full load proof (RFD 0013): materialize the schema in
+            // memory, validate every fn body and inlined check, prove
+            // defaults against their checks, and replay the seed — so
+            // anything `spock run` would reject at load surfaces here,
+            // without starting a server.
+            if let Err(e) = spock_runtime::engine::open(&contract, None) {
+                eprintln!("error: {e}");
+                return ExitCode::FAILURE;
+            }
             // every v0 fn statement is an SQL escape — the unchecked count
             // is the ledger (RFD 0011 §4), trending to zero as native
             // bodies arrive
