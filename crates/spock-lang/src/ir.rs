@@ -66,6 +66,14 @@ pub struct Field {
     pub check: Option<String>,
 }
 
+impl Field {
+    /// A `= me` field (RFD 0014): the current actor, stamped server-side and
+    /// removed from the client insert/update surface.
+    pub fn is_actor_default(&self) -> bool {
+        matches!(self.default, Some(DefaultValue::Actor))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Type {
@@ -127,6 +135,18 @@ pub enum DefaultValue {
     Bool {
         value: bool,
     },
+}
+
+impl DefaultValue {
+    /// A default the engine mints at insert (`auto`/`now`/`me`): there is no
+    /// literal to validate against a `check`, and no DDL DEFAULT for `me`
+    /// (RFD 0013/0014).
+    pub fn is_engine_minted(&self) -> bool {
+        matches!(
+            self,
+            DefaultValue::Auto | DefaultValue::Now | DefaultValue::Actor
+        )
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
