@@ -27,6 +27,7 @@ pub enum TokenKind {
 
     // active keywords (§2.3)
     KwTable,
+    KwAuth,
     KwRecord,
     KwFn,
     KwMut,
@@ -48,6 +49,7 @@ pub enum TokenKind {
     KwUuid,
     KwAuto,
     KwNow,
+    KwMe,
     KwTrue,
     KwFalse,
 
@@ -84,6 +86,7 @@ impl TokenKind {
 fn keyword_text(kind: &TokenKind) -> &'static str {
     match kind {
         TokenKind::KwTable => "table",
+        TokenKind::KwAuth => "auth",
         TokenKind::KwRecord => "record",
         TokenKind::KwFn => "fn",
         TokenKind::KwMut => "mut",
@@ -105,6 +108,7 @@ fn keyword_text(kind: &TokenKind) -> &'static str {
         TokenKind::KwUuid => "uuid",
         TokenKind::KwAuto => "auto",
         TokenKind::KwNow => "now",
+        TokenKind::KwMe => "me",
         TokenKind::KwTrue => "true",
         TokenKind::KwFalse => "false",
         _ => unreachable!("not a keyword"),
@@ -136,6 +140,7 @@ const RESERVED: &[&str] = &[
 fn keyword(word: &str) -> Option<TokenKind> {
     Some(match word {
         "table" => TokenKind::KwTable,
+        "auth" => TokenKind::KwAuth,
         "record" => TokenKind::KwRecord,
         "fn" => TokenKind::KwFn,
         "mut" => TokenKind::KwMut,
@@ -157,6 +162,7 @@ fn keyword(word: &str) -> Option<TokenKind> {
         "uuid" => TokenKind::KwUuid,
         "auto" => TokenKind::KwAuto,
         "now" => TokenKind::KwNow,
+        "me" => TokenKind::KwMe,
         "true" => TokenKind::KwTrue,
         "false" => TokenKind::KwFalse,
         _ => return None,
