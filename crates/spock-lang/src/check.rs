@@ -65,6 +65,15 @@ impl Checker {
         for (table, errors) in tables.iter_mut().zip(derived) {
             table.errors = errors;
         }
+        // Derived codes are the runtime routing keys (a CHECK message carries
+        // only the constraint name); the underscore-join is non-injective, so
+        // enforce contract-wide uniqueness (RFD 0013 L-C, E044). Only on an
+        // otherwise-clean program: a duplicate table name (E001) already
+        // makes two tables derive the same codes — that is the E001, not a
+        // second, spurious collision.
+        if self.diags.is_empty() {
+            self.check_derived_uniqueness(&tables, &spans);
+        }
 
         // Seed (§4 E020–E028), against the lowered tables.
         let seed = self.check_seed(file, &tables);
@@ -73,6 +82,10 @@ impl Checker {
         // errors are attached — the `!` clause validates against them.
         let records = self.check_records(file, &table_names);
         let fns = self.check_fns(file, &tables, &records, &table_names);
+
+        // Phase D: validator-fn `check` references (RFD 0013 E041/E042).
+        // Runs after fns exist and ref-key types are resolved (L-M).
+        self.check_checks(file, &tables, &fns);
 
         Contract {
             spock: "v0".into(),
@@ -122,6 +135,14 @@ impl Checker {
                         );
                         continue;
                     }
+                    ast::TableItem::Check { span, .. } => {
+                        self.error(
+                            "E033",
+                            format!("record `{rname}` cannot declare a row check (records are wire shapes, not storage)"),
+                            *span,
+                        );
+                        continue;
+                    }
                     ast::TableItem::Field(f) => f,
                 };
                 declared += 1;
@@ -160,6 +181,13 @@ impl Checker {
                     self.error(
                         "E033",
                         format!("`on delete` on record field `{}` (records hold no references)", f.name.name),
+                        c.span,
+                    );
+                }
+                if let Some(c) = &f.check {
+                    self.error(
+                        "E033",
+                        format!("`check` on record field `{}` (records are not stored, so nothing enforces it)", f.name.name),
                         c.span,
                     );
                 }
@@ -383,12 +411,202 @@ impl Checker {
         fns
     }
 
+    /// L-C (RFD 0013): every derived error code must be unique across the
+    /// whole contract. The templates underscore-join field names, which is
+    /// not injective (field `a_b` vs a check/unique on `(a, b)`), and the
+    /// constraint name is the sole runtime routing channel for CHECKs — a
+    /// collision would misroute. Rejecting is the only sound guard (no
+    /// separator can be injective when identifiers may contain `_`).
+    fn check_derived_uniqueness(&mut self, tables: &[Table], spans: &HashMap<String, Span>) {
+        let mut seen: HashMap<&str, &str> = HashMap::new();
+        for table in tables {
+            for err in &table.errors {
+                if let Some(prev) = seen.insert(err.code.as_str(), table.name.as_str()) {
+                    self.error(
+                        "E044",
+                        format!(
+                            "derived error code `{}` is claimed by both `{prev}` and `{}` \
+                             — rename a field, group, or table to disambiguate",
+                            err.code, table.name
+                        ),
+                        spans.get(&table.name).copied().unwrap_or(Span::new(0, 0)),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Phase D (RFD 0013): resolve and validate every `check` reference —
+    /// field checks and row checks — against the validated fns and the
+    /// resolved field value types.
+    fn check_checks(&mut self, file: &ast::File, tables: &[Table], fns: &[FnDef]) {
+        for decl in &file.tables {
+            let Some(lowered) = tables.iter().find(|t| t.name == decl.name.name) else {
+                continue;
+            };
+            for item in &decl.items {
+                match item {
+                    ast::TableItem::Field(f) => {
+                        let Some(check) = &f.check else { continue };
+                        let Some(field) = lowered.field(&f.name.name) else {
+                            continue;
+                        };
+                        if matches!(field.ty, Type::Set { .. }) {
+                            self.error(
+                                "E042",
+                                format!("`check` on `{}`, which is a closed-set type — the set already validates itself", f.name.name),
+                                check.span,
+                            );
+                            continue;
+                        }
+                        if matches!(field.default, Some(DefaultValue::Auto | DefaultValue::Now)) {
+                            self.error(
+                                "E042",
+                                format!("`check` on `{}`, which is defaulted `auto`/`now` — an engine-minted value cannot be proven against a validator", f.name.name),
+                                check.span,
+                            );
+                            continue;
+                        }
+                        let field_ty = resolve_value_type(&field.ty, tables).clone();
+                        self.validate_validator(check, fns, &[field_ty], tables);
+                    }
+                    ast::TableItem::Check { fields, fn_name, .. } => {
+                        // the group was already validated (fields exist) in
+                        // lower_table; resolve each field's value type
+                        let mut expected: Vec<Type> = Vec::new();
+                        let mut ok = true;
+                        for id in fields {
+                            match lowered.field(&id.name) {
+                                Some(field) => {
+                                    expected.push(resolve_value_type(&field.ty, tables).clone())
+                                }
+                                None => ok = false,
+                            }
+                        }
+                        if ok {
+                            self.validate_validator(fn_name, fns, &expected, tables);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// The validator-fn laws (RFD 0013 §3.3): the referenced fn exists
+    /// (E041), is a read fn returning `bool` from a single SELECT whose body
+    /// is one boolean expression (no clauses/subquery — L-K) over
+    /// deterministic functions (L-N), with one param per checked field,
+    /// matched positionally by value type (E042).
+    fn validate_validator(
+        &mut self,
+        reference: &ast::Ident,
+        fns: &[FnDef],
+        expected: &[Type],
+        tables: &[Table],
+    ) {
+        let name = &reference.name;
+        let span = reference.span;
+        let Some(f) = fns.iter().find(|f| &f.name == name) else {
+            self.error(
+                "E041",
+                format!("`check` names unknown fn `{name}` (declare `fn {name}(...) -> bool {{ ... }}`)"),
+                span,
+            );
+            return;
+        };
+        if !f.readonly {
+            self.error(
+                "E042",
+                format!("validator `{name}` is a `mut fn`; a validator must be an unmarked (read) fn"),
+                span,
+            );
+        }
+        if !(f.returns.scalar && f.returns.of == "bool" && f.returns.arity == FnArity::One) {
+            self.error(
+                "E042",
+                format!("validator `{name}` must return `bool` (a single boolean value)"),
+                span,
+            );
+        }
+        if f.sql.len() != 1 {
+            self.error(
+                "E042",
+                format!("validator `{name}` must be a single SELECT statement (RFD 0013)"),
+                span,
+            );
+        }
+        if let Some(sql) = f.sql.first() {
+            let words = sql_words(sql);
+            const CLAUSES: [&str; 8] = [
+                "FROM", "WHERE", "JOIN", "GROUP", "ORDER", "LIMIT", "HAVING", "UNION",
+            ];
+            if let Some(kw) = words.iter().find(|w| CLAUSES.contains(&w.as_str())) {
+                self.error(
+                    "E042",
+                    format!("validator `{name}` body has a `{kw}` clause; a validator is `SELECT <one boolean expression>` — move the condition into the expression, e.g. `SELECT :a <> :b`, not `SELECT 1 WHERE :a <> :b`"),
+                    span,
+                );
+            } else if words.iter().filter(|w| *w == "SELECT").count() > 1 {
+                self.error(
+                    "E042",
+                    format!("validator `{name}` body contains a subquery; a validator is `SELECT <one boolean expression>`"),
+                    span,
+                );
+            }
+            const NONDET: [&str; 4] = ["RANDOM", "RANDOMBLOB", "SPOCK_NOW", "SPOCK_UUID"];
+            let uses_now = sql.to_ascii_lowercase().contains("'now'");
+            if let Some(fun) = words.iter().find(|w| NONDET.contains(&w.as_str())) {
+                self.error(
+                    "E042",
+                    format!("validator `{name}` calls the non-deterministic function `{}` — a CHECK must be deterministic (RFD 0013)", fun.to_ascii_lowercase()),
+                    span,
+                );
+            } else if uses_now {
+                self.error(
+                    "E042",
+                    format!("validator `{name}` uses `'now'` — a CHECK must be deterministic (RFD 0013)"),
+                    span,
+                );
+            }
+        }
+        if f.params.len() != expected.len() {
+            self.error(
+                "E042",
+                format!(
+                    "validator `{name}` takes {} parameter(s) but the check names {} field(s)",
+                    f.params.len(),
+                    expected.len()
+                ),
+                span,
+            );
+            return;
+        }
+        for (i, (param, want)) in f.params.iter().zip(expected).enumerate() {
+            // a ref param binds the target key's scalar — resolve both sides
+            let got = resolve_value_type(&param.ty, tables);
+            if got != want {
+                self.error(
+                    "E042",
+                    format!(
+                        "validator `{name}` parameter {} has type {}, but the checked field's value type is {}",
+                        i + 1,
+                        type_name(got),
+                        type_name(want)
+                    ),
+                    span,
+                );
+            }
+        }
+    }
+
     fn lower_table(&mut self, decl: &ast::TableDecl, table_names: &HashSet<&str>) -> Option<Table> {
         let mut fields: Vec<Field> = Vec::new();
         let mut field_spans: HashMap<String, Span> = HashMap::new();
         let mut inline_keys: Vec<(String, Span)> = Vec::new();
         let mut composite_keys: Vec<(&Vec<ast::Ident>, Span)> = Vec::new();
         let mut unique_groups: Vec<&Vec<ast::Ident>> = Vec::new();
+        let mut row_checks: Vec<(&Vec<ast::Ident>, &ast::Ident, Span)> = Vec::new();
         // Declared field count, even where lowering failed — E012 must not
         // cascade onto a field whose type had its own diagnostic.
         let mut declared_fields = 0usize;
@@ -418,6 +636,11 @@ impl Checker {
                 }
                 ast::TableItem::Key { fields, span } => composite_keys.push((fields, *span)),
                 ast::TableItem::Unique { fields, .. } => unique_groups.push(fields),
+                ast::TableItem::Check {
+                    fields,
+                    fn_name,
+                    span,
+                } => row_checks.push((fields, fn_name, *span)),
             }
         }
 
@@ -492,11 +715,30 @@ impl Checker {
             .filter(|g| !g.is_empty())
             .collect();
 
+        // Row checks (RFD 0013): the field group is validated here (fields
+        // exist, no duplicates); the validator fn reference itself is
+        // resolved in `check_checks` (Phase D), which needs the fns.
+        let checks: Vec<TableCheck> = row_checks
+            .iter()
+            .filter_map(|(group, fn_name, span)| {
+                let group = self.validated_group(group, *span, &fields, "row check", "E011");
+                if group.is_empty() {
+                    None
+                } else {
+                    Some(TableCheck {
+                        fields: group,
+                        fn_name: fn_name.name.clone(),
+                    })
+                }
+            })
+            .collect();
+
         Some(Table {
             name: decl.name.name.clone(),
             key,
             fields,
             uniques,
+            checks,
             errors: Vec::new(), // filled in phase B
         })
     }
@@ -616,6 +858,9 @@ impl Checker {
             optional: f.optional,
             unique: f.unique,
             default,
+            // the reference is resolved and validated in `check_checks`
+            // (Phase D), after fns and ref-key types exist (RFD 0013 L-M)
+            check: f.check.as_ref().map(|i| i.name.clone()),
         })
     }
 
@@ -1002,6 +1247,68 @@ impl Checker {
     }
 }
 
+/// A type's name for a diagnostic (value types are always builtins here).
+fn type_name(ty: &Type) -> &'static str {
+    match ty {
+        Type::Text => "text",
+        Type::Int => "int",
+        Type::Float => "float",
+        Type::Bool => "bool",
+        Type::Timestamp => "timestamp",
+        Type::Uuid => "uuid",
+        Type::Set { .. } => "a closed set",
+        Type::Ref { .. } => "a reference",
+    }
+}
+
+/// The uppercased identifier-ish words of a SQL string, outside single-
+/// quoted literals and comments — enough to police a validator body's
+/// clause and determinism laws (RFD 0013 L-K/L-N) without parsing SQL.
+fn sql_words(sql: &str) -> Vec<String> {
+    let bytes = sql.as_bytes();
+    let mut words = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\'' {
+                        if bytes.get(i + 1) == Some(&b'\'') {
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b'-' if bytes.get(i + 1) == Some(&b'-') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 2;
+            }
+            c if c.is_ascii_alphabetic() || c == b'_' => {
+                let start = i;
+                while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                    i += 1;
+                }
+                words.push(sql[start..i].to_ascii_uppercase());
+            }
+            _ => i += 1,
+        }
+    }
+    words
+}
+
 /// Resolve a type to its value type against a table list (checker-side
 /// mirror of [`Contract::value_type`], usable before the contract exists).
 fn resolve_value_type<'a>(ty: &'a Type, tables: &'a [Table]) -> &'a Type {
@@ -1075,10 +1382,11 @@ fn derive_errors(table: &Table, all: &[Table]) -> Vec<DerivedError> {
             });
         }
     }
-    // Closed-set membership (RFD 0013): the field's value must be one of
-    // the declared members. Same code the derived CHECK is named with.
+    // Value constraints (RFD 0013), all kind `invalid`, all named with the
+    // code the derived CHECK carries: closed-set membership, then field
+    // validators, then row validators.
     for field in &table.fields {
-        if matches!(field.ty, Type::Set { .. }) {
+        if matches!(field.ty, Type::Set { .. }) || field.check.is_some() {
             errors.push(DerivedError {
                 code: format!("{t}_{}_invalid", field.name),
                 kind: ErrorKind::Invalid,
@@ -1086,6 +1394,14 @@ fn derive_errors(table: &Table, all: &[Table]) -> Vec<DerivedError> {
                 status: 422,
             });
         }
+    }
+    for check in &table.checks {
+        errors.push(DerivedError {
+            code: format!("{t}_{}_invalid", check.fields.join("_")),
+            kind: ErrorKind::Invalid,
+            fields: check.fields.clone(),
+            status: 422,
+        });
     }
     let restricted = all.iter().any(|other| {
         other.fields.iter().any(|f| {
@@ -1202,6 +1518,102 @@ mod tests {
                    fn f(s: \"a\" | \"b\") -> t { unchecked sql(\"SELECT 1\") }"),
             ["E036"]
         );
+    }
+
+    #[test]
+    fn validator_checks_derive_invalid_and_enforce_their_laws() {
+        // a valid field check + row check compile and derive `invalid` codes
+        let contract = compile(
+            "fn nonempty(s: text) -> bool { unchecked sql(\"SELECT length(:s) > 0\") }\n\
+             fn distinct_pair(a: uuid, b: uuid) -> bool { unchecked sql(\"SELECT :a <> :b\") }\n\
+             table user { key id: uuid = auto\n username: text check nonempty }\n\
+             table follow { key (follower, target)\n follower: user\n target: user\n\
+               check (follower, target) distinct_pair }",
+        )
+        .unwrap();
+        assert!(contract
+            .table("user")
+            .unwrap()
+            .error_for(ErrorKind::Invalid, &["username"])
+            .is_some());
+        assert!(contract
+            .table("follow")
+            .unwrap()
+            .error_for(ErrorKind::Invalid, &["follower", "target"])
+            .is_some());
+        assert_eq!(
+            contract.table("user").unwrap().field("username").unwrap().check.as_deref(),
+            Some("nonempty")
+        );
+    }
+
+    // a well-formed validator, reused by the law tests below
+    const NONEMPTY: &str = "fn nonempty(s: text) -> bool { unchecked sql(\"SELECT length(:s) > 0\") }\n";
+
+    #[test]
+    fn validator_law_violations() {
+        // E041: the check names a fn that does not exist
+        assert_eq!(
+            codes("table t { key id: uuid = auto\n s: text check nope }"),
+            ["E041"]
+        );
+        // E042: a `mut fn` is not a validator
+        assert_eq!(
+            codes("mut fn v(s: text) -> bool { unchecked sql(\"SELECT length(:s) > 0\") }\n\
+                   table t { key id: uuid = auto\n s: text check v }"),
+            ["E042"]
+        );
+        // E042: a validator must return bool
+        assert_eq!(
+            codes("fn v(s: text) -> int { unchecked sql(\"SELECT length(:s)\") }\n\
+                   table t { key id: uuid = auto\n s: text check v }"),
+            ["E042"]
+        );
+        // E042: a WHERE clause cannot inline into a CHECK (L-K)
+        assert_eq!(
+            codes("fn v(s: text) -> bool { unchecked sql(\"SELECT 1 WHERE length(:s) > 0\") }\n\
+                   table t { key id: uuid = auto\n s: text check v }"),
+            ["E042"]
+        );
+        // E042: a non-deterministic function cannot live in a CHECK (L-N)
+        assert_eq!(
+            codes("fn v(s: text) -> bool { unchecked sql(\"SELECT :s > spock_now()\") }\n\
+                   table t { key id: uuid = auto\n s: text check v }"),
+            ["E042"]
+        );
+        // E042: param type must match the field's value type
+        assert_eq!(
+            codes("fn v(n: int) -> bool { unchecked sql(\"SELECT :n > 0\") }\n\
+                   table t { key id: uuid = auto\n s: text check v }"),
+            ["E042"]
+        );
+        // E042: a check may not attach to a set-typed field
+        assert_eq!(
+            codes(&format!("{NONEMPTY}table t {{ key id: uuid = auto\n s: \"a\" | \"b\" check nonempty }}")),
+            ["E042"]
+        );
+        // E042: a check may not attach to an auto/now-defaulted field
+        assert_eq!(
+            codes(&format!("{NONEMPTY}table t {{ key id: uuid = auto\n created: timestamp check nonempty = now }}")),
+            ["E042"]
+        );
+        // arity: a field check binds exactly one param
+        assert_eq!(
+            codes("fn v(a: uuid, b: uuid) -> bool { unchecked sql(\"SELECT :a <> :b\") }\n\
+                   table t { key id: uuid = auto\n s: text check v }"),
+            ["E042"]
+        );
+    }
+
+    #[test]
+    fn e044_rejects_colliding_derived_codes() {
+        // a field named `a_b` and a row check on (a, b) both derive
+        // `t_a_b_invalid` — the routing channel is not injective (L-C)
+        let src = "fn nz(x: int) -> bool { unchecked sql(\"SELECT :x > 0\") }\n\
+                   fn dp(a: int, b: int) -> bool { unchecked sql(\"SELECT :a <> :b\") }\n\
+                   table t { key id: uuid = auto\n a: int\n b: int\n a_b: int check nz\n\
+                     check (a, b) dp }";
+        assert!(codes(src).contains(&"E044"), "{:?}", codes(src));
     }
 
     #[test]

@@ -5,7 +5,9 @@
 use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use serde_json::{Map, Value as Json};
-use spock_lang::ir::{Contract, DefaultValue, DerivedError, ErrorKind, OnDelete, Table, Type};
+use spock_lang::ir::{
+    Contract, DefaultValue, DerivedError, ErrorKind, Field, OnDelete, Table, Type,
+};
 
 use crate::error::ApiError;
 use crate::value::{json_to_sql, sql_to_json};
@@ -410,7 +412,7 @@ fn map_conflict_error(table: &Table, e: rusqlite::Error) -> ApiError {
                 .iter()
                 .find(|d| d.kind == ErrorKind::Invalid && d.code == code)
             {
-                return ApiError::derived(&table.name, derr, invalid_message(table, derr));
+                return invalid_error(table, derr);
             }
         }
     }
@@ -430,21 +432,32 @@ fn check_constraint_code(code: std::os::raw::c_int, msg: &str) -> Option<&str> {
     }
 }
 
-/// A human message for an `invalid` derived error. A closed-set field names
-/// its allowed values; a validator-`check` names the fn (RFD 0013 §5).
-fn invalid_message(table: &Table, derr: &DerivedError) -> String {
-    if let [field_name] = derr.fields.as_slice() {
-        if let Some(field) = table.field(field_name) {
-            if let Type::Set { values } = &field.ty {
-                return format!(
-                    "`{}.{field_name}` must be one of: {}",
-                    table.name,
-                    values.join(", ")
-                );
+/// The `invalid` ApiError for a value-constraint violation (RFD 0013 §5).
+/// The message names what failed: a closed-set field lists its allowed
+/// values; a field or row validator names its fn (the rule a client can
+/// look up in the contract's `Field.check` / `Table.checks`).
+fn invalid_error(table: &Table, derr: &DerivedError) -> ApiError {
+    let message = if let [field_name] = derr.fields.as_slice() {
+        match table.field(field_name) {
+            Some(Field { ty: Type::Set { values }, .. }) => {
+                format!("`{}.{field_name}` must be one of: {}", table.name, values.join(", "))
             }
+            Some(Field { check: Some(check), .. }) => {
+                format!("`{}.{field_name}` failed check `{check}`", table.name)
+            }
+            _ => format!("`{}` value constraint `{}` failed", table.name, derr.code),
         }
-    }
-    format!("`{}` value constraint `{}` failed", table.name, derr.code)
+    } else if let Some(rc) = table.checks.iter().find(|c| c.fields == derr.fields) {
+        format!(
+            "`{}` ({}) failed check `{}`",
+            table.name,
+            derr.fields.join(", "),
+            rc.fn_name
+        )
+    } else {
+        format!("`{}` value constraint `{}` failed", table.name, derr.code)
+    };
+    ApiError::derived(&table.name, derr, message)
 }
 
 /// Map an engine delete error. Direct restricts are pre-checked; a cascade
@@ -559,7 +572,7 @@ pub(crate) fn map_fn_engine_error(contract: &Contract, e: rusqlite::Error) -> Ap
                     .find(|d| d.kind == ErrorKind::Invalid && d.code == check_code)
                     .map(|d| (t, d))
             }) {
-                return ApiError::derived(&table.name, derr, invalid_message(table, derr));
+                return invalid_error(table, derr);
             }
         }
     }

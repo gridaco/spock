@@ -396,6 +396,12 @@ fn emit_row(out: &mut String, contract: &Contract, table: &Table) {
     let _ = writeln!(out, "\n/** One `{}` row, as reads return it. */", table.name);
     let _ = writeln!(out, "export interface {} {{", table.name);
     for f in &table.fields {
+        // a checked field carries its validator's name (RFD 0013) — the
+        // rule the value obeys, visible to the reader; the set case is
+        // already the literal union
+        if let Some(check) = &f.check {
+            let _ = writeln!(out, "  /** check: {check} */");
+        }
         let null = if f.optional { " | null" } else { "" };
         let _ = writeln!(out, "  {}: {}{null};", f.name, value_ts(contract, &f.ty));
     }

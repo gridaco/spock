@@ -760,3 +760,52 @@ table media {
     assert_no_errors(&resp);
     assert_eq!(resp["data"]["insert_media_one"]["status"], "ready");
 }
+
+/// Validator fns (RFD 0013): a field check and a row check enforce on the
+/// floor with the derived `<t>_<fields>_invalid` error naming the fn in the
+/// message, and the validator stays callable as an ordinary read fn.
+#[tokio::test]
+async fn validator_checks() {
+    const P: &str = r#"
+fn valid_username(name: text) -> bool { unchecked sql("SELECT :name NOT GLOB '*[^a-z0-9._]*' AND length(:name) BETWEEN 1 AND 30") }
+fn distinct_pair(a: uuid, b: uuid) -> bool { unchecked sql("SELECT :a <> :b") }
+table user { key id: uuid = auto  username: text check valid_username unique }
+table follow {
+  key (follower, target)
+  follower: user
+  target: user on delete cascade
+  check (follower, target) distinct_pair
+}
+"#;
+    let contract = spock_lang::compile(P).expect("program compiles");
+    let conn = engine::open(&contract, None).expect("engine opens");
+    let app = Arc::new(App::new(contract, conn));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { http::serve(app, listener).await.unwrap() });
+    let base = format!("http://{addr}");
+
+    // field check: a bad username on the floor → user_username_invalid, and
+    // the message names the validator fn
+    let resp = gql(&base, r#"mutation { insert_user_one(object: { username: "Bad Name!" }) { id } }"#, Value::Null).await;
+    assert_eq!(resp["errors"][0]["extensions"]["code"], "user_username_invalid");
+    assert_eq!(resp["errors"][0]["extensions"]["kind"], "invalid");
+    assert!(resp["errors"][0]["message"].as_str().unwrap().contains("valid_username"));
+
+    // a good one, and a second user for the row check
+    let a = gql(&base, r#"mutation { insert_user_one(object: { username: "maya" }) { id } }"#, Value::Null).await;
+    assert_no_errors(&a);
+    let id = a["data"]["insert_user_one"]["id"].as_str().unwrap().to_string();
+
+    // row check: a self-follow on the floor → follow_follower_target_invalid
+    let resp = gql(&base, &format!(r#"mutation {{ insert_follow_one(object: {{ follower: "{id}", target: "{id}" }}) {{ follower {{ id }} }} }}"#), Value::Null).await;
+    assert_eq!(resp["errors"][0]["extensions"]["code"], "follow_follower_target_invalid");
+    assert_eq!(resp["errors"][0]["extensions"]["fields"], json!(["follower", "target"]));
+
+    // the validator is an ordinary read fn on the Query root
+    let resp = gql(&base, r#"{ valid_username(name: "noor.k") }"#, Value::Null).await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["valid_username"], true);
+    let resp = gql(&base, r#"{ valid_username(name: "NOPE!") }"#, Value::Null).await;
+    assert_eq!(resp["data"]["valid_username"], false);
+}

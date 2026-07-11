@@ -30,8 +30,21 @@ pub struct Table {
     pub fields: Vec<Field>,
     /// Multi-field unique groups (single-field uniques live on the field).
     pub uniques: Vec<Vec<String>>,
+    /// Cross-column row checks (RFD 0013): each names a field group and a
+    /// validator fn, inline-expanded into one CHECK. Additive under
+    /// `spock: "v0"`; parallel to `uniques`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<TableCheck>,
     /// Derived errors (§6.1). Never hand-written.
     pub errors: Vec<DerivedError>,
+}
+
+/// A row check (RFD 0013): a validator fn applied to a field group.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TableCheck {
+    pub fields: Vec<String>,
+    #[serde(rename = "fn")]
+    pub fn_name: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -42,6 +55,10 @@ pub struct Field {
     pub optional: bool,
     pub unique: bool,
     pub default: Option<DefaultValue>,
+    /// A field-level validator fn (RFD 0013): its name, inline-expanded
+    /// into a `<table>_<field>_invalid` CHECK. Additive under `spock: "v0"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -419,6 +436,7 @@ mod tests {
                         optional: false,
                         unique: false,
                         default: Some(DefaultValue::Auto),
+                        check: None,
                     },
                     Field {
                         name: "invited_by".into(),
@@ -429,9 +447,11 @@ mod tests {
                         optional: true,
                         unique: false,
                         default: None,
+                        check: None,
                     },
                 ],
                 uniques: vec![],
+                checks: vec![],
                 errors: vec![DerivedError {
                     code: "user_already_exists".into(),
                     kind: ErrorKind::Key,

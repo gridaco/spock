@@ -334,8 +334,57 @@ impl Parser {
                     span: start.to(end),
                 })
             }
+            // `check (` at item position → a row check (RFD 0013)
+            (TokenKind::KwCheck, TokenKind::LParen) => self.check_decl(),
+            // any other `check` at item position is a misplaced/misordered
+            // check — name both legal forms and the order law (L-D)
+            (TokenKind::KwCheck, _) => Err(Diagnostic::new(
+                "L010",
+                "`check` here starts a row check and must name its fields: `check (a, b) fn_name`; a field check is written after a field's type, before `unique`: `name: type check fn_name`",
+                self.peek().span,
+            )),
             _ => Ok(TableItem::Field(self.field_decl()?)),
         }
+    }
+
+    // check_decl = "check" "(" ident "," ident { "," ident } ")" ident
+    // — a row check (RFD 0013), mirroring unique_decl but naming a fn. Its
+    // own group parse (not ident_group) so a single-field `check(v)` — the
+    // parenthesized field check — gets a message that names the fix (L-D).
+    fn check_decl(&mut self) -> Result<TableItem, Diagnostic> {
+        let start = self.expect(TokenKind::KwCheck, "`check`")?.span;
+        self.expect(TokenKind::LParen, "`(`")?;
+        let mut fields = vec![self.ident("a field name")?];
+        if self.peek().kind == TokenKind::RParen {
+            return Err(Diagnostic::new(
+                "L010",
+                "a field check takes a bare fn name (`check valid_x`), no parentheses; a parenthesized `check (a, b) fn` is a row check naming two or more fields",
+                self.peek().span,
+            ));
+        }
+        self.expect(TokenKind::Comma, "`,` (a row check names two or more fields)")?;
+        fields.push(self.ident("a field name")?);
+        while self.peek().kind == TokenKind::Comma {
+            self.bump();
+            fields.push(self.ident("a field name")?);
+        }
+        let group_end = self.expect(TokenKind::RParen, "`)`")?.span;
+        // The validator name is a bare trailing ident with no delimiter, so
+        // omitting it would swallow the next field's name — guard the common
+        // case (a field line follows) with a message at the group (L-D).
+        if matches!(self.peek().kind, TokenKind::Ident(_)) && self.peek2().kind == TokenKind::Colon {
+            return Err(Diagnostic::new(
+                "L010",
+                "row check is missing its validator fn name: write `check (a, b) fn_name`",
+                group_end,
+            ));
+        }
+        let fn_name = self.ident("a validator fn name")?;
+        Ok(TableItem::Check {
+            fields,
+            span: start.to(fn_name.span),
+            fn_name,
+        })
     }
 
     // "(" ident "," ident { "," ident } ")"  — two or more (§3)
@@ -372,6 +421,38 @@ impl Parser {
             true
         } else {
             false
+        };
+
+        // `check fn_name` — the field validator (RFD 0013), between the
+        // `?` and `unique`. `check (` here belongs to the *next* table item
+        // (a row check), so require `(` not follow — exactly the `unique (`
+        // disambiguation. Inline SQL gets a targeted message (L-D).
+        let check = if self.peek().kind == TokenKind::KwCheck
+            && self.peek2().kind != TokenKind::LParen
+        {
+            self.bump();
+            if let TokenKind::Str(_) = self.peek().kind {
+                return Err(Diagnostic::new(
+                    "L010",
+                    "`check` references a validator fn by name (`check valid_x`); inline SQL is not allowed — declare `fn valid_x(...) -> bool { ... }`",
+                    self.peek().span,
+                ));
+            }
+            let name = self.ident("a validator fn name")?;
+            // `check fn(a, b)` — the function-call spelling of a row check
+            // (a field check is never followed by `(`). Steer to the real
+            // form (L-D).
+            if self.peek().kind == TokenKind::LParen {
+                return Err(Diagnostic::new(
+                    "L010",
+                    "a row check names its fields first, then the validator: `check (a, b) fn_name` — not a function call `check fn(a, b)`",
+                    self.peek().span,
+                ));
+            }
+            end = name.span;
+            Some(name)
+        } else {
+            None
         };
 
         // `unique` here is the field modifier; `unique (` would be the next
@@ -421,6 +502,7 @@ impl Parser {
             ty,
             optional,
             unique,
+            check,
             default,
             on_delete,
             span: start.to(end),
@@ -681,6 +763,53 @@ mod tests {
         // a dangling `|` wants another member
         let d = parse_err("table t { key id: uuid = auto\n s: \"a\" | }");
         assert!(d.message.contains("set member"), "{}", d.message);
+    }
+
+    #[test]
+    fn parses_field_and_row_checks() {
+        let file = parse_ok(
+            "table user {\n\
+               key id: uuid = auto\n\
+               username: text check valid_username unique\n\
+             }\n\
+             table follow {\n\
+               key (follower, target)\n\
+               follower: user\n\
+               target: user\n\
+               check (follower, target) distinct_pair\n\
+             }",
+        );
+        let TableItem::Field(username) = &file.tables[0].items[1] else {
+            panic!("expected field");
+        };
+        assert!(matches!(&username.check, Some(i) if i.name == "valid_username"));
+        assert!(username.unique); // check comes before unique
+        let TableItem::Check { fields, fn_name, .. } = &file.tables[1].items[3] else {
+            panic!("expected a row check");
+        };
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fn_name.name, "distinct_pair");
+    }
+
+    #[test]
+    fn check_misspellings_get_targeted_messages() {
+        // parenthesized field check → steered to the bare-name / row-check forms
+        let d = parse_err("table t { key id: uuid = auto\n s: text check(v) }");
+        assert!(d.message.contains("bare fn name"), "{}", d.message);
+        // inline SQL in check position → steered to declare a fn
+        let d = parse_err("table t { key id: uuid = auto\n s: text check \"len > 0\" }");
+        assert!(d.message.contains("validator fn"), "{}", d.message);
+        // the fn-call spelling at item position
+        let d = parse_err("table t { key id: uuid = auto\n a: t\n check distinct(a) }");
+        assert!(d.message.contains("row check"), "{}", d.message);
+        // an omitted validator swallows the next field → targeted message
+        let d = parse_err(
+            "table t { key (a, b)\n a: t\n b: t\n check (a, b)\n c: timestamp = now }",
+        );
+        assert!(d.message.contains("missing its validator"), "{}", d.message);
+        // the misordered `unique check`
+        let d = parse_err("table t { key id: uuid = auto\n s: text unique check v }");
+        assert!(d.message.contains("field check"), "{}", d.message);
     }
 
     #[test]

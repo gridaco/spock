@@ -36,6 +36,13 @@ pub enum TableItem {
         fields: Vec<Ident>,
         span: Span,
     },
+    /// `check (a, b, ...) fn_name` — a cross-column row check naming a
+    /// validator fn (RFD 0013). Mirrors `unique (...)`.
+    Check {
+        fields: Vec<Ident>,
+        fn_name: Ident,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -45,6 +52,9 @@ pub struct FieldDecl {
     pub ty: TypeExpr,
     pub optional: bool,
     pub unique: bool,
+    /// `check fn_name` — a field-level validator fn (RFD 0013), between
+    /// the type and `unique` in the fixed modifier order.
+    pub check: Option<Ident>,
     pub default: Option<DefaultExpr>,
     pub on_delete: Option<OnDeleteClause>,
     pub span: Span,

@@ -253,11 +253,13 @@ is real: a 409 (key/unique/restricted) is a conflict with *existing state* —
 the same payload could succeed against a different database. A value-constraint
 violation is intrinsic to the payload: no state makes `""` a legal body. That
 is the `required`/`type_mismatch` family. The envelope and GraphQL extensions
-carry `{code, kind: "invalid", table, fields, check?}` — `check` names the
-validator fn for validator-derived errors (absent for set violations). Message
-templates: `comment.body failed check valid_body`; `follow (follower, target)
-failed check distinct_pair`; `media.status must be one of: pending, ready,
-failed`.
+keep the frozen §8.1 shape `{code, kind: "invalid", table, fields}`; the
+**message** names what failed — a set lists its values, a validator names its
+fn: `media.status must be one of: pending, ready, failed`; `comment.body failed
+check valid_body`; `follow (follower, target) failed check distinct_pair`. A
+client that wants the validator programmatically reads `Field.check` /
+`Table.checks` from the contract (keyed by table + fields) — so the envelope
+gains no field, and its shape stays frozen.
 
 **The cost, recorded honestly.** One `check` per field plus name-only routing
 means a validator that bundles two rules (`valid_username` is charset AND
@@ -268,9 +270,9 @@ can no longer render "too long" vs "empty" from the code alone. This is the
 price of engine-level enforcement across the floor, and it is not forced: an
 author who needs per-rule client-distinguishable errors keeps the fn refusals
 (the mechanism is not retired — the sweep merely stops using refusals where a
-check now compensates). The `check` name on the wire and the contract's
-`Field.check` let a client find the validator; distinguishing *which conjunct*
-failed is what refusals are still for.
+check now compensates). The message names the validator and the contract's
+`Field.check` lets a client find it; distinguishing *which conjunct* failed is
+what refusals are still for.
 
 ## 6. What this deliberately does not do
 

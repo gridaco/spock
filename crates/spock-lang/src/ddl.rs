@@ -5,6 +5,8 @@
 //! INSERTs may omit defaulted columns and get the same values the write
 //! path would mint.
 
+use std::collections::HashMap;
+
 use crate::ir::{Contract, DefaultValue, Type};
 
 /// Emit `CREATE TABLE` statements for every table, in declaration order.
@@ -37,10 +39,12 @@ pub fn ddl(contract: &Contract) -> Vec<String> {
                 lines.push(format!("  UNIQUE ({})", quote_list(group)));
             }
 
-            // Closed-set membership → a named CHECK whose name is the
-            // derived `<table>_<field>_invalid` code (RFD 0013): the name
-            // is the whole runtime routing channel. Members are string
-            // literals, escaped by doubling `'` (the DEFAULT-clause law).
+            // Value constraints → named CHECKs whose names are the derived
+            // `<table>_<fields>_invalid` codes (RFD 0013): the name is the
+            // whole runtime routing channel. Emitted after the UNIQUE block,
+            // before the foreign keys; field order, then row checks.
+            //
+            // Closed-set membership: members escaped by doubling `'`.
             for field in &table.fields {
                 if let Type::Set { values } = &field.ty {
                     let list = values
@@ -51,6 +55,29 @@ pub fn ddl(contract: &Contract) -> Vec<String> {
                     lines.push(format!(
                         "  CONSTRAINT \"{}_{}_invalid\" CHECK (\"{}\" IN ({list}))",
                         table.name, field.name, field.name
+                    ));
+                }
+            }
+            // Field validators: inline-expand the fn body against the column.
+            for field in &table.fields {
+                if let Some(fn_name) = &field.check {
+                    if let Some(clause) = inline_validator(contract, fn_name, &[field.name.as_str()])
+                    {
+                        lines.push(format!(
+                            "  CONSTRAINT \"{}_{}_invalid\" CHECK ({clause})",
+                            table.name, field.name
+                        ));
+                    }
+                }
+            }
+            // Row validators: inline-expand against the named columns.
+            for check in &table.checks {
+                let cols: Vec<&str> = check.fields.iter().map(String::as_str).collect();
+                if let Some(clause) = inline_validator(contract, &check.fn_name, &cols) {
+                    lines.push(format!(
+                        "  CONSTRAINT \"{}_{}_invalid\" CHECK ({clause})",
+                        table.name,
+                        check.fields.join("_")
                     ));
                 }
             }
@@ -101,6 +128,109 @@ fn quote_list(names: &[String]) -> String {
         .map(|n| format!("\"{n}\""))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Inline-expand a validator fn body into a CHECK expression (RFD 0013):
+/// strip the leading `SELECT`, then substitute each `:param` for its
+/// positionally-bound column. The checker guarantees the fn is a single
+/// `SELECT <boolean expression>` with one param per column, so this is a
+/// pure textual rewrite. `None` only on contract drift (missing fn).
+fn inline_validator(contract: &Contract, fn_name: &str, columns: &[&str]) -> Option<String> {
+    let f = contract.fn_def(fn_name)?;
+    let body = f.sql.first()?;
+    let map: HashMap<&str, &str> = f
+        .params
+        .iter()
+        .map(|p| p.name.as_str())
+        .zip(columns.iter().copied())
+        .collect();
+    Some(substitute_params(strip_select(body), &map).trim().to_string())
+}
+
+/// Everything after the leading `SELECT` (skipping leading whitespace and
+/// comments). Falls back to the whole string if no `SELECT` leads.
+fn strip_select(sql: &str) -> &str {
+    let bytes = sql.as_bytes();
+    let mut i = 0;
+    loop {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if bytes[i..].starts_with(b"--") {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if bytes[i..].starts_with(b"/*") {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i += 2;
+            continue;
+        }
+        break;
+    }
+    if i + 6 <= bytes.len() && sql[i..i + 6].eq_ignore_ascii_case("SELECT") {
+        &sql[i + 6..]
+    } else {
+        &sql[i..]
+    }
+}
+
+/// Substitute `:param` tokens for quoted column names, token-aware
+/// (longest-match identifier run) and never inside a single-quoted string
+/// literal (RFD 0013 L-Q). Slices are copied verbatim, so UTF-8 members
+/// survive.
+fn substitute_params(expr: &str, map: &HashMap<&str, &str>) -> String {
+    let bytes = expr.as_bytes();
+    let mut out = String::with_capacity(expr.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\'' {
+                        if bytes.get(i + 1) == Some(&b'\'') {
+                            i += 2;
+                            continue;
+                        }
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                out.push_str(&expr[start..i]);
+            }
+            b':' => {
+                let start = i + 1;
+                let mut j = start;
+                while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_') {
+                    j += 1;
+                }
+                match map.get(&expr[start..j]) {
+                    Some(col) => {
+                        out.push('"');
+                        out.push_str(col);
+                        out.push('"');
+                    }
+                    None => out.push_str(&expr[i..j]),
+                }
+                i = j;
+            }
+            _ => {
+                let start = i;
+                while i < bytes.len() && bytes[i] != b'\'' && bytes[i] != b':' {
+                    i += 1;
+                }
+                out.push_str(&expr[start..i]);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -194,6 +324,35 @@ mod tests {
                 "CONSTRAINT \"media_kind_invalid\" CHECK (\"kind\" IN ('image', 'it''s video'))"
             ),
             "{sql}"
+        );
+    }
+
+    #[test]
+    fn emits_validator_check_by_inline_expansion() {
+        let contract = compile(
+            "fn valid_username(name: text) -> bool { unchecked sql(\"SELECT :name NOT GLOB '*[^a-z0-9._]*' AND length(:name) BETWEEN 1 AND 30\") }\n\
+             fn distinct_pair(a: uuid, b: uuid) -> bool { unchecked sql(\"SELECT :a <> :b\") }\n\
+             table user { key id: uuid = auto\n username: text check valid_username }\n\
+             table follow { key (follower, target)\n follower: user\n target: user\n\
+               check (follower, target) distinct_pair }",
+        )
+        .unwrap();
+        let statements = ddl(&contract);
+        // the field validator inlines its body with :name → \"username\"
+        let user = statements.iter().find(|s| s.contains("\"user\"")).unwrap();
+        assert!(
+            user.contains(
+                "CONSTRAINT \"user_username_invalid\" CHECK (\"username\" NOT GLOB '*[^a-z0-9._]*' AND length(\"username\") BETWEEN 1 AND 30)"
+            ),
+            "{user}"
+        );
+        // the row validator inlines both params positionally
+        let follow = statements.iter().find(|s| s.contains("\"follow\"")).unwrap();
+        assert!(
+            follow.contains(
+                "CONSTRAINT \"follow_follower_target_invalid\" CHECK (\"follower\" <> \"target\")"
+            ),
+            "{follow}"
         );
     }
 
