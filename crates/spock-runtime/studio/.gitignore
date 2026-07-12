@@ -1,0 +1,30 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+
+# Build output is NOT committed. `pnpm build` regenerates studio/dist, which
+# rust-embed embeds into the binary at `cargo build` time. The folder itself is
+# kept (via .gitkeep) so the embed compiles on a fresh checkout; run `pnpm build`
+# before `cargo build`/`cargo test` to get a working /~studio.
+dist/*
+!dist/.gitkeep
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

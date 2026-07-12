@@ -18,6 +18,10 @@ tokio.workspace = true
 uuid.workspace = true
 time.workspace = true
 thiserror.workspace = true
+# Embeds the compiled studio SPA (studio/dist) into the binary. `debug-embed`
+# forces embedding in debug builds too, so `spock run` serves it from any cwd
+# (matching the old include_str! behavior) — the console stays fully offline.
+rust-embed = { version = "8", features = ["debug-embed", "mime-guess"] }
 
 [dev-dependencies]
 reqwest.workspace = true

@@ -197,6 +197,21 @@ seed {
 }
 "#;
 
+// a uuid-keyed anchor with a unique text label — the instagram shape, where
+// the picker's label (username) is a *different* value from the header key (id)
+const PERSONA_PROGRAM: &str = r#"
+auth table user {
+  key id: uuid = auto
+  username: text unique
+  bio: text?
+}
+seed {
+  maya = user { username: "maya", bio: "photographer" }
+  luis = user { username: "luis" }
+  noor = user { username: "noor" }
+}
+"#;
+
 async fn start_program(program: &str) -> String {
     let contract = spock_lang::compile(program).expect("program compiles");
     let conn = engine::open(&contract, None).expect("engine opens and seeds");
@@ -343,6 +358,174 @@ async fn the_rpc_surface() {
     // a mut fn refuses the safe method: 405, never a write
     let (status, body) = get(&base, "/rest/v1/rpc/rename_user?user=x&username=y").await;
     assert_eq!((status, error_code(&body)), (405, "bad_request"));
+}
+
+async fn whoami(base: &str, actor: Option<&str>) -> Value {
+    let mut req = reqwest::Client::new().get(format!("{base}/~whoami"));
+    if let Some(a) = actor {
+        req = req.header("X-Spock-Actor", a);
+    }
+    let resp = req.send().await.expect("GET whoami");
+    resp.json::<Value>().await.unwrap_or(Value::Null)
+}
+
+#[tokio::test]
+async fn personas_and_whoami() {
+    // -- uuid-keyed anchor: label is the unique text field, actor is the key --
+    let base = start_program(PERSONA_PROGRAM).await;
+
+    let (status, personas) = get(&base, "/~personas").await;
+    assert_eq!(status, 200);
+    let arr = personas.as_array().expect("personas is an array");
+    assert_eq!(arr.len(), 3);
+    let maya = arr
+        .iter()
+        .find(|p| p["label"] == "maya")
+        .expect("maya persona");
+    let maya_id = maya["actor"]
+        .as_str()
+        .expect("uuid actor string")
+        .to_string();
+    // the actor is the uuid key, not the username label
+    assert!(
+        uuid::Uuid::parse_str(&maya_id).is_ok(),
+        "actor is the uuid key, got {maya_id}"
+    );
+
+    // no header → anonymous
+    let (status, who) = get(&base, "/~whoami").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        who,
+        json!({ "actor": null, "anonymous": true, "known": false })
+    );
+
+    // a valid, seeded actor key → known
+    assert_eq!(
+        whoami(&base, Some(&maya_id)).await,
+        json!({ "actor": maya_id, "anonymous": false, "known": true })
+    );
+
+    // the classic mistake: sending the username (the picker's *label*) when the
+    // key is a uuid — a present-but-unparseable value, NOT anonymous, NOT known
+    assert_eq!(
+        whoami(&base, Some("maya")).await,
+        json!({ "actor": null, "anonymous": false, "known": false })
+    );
+
+    // a well-formed but unseeded uuid → not anonymous, not known
+    let ghost = uuid::Uuid::now_v7().to_string();
+    assert_eq!(
+        whoami(&base, Some(&ghost)).await,
+        json!({ "actor": ghost, "anonymous": false, "known": false })
+    );
+
+    // -- text-keyed anchor: no unique text field → label falls back to the key --
+    let base = start_program(ACTOR_PROGRAM).await;
+    let (_, personas) = get(&base, "/~personas").await;
+    let arr = personas.as_array().unwrap();
+    assert_eq!(arr.len(), 2);
+    // `account` has key handle:text and name:text? (not unique) → label = handle
+    let maya = arr.iter().find(|p| p["actor"] == "maya").expect("maya");
+    assert_eq!(maya["label"], "maya");
+    assert_eq!(
+        whoami(&base, Some("maya")).await,
+        json!({ "actor": "maya", "anonymous": false, "known": true })
+    );
+    assert_eq!(
+        whoami(&base, Some("ghost")).await,
+        json!({ "actor": "ghost", "anonymous": false, "known": false })
+    );
+
+    // -- no anchor at all → empty picker, always-anonymous whoami -------------
+    let base = start().await; // the instagram PROGRAM: `user` is NOT an auth table
+    let (status, personas) = get(&base, "/~personas").await;
+    assert_eq!((status, personas), (200, json!([])));
+    assert_eq!(
+        whoami(&base, Some("maya")).await,
+        json!({ "actor": null, "anonymous": true, "known": false })
+    );
+}
+
+/// True when the studio bundle hasn't been built — `dist/` is gitignored, so a
+/// fresh checkout embeds nothing and `/~studio` 404s until `pnpm build` runs.
+fn studio_unbuilt(resp: &reqwest::Response) -> bool {
+    if resp.status().as_u16() == 404 {
+        eprintln!(
+            "skipping studio test: bundle not built — run `pnpm build` in crates/spock-runtime/studio"
+        );
+        true
+    } else {
+        false
+    }
+}
+
+#[tokio::test]
+async fn studio_is_served() {
+    // the console (a Vite/React SPA, studio/dist) is embedded in the binary via
+    // rust-embed and served same-origin at /~studio
+    let base = start().await;
+    let resp = reqwest::get(format!("{base}/~studio"))
+        .await
+        .expect("GET /~studio");
+    // dist/ is gitignored; on a fresh checkout the bundle isn't built yet
+    if studio_unbuilt(&resp) {
+        return;
+    }
+    assert_eq!(resp.status().as_u16(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(ct.contains("text/html"), "served as html, got `{ct}`");
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("<title>spock studio</title>"),
+        "the studio page is served"
+    );
+    // the SPA loads its bundle same-origin under the /~studio/ base (no CDN)
+    assert!(
+        body.contains("/~studio/assets/"),
+        "the page references its embedded bundle"
+    );
+}
+
+#[tokio::test]
+async fn studio_assets_are_served() {
+    // the hashed bundle (JS/CSS/fonts) is embedded too, so the console is fully
+    // offline; an unknown asset path is a genuine 404.
+    let base = start().await;
+    let resp = reqwest::get(format!("{base}/~studio"))
+        .await
+        .expect("GET /~studio");
+    if studio_unbuilt(&resp) {
+        return;
+    }
+    let index = resp.text().await.unwrap();
+    // pull the built JS bundle url out of the served index.html
+    let i = index.find("src=\"/~studio/").expect("script src present");
+    let after = &index[i + 5..];
+    let url = &after[..after.find('"').expect("closing quote")];
+    assert!(url.ends_with(".js"), "found a js bundle, got `{url}`");
+
+    let asset = reqwest::get(format!("{base}{url}"))
+        .await
+        .expect("GET bundle");
+    assert_eq!(asset.status().as_u16(), 200);
+    let ct = asset
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    assert!(ct.contains("javascript"), "js mimetype, got `{ct}`");
+
+    let missing = reqwest::get(format!("{base}/~studio/assets/does-not-exist.js"))
+        .await
+        .expect("GET missing");
+    assert_eq!(missing.status().as_u16(), 404);
 }
 
 #[tokio::test]

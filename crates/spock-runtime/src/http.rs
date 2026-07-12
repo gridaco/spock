@@ -12,11 +12,12 @@ use std::sync::Arc;
 use async_graphql::dynamic::Schema;
 use async_graphql::http::GraphiQLSource;
 use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
-use axum::response::Html;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use rusqlite::types::Value as SqlValue;
+use rusqlite::types::{Value as SqlValue, ValueRef};
+use rust_embed::RustEmbed;
 use serde_json::{json, Map, Value as JsonValue};
 use spock_lang::ir::{FnArity, Table, Type};
 
@@ -27,6 +28,9 @@ use crate::{func, write};
 
 const DEFAULT_LIMIT: u32 = 50;
 const MAX_LIMIT: u32 = 200;
+/// The dev persona picker caps its projection so a large dev database cannot
+/// blow up the dropdown (RFD 0015 §6.1).
+const PERSONA_CAP: u32 = 100;
 
 /// Startup failures: schema-derivation collisions (§8.2 naming laws) or a
 /// table claiming a protocol-owned REST segment. Both abort load — never
@@ -55,6 +59,11 @@ pub fn router(app: Arc<App>) -> Result<Router, StartupError> {
     Ok(Router::new()
         .route("/~contract", get(contract))
         .route("/~health", get(health))
+        .route("/~studio", get(studio_index))
+        .route("/~studio/", get(studio_index))
+        .route("/~studio/{*path}", get(studio_asset))
+        .route("/~personas", get(personas))
+        .route("/~whoami", get(whoami))
         .route("/rest/v1/rpc/{name}", post(rpc_call).get(rpc_get))
         .route("/rest/v1/{table}", get(list_rows))
         .route("/rest/v1/{table}/{id}", get(get_row))
@@ -114,6 +123,157 @@ async fn contract(State(app): State<Arc<App>>) -> Json<spock_lang::ir::Contract>
 
 async fn health() -> Json<JsonValue> {
     Json(json!({ "ok": true }))
+}
+
+// GET /~studio — the human-developer console (RFD 0015). A Vite/React SPA
+// (crates/spock-runtime/studio) built to studio/dist, committed and embedded in
+// the binary via rust-embed, served same-origin so the console is fully offline
+// (no CDN): every request it makes to /~contract, /rest, /rpc, /~personas,
+// /~whoami rides `X-Spock-Actor` with no CORS. A pure consumer of the contract —
+// it never defines or edits schema.
+#[derive(RustEmbed)]
+#[folder = "studio/dist"]
+struct StudioAssets;
+
+async fn studio_index() -> Response {
+    serve_studio_asset("index.html")
+}
+
+// GET /~studio/{*path} — the built assets (hashed JS/CSS, bundled fonts). The
+// SPA has no client-side routes, so an unknown path is a genuine 404.
+async fn studio_asset(Path(path): Path<String>) -> Response {
+    serve_studio_asset(&path)
+}
+
+fn serve_studio_asset(path: &str) -> Response {
+    match StudioAssets::get(path) {
+        Some(file) => (
+            [(axum::http::header::CONTENT_TYPE, file.metadata.mimetype())],
+            file.data.into_owned(),
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+// GET /~personas — the dev actor picker (RFD 0014 §4.3, RFD 0015 §6.1): the
+// anchor table's rows projected to `[{ actor, label }]`. `actor` is the row's
+// scalar key (E-ACT02) — verbatim what goes in `X-Spock-Actor`; `label` is the
+// first unique text field, else the key itself. No `auth table` → `[]` (the
+// caller shows "impersonation unavailable", not a broken dropdown).
+async fn personas(State(app): State<Arc<App>>) -> Result<Json<JsonValue>, ApiError> {
+    let Some(anchor) = app.contract.anchor() else {
+        return Ok(Json(JsonValue::Array(Vec::new())));
+    };
+    let key = &anchor.key[0];
+    let key_field = anchor.field(key).expect("checked: anchor key field exists");
+    // the display label: the first unique text column, distinct from the key
+    let label_field = anchor.fields.iter().find(|f| {
+        f.name != *key && f.unique && matches!(app.contract.value_type(&f.ty), Type::Text)
+    });
+
+    let projection = match label_field {
+        Some(l) => format!("\"{key}\", \"{}\"", l.name),
+        None => format!("\"{key}\""),
+    };
+    let sql = format!(
+        "SELECT {projection} FROM \"{}\" ORDER BY \"{key}\" ASC LIMIT {PERSONA_CAP}",
+        anchor.name
+    );
+
+    let db = app
+        .db
+        .lock()
+        .map_err(|_| ApiError::internal("db lock poisoned"))?;
+    let mut stmt = db
+        .prepare(&sql)
+        .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
+
+    let mut out = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?
+    {
+        let key_ref = row
+            .get_ref(0)
+            .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
+        let actor = crate::value::sql_to_json(&app.contract, key_field, key_ref);
+        let label = match label_field {
+            Some(l) => {
+                let l_ref = row
+                    .get_ref(1)
+                    .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
+                match crate::value::sql_to_json(&app.contract, l, l_ref) {
+                    JsonValue::Null => label_string(&actor),
+                    text => text,
+                }
+            }
+            None => label_string(&actor),
+        };
+        out.push(json!({ "actor": actor, "label": label }));
+    }
+    Ok(Json(JsonValue::Array(out)))
+}
+
+// GET /~whoami — the dev-tier actor echo (RFD 0014 §4.3, RFD 0015 §6.2), the
+// mirror of GoTrue's `GET /user`. Never rejects. `anonymous` keys on header
+// *presence*, not on `resolve_actor` (which collapses absent / no-anchor /
+// present-but-unparseable into `None`): a wrong-type value — the username sent
+// where the key is a uuid — must read `anonymous: false, known: false`, the
+// debugging signal whoami exists to give. `known` = the key exists as a row.
+async fn whoami(
+    State(app): State<Arc<App>>,
+    headers: HeaderMap,
+) -> Result<Json<JsonValue>, ApiError> {
+    let raw = headers.get("x-spock-actor").and_then(|v| v.to_str().ok());
+    let (Some(anchor), Some(raw)) = (app.contract.anchor(), raw) else {
+        // no anchor, or no header → anonymous
+        return Ok(Json(
+            json!({ "actor": null, "anonymous": true, "known": false }),
+        ));
+    };
+    // header present but not the key type → invalid, not anonymous
+    let Ok(actor) = path_key_value(&app, anchor, raw) else {
+        return Ok(Json(
+            json!({ "actor": null, "anonymous": false, "known": false }),
+        ));
+    };
+
+    let known = {
+        let db = app
+            .db
+            .lock()
+            .map_err(|_| ApiError::internal("db lock poisoned"))?;
+        let sql = format!(
+            "SELECT 1 FROM \"{}\" WHERE \"{}\" = ?1 LIMIT 1",
+            anchor.name, anchor.key[0]
+        );
+        let mut stmt = db
+            .prepare(&sql)
+            .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
+        stmt.exists([&actor])
+            .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?
+    };
+
+    let key_field = anchor
+        .field(&anchor.key[0])
+        .expect("checked: anchor key field exists");
+    let actor = crate::value::sql_to_json(&app.contract, key_field, ValueRef::from(&actor));
+    Ok(Json(
+        json!({ "actor": actor, "anonymous": false, "known": known }),
+    ))
+}
+
+/// A picker label as a string: a text column renders verbatim; a non-text key
+/// (a uuid/int) renders its JSON scalar as text, so a label is never null.
+fn label_string(actor: &JsonValue) -> JsonValue {
+    match actor {
+        JsonValue::String(s) => JsonValue::String(s.clone()),
+        other => JsonValue::String(other.to_string()),
+    }
 }
 
 async fn not_found() -> ApiError {
