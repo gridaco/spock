@@ -219,11 +219,15 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
     let mut objects: Vec<Object> = Vec::new();
     for table in &contract.tables {
         let mut obj = Object::new(table.name.clone());
+        // the author's `///` doc becomes the type's GraphQL description (RFD 0016)
+        if let Some(doc) = &table.doc {
+            obj = obj.description(doc.clone());
+        }
         let mut claimed_fields: HashMap<String, String> = HashMap::new();
 
         for field in &table.fields {
             claimed_fields.insert(field.name.clone(), "a declared field".into());
-            obj = obj.field(match &field.ty {
+            let mut fld = match &field.ty {
                 Type::Ref { table: target, .. } => forward_ref_field(
                     table.name.clone(),
                     field.name.clone(),
@@ -234,7 +238,11 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
                     field.name.clone(),
                     scalar_type_ref(contract, &field.ty, field.optional),
                 ),
-            });
+            };
+            if let Some(doc) = &field.doc {
+                fld = fld.description(doc.clone());
+            }
+            obj = obj.field(fld);
         }
 
         for (child, ref_field) in contract.inbound_refs(&table.name) {
@@ -274,11 +282,16 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
     // Pass 2c — record object types: scalar fields, no relations.
     for record in &contract.records {
         let mut obj = Object::new(record.name.clone());
+        if let Some(doc) = &record.doc {
+            obj = obj.description(doc.clone());
+        }
         for f in &record.fields {
-            obj = obj.field(scalar_field(
-                f.name.clone(),
-                scalar_type_ref(contract, &f.ty, f.optional),
-            ));
+            let mut fld =
+                scalar_field(f.name.clone(), scalar_type_ref(contract, &f.ty, f.optional));
+            if let Some(doc) = &f.doc {
+                fld = fld.description(doc.clone());
+            }
+            obj = obj.field(fld);
         }
         objects.push(obj);
     }
@@ -387,6 +400,16 @@ fn scalar_name(contract: &Contract, ty: &Type) -> &'static str {
     }
 }
 
+/// An input field carrying its declared `///` doc as a GraphQL description
+/// (RFD 0016), or none when undocumented.
+fn described_input(name: String, ty: TypeRef, doc: &Option<String>) -> InputValue {
+    let iv = InputValue::new(name, ty);
+    match doc {
+        Some(d) => iv.description(d.clone()),
+        None => iv,
+    }
+}
+
 /// `<t>_insert_input`: every field, **all nullable** (graphql.md §5).
 /// Required-ness is enforced by the contract at runtime, so the derived
 /// `required` error stays reachable instead of being shadowed by GraphQL
@@ -399,9 +422,10 @@ fn insert_input_type(contract: &Contract, table: &Table) -> InputObject {
         if f.is_actor_default() {
             continue;
         }
-        input = input.field(InputValue::new(
+        input = input.field(described_input(
             f.name.clone(),
             TypeRef::named(scalar_name(contract, &f.ty)),
+            &f.doc,
         ));
     }
     input
@@ -418,9 +442,10 @@ fn set_input_type(contract: &Contract, table: &Table) -> InputObject {
         if table.key.contains(&f.name) || f.is_actor_default() {
             continue;
         }
-        input = input.field(InputValue::new(
+        input = input.field(described_input(
             f.name.clone(),
             TypeRef::named(scalar_name(contract, &f.ty)),
+            &f.doc,
         ));
     }
     input
@@ -431,9 +456,10 @@ fn pk_columns_type(contract: &Contract, table: &Table) -> InputObject {
     let mut input = InputObject::new(pk_columns_name(&table.name));
     for name in &table.key {
         let field = table.field(name).expect("checked: key fields exist");
-        input = input.field(InputValue::new(
+        input = input.field(described_input(
             name.clone(),
             TypeRef::named_nn(scalar_name(contract, &field.ty)),
+            &field.doc,
         ));
     }
     input
@@ -1112,12 +1138,18 @@ fn fn_field(contract: &Contract, f: &FnDef) -> Field {
         } else {
             TypeRef::named_nn(scalar)
         };
-        field = field.argument(InputValue::new(p.name.clone(), ty));
+        field = field.argument(described_input(p.name.clone(), ty, &p.doc));
     }
-    let description = if f.errors.is_empty() {
+    let generated = if f.errors.is_empty() {
         format!("Call fn `{}`.", f.name)
     } else {
         format!("Call fn `{}`. Errors: {}.", f.name, f.errors.join(", "))
+    };
+    // the author's `///` doc leads; the generated call/errors line follows,
+    // so the "Errors:" metadata is never lost (RFD 0016).
+    let description = match &f.doc {
+        Some(doc) => format!("{doc}\n\n{generated}"),
+        None => generated,
     };
     field.description(description)
 }
@@ -1153,6 +1185,43 @@ mod tests {
         ] {
             assert!(sdl.contains(mutation), "missing {mutation} in:\n{sdl}");
         }
+    }
+
+    #[test]
+    fn docs_become_sdl_descriptions() {
+        let schema = build(
+            "/// a person on the network\n\
+             table user {\n\
+               key id: uuid = auto\n\
+               /// the handle\n\
+               username: text unique\n\
+             }\n\
+             /// look someone up\n\
+             fn find(name: text) -> user? { unchecked sql(\"SELECT * FROM user WHERE username = :name\") }",
+        )
+        .unwrap();
+        let sdl = schema.sdl();
+        // table, field, and fn docs render as SDL descriptions (triple-quoted)
+        assert!(sdl.contains("\"\"\""), "no descriptions in:\n{sdl}");
+        assert!(sdl.contains("a person on the network"), "{sdl}");
+        assert!(sdl.contains("the handle"), "{sdl}");
+        assert!(sdl.contains("look someone up"), "{sdl}");
+    }
+
+    #[test]
+    fn fn_doc_keeps_the_errors_metadata() {
+        let schema = build(
+            "table user { key id: uuid = auto\n username: text unique }\n\
+             /// rename a user\n\
+             mut fn rename(user: user, name: text) -> user ! user_username_taken {\n\
+               unchecked sql(\"UPDATE user SET username = :name WHERE id = :user RETURNING *\")\n\
+             }",
+        )
+        .unwrap();
+        let sdl = schema.sdl();
+        // the author's doc leads, but the generated Errors: line is not lost
+        assert!(sdl.contains("rename a user"), "{sdl}");
+        assert!(sdl.contains("Errors: user_username_taken"), "{sdl}");
     }
 
     /// One line of the SDL, located by prefix.

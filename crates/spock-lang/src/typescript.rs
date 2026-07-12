@@ -323,13 +323,19 @@ fn has_settable_fields(table: &Table) -> bool {
 /// scalar, semantically a pointer the reader can follow.
 /// `interface <record>` — a named wire shape (fn return).
 fn emit_record(out: &mut String, contract: &Contract, record: &Record) {
-    let _ = writeln!(
+    out.push('\n');
+    emit_jsdoc(
         out,
-        "\n/** The `{}` record — a fn return shape. */",
-        record.name
+        "",
+        record.doc.as_deref(),
+        Some(&format!(
+            "The `{}` record — a fn return shape.",
+            record.name
+        )),
     );
     let _ = writeln!(out, "export interface {} {{", record.name);
     for f in &record.fields {
+        emit_jsdoc(out, "  ", f.doc.as_deref(), None);
         let null = if f.optional { " | null" } else { "" };
         let _ = writeln!(out, "  {}: {}{null};", f.name, value_ts(contract, &f.ty));
     }
@@ -339,9 +345,16 @@ fn emit_record(out: &mut String, contract: &Contract, record: &Record) {
 /// `interface <fn>_args` — what a fn call takes. Optional params admit
 /// `null`: for fn arguments null and absence mean the same thing.
 fn emit_fn_args(out: &mut String, contract: &Contract, f: &FnDef) {
-    let _ = writeln!(out, "\n/** Arguments of fn `{}`. */", f.name);
+    out.push('\n');
+    emit_jsdoc(
+        out,
+        "",
+        f.doc.as_deref(),
+        Some(&format!("Arguments of fn `{}`.", f.name)),
+    );
     let _ = writeln!(out, "export interface {}_args {{", f.name);
     for p in &f.params {
+        emit_jsdoc(out, "  ", p.doc.as_deref(), None);
         let ty = value_ts(contract, &p.ty);
         if p.optional {
             let _ = writeln!(out, "  {}?: {ty} | null;", p.name);
@@ -395,21 +408,53 @@ fn ts_string_lit(s: &str) -> String {
     out
 }
 
+/// Emit a JSDoc block from an optional author `///` doc (RFD 0016) and an
+/// optional generated description. With no author doc it is the familiar
+/// one-liner `/** <desc> */`, so docless output is byte-for-byte unchanged;
+/// with a doc, the author's prose leads and the generated line follows.
+/// Emits nothing when both are absent. A `*/` in author text is defanged so
+/// it can never close the block early.
+fn emit_jsdoc(out: &mut String, indent: &str, doc: Option<&str>, desc: Option<&str>) {
+    match (doc, desc) {
+        (None, None) => {}
+        (None, Some(desc)) => {
+            let _ = writeln!(out, "{indent}/** {desc} */");
+        }
+        (Some(doc), _) => {
+            let _ = writeln!(out, "{indent}/**");
+            for line in doc.lines() {
+                let line = line.replace("*/", "*\\/");
+                if line.is_empty() {
+                    let _ = writeln!(out, "{indent} *");
+                } else {
+                    let _ = writeln!(out, "{indent} * {line}");
+                }
+            }
+            if let Some(desc) = desc {
+                let _ = writeln!(out, "{indent} *");
+                let _ = writeln!(out, "{indent} * {desc}");
+            }
+            let _ = writeln!(out, "{indent} */");
+        }
+    }
+}
+
 /// `interface <t>` — the row, as reads return it.
 fn emit_row(out: &mut String, contract: &Contract, table: &Table) {
-    let _ = writeln!(
+    out.push('\n');
+    emit_jsdoc(
         out,
-        "\n/** One `{}` row, as reads return it. */",
-        table.name
+        "",
+        table.doc.as_deref(),
+        Some(&format!("One `{}` row, as reads return it.", table.name)),
     );
     let _ = writeln!(out, "export interface {} {{", table.name);
     for f in &table.fields {
-        // a checked field carries its validator's name (RFD 0013) — the
-        // rule the value obeys, visible to the reader; the set case is
-        // already the literal union
-        if let Some(check) = &f.check {
-            let _ = writeln!(out, "  /** check: {check} */");
-        }
+        // the author's `///` doc leads; a checked field also notes its
+        // validator's name (RFD 0013) — the rule the value obeys, visible to
+        // the reader. The set case is already the literal union.
+        let check = f.check.as_ref().map(|c| format!("check: {c}"));
+        emit_jsdoc(out, "  ", f.doc.as_deref(), check.as_deref());
         let null = if f.optional { " | null" } else { "" };
         let _ = writeln!(out, "  {}: {}{null};", f.name, value_ts(contract, &f.ty));
     }
@@ -432,6 +477,7 @@ fn emit_insert(out: &mut String, contract: &Contract, table: &Table) {
         if f.is_actor_default() {
             continue;
         }
+        emit_jsdoc(out, "  ", f.doc.as_deref(), None);
         let ty = value_ts(contract, &f.ty);
         if !f.optional && f.default.is_none() {
             let _ = writeln!(out, "  {}: {ty};", f.name);
@@ -459,6 +505,7 @@ fn emit_update(out: &mut String, contract: &Contract, table: &Table) {
         if table.key.contains(&f.name) || f.is_actor_default() {
             continue;
         }
+        emit_jsdoc(out, "  ", f.doc.as_deref(), None);
         let null = if f.optional { " | null" } else { "" };
         let _ = writeln!(out, "  {}?: {}{null};", f.name, value_ts(contract, &f.ty));
     }
@@ -746,5 +793,47 @@ export interface contract {
     #[test]
     fn deterministic() {
         assert_eq!(emit(PROGRAM).unwrap(), emit(PROGRAM).unwrap());
+    }
+
+    #[test]
+    fn emits_docs_as_jsdoc() {
+        let ts = emit(
+            "/// a person on the network\n\
+             table user {\n\
+               key id: uuid = auto\n\
+               /// the handle, unique\n\
+               username: text unique\n\
+             }\n\
+             /// look someone up\n\
+             fn find(/// by handle\n name: text) -> user? { unchecked sql(\"S\") }",
+        )
+        .unwrap();
+        // the author's doc leads the row JSDoc, the generated line follows
+        assert!(
+            ts.contains(
+                "/**\n * a person on the network\n *\n * One `user` row, as reads return it.\n */"
+            ),
+            "{ts}"
+        );
+        // field doc, fn doc, and param doc all surface
+        assert!(ts.contains(" * the handle, unique"), "{ts}");
+        assert!(ts.contains(" * look someone up"), "{ts}");
+        assert!(ts.contains(" * by handle"), "{ts}");
+    }
+
+    #[test]
+    fn doc_and_check_compose_on_a_field() {
+        let ts = emit(
+            "fn nonempty(s: text) -> bool { unchecked sql(\"SELECT length(:s) > 0\") }\n\
+             table post {\n\
+               key id: uuid = auto\n\
+               /// the caption\n\
+               caption: text check nonempty\n\
+             }",
+        )
+        .unwrap();
+        // the author doc and the validator note share one JSDoc block
+        assert!(ts.contains(" * the caption"), "{ts}");
+        assert!(ts.contains(" * check: nonempty"), "{ts}");
     }
 }

@@ -7,15 +7,126 @@ use crate::lexer::{Token, TokenKind};
 use crate::span::Span;
 
 pub fn parse(tokens: Vec<Token>) -> Result<File, Diagnostic> {
-    Parser { tokens, pos: 0 }.file()
+    let (tokens, leading) = split_docs(tokens);
+    Parser {
+        tokens,
+        leading,
+        pos: 0,
+    }
+    .file()
+}
+
+/// One doc-comment line lifted out of the token stream (RFD 0016).
+struct DocLine {
+    inner: bool,
+    text: String,
+    span: Span,
+}
+
+/// Split the raw token stream into the *real* tokens — fed to the recursive
+/// descent unchanged — and a parallel `leading` array where `leading[i]` holds
+/// the doc lines immediately preceding real token `i`. Keeping docs out of the
+/// descent leaves the grammar's two-token lookahead untouched (RFD 0016).
+fn split_docs(tokens: Vec<Token>) -> (Vec<Token>, Vec<Vec<DocLine>>) {
+    let mut real = Vec::new();
+    let mut leading: Vec<Vec<DocLine>> = Vec::new();
+    let mut pending: Vec<DocLine> = Vec::new();
+    for tok in tokens {
+        if let TokenKind::Doc { inner, text } = tok.kind {
+            pending.push(DocLine {
+                inner,
+                text,
+                span: tok.span,
+            });
+        } else {
+            leading.push(std::mem::take(&mut pending));
+            real.push(tok);
+        }
+    }
+    // The lexer always ends with a (non-Doc) Eof, so `pending` is flushed and
+    // `real`/`leading` have equal, ≥1 length.
+    (real, leading)
+}
+
+/// Join doc lines with `\n`, trimming trailing blank lines; an all-empty run
+/// yields `None` (a lone `///` is a harmless no-op, RFD 0016 §3).
+fn join_doc<'a>(lines: impl Iterator<Item = &'a DocLine>) -> Option<String> {
+    let joined = lines
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trimmed = joined.trim_end();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 struct Parser {
     tokens: Vec<Token>,
+    /// Parallel to `tokens`: the doc lines preceding each real token (RFD
+    /// 0016). Attachment points drain their group; whatever survives the
+    /// parse documented nothing and is flagged by [`Parser::dangling_doc`].
+    leading: Vec<Vec<DocLine>>,
     pos: usize,
 }
 
 impl Parser {
+    /// Join and remove the *outer* (`///`) doc lines preceding real token
+    /// `at` — the doc for the item that starts there. Removing them marks the
+    /// group consumed, so a `///` with no owner survives for the final scan.
+    fn take_outer_doc(&mut self, at: usize) -> Option<String> {
+        let group = &mut self.leading[at];
+        let joined = join_doc(group.iter().filter(|l| !l.inner));
+        group.retain(|l| l.inner);
+        joined
+    }
+
+    /// Join and remove the *inner* (`//!`) doc lines preceding real token
+    /// `at`. Legal only at `at == 0` (the file preamble → the contract);
+    /// inner lines surviving anywhere else are flagged `L012`.
+    fn take_inner_doc(&mut self, at: usize) -> Option<String> {
+        let group = &mut self.leading[at];
+        let joined = join_doc(group.iter().filter(|l| l.inner));
+        group.retain(|l| !l.inner);
+        joined
+    }
+
+    /// Attach the outer docs preceding a table/record item to it, but only if
+    /// it is a field: docs on a `key`/`unique`/`check` row item are left
+    /// unconsumed, so the final scan flags them (`L011`).
+    fn attach_field_doc(&mut self, item: TableItem, at: usize) -> TableItem {
+        if let TableItem::Field(mut f) = item {
+            f.doc = self.take_outer_doc(at);
+            TableItem::Field(f)
+        } else {
+            item
+        }
+    }
+
+    /// Every doc line left unconsumed after the parse documented nothing: an
+    /// outer run out of position (`L011`), or a `//!` past the preamble
+    /// (`L012`). Returns the earliest offender in source order; empty content
+    /// is a no-op and trips neither (RFD 0016 §9).
+    fn dangling_doc(&self) -> Option<Diagnostic> {
+        for line in self.leading.iter().flatten() {
+            if line.text.is_empty() {
+                continue;
+            }
+            return Some(if line.inner {
+                Diagnostic::new(
+                    "L012",
+                    "`//!` documents the whole file and must come before the first declaration; use `///` to document this item",
+                    line.span,
+                )
+            } else {
+                Diagnostic::new(
+                    "L011",
+                    "this doc comment documents nothing — put `///` directly before the item it documents, or use `//` for an ordinary comment",
+                    line.span,
+                )
+            });
+        }
+        None
+    }
+
     fn peek(&self) -> &Token {
         &self.tokens[self.pos.min(self.tokens.len() - 1)]
     }
@@ -67,13 +178,24 @@ impl Parser {
 
     // file = { table_decl | record_decl | fn_decl | seed_block }
     fn file(&mut self) -> Result<File, Diagnostic> {
+        // `//!` lines in the preamble (before any declaration) document the
+        // contract itself (RFD 0016).
+        let doc = self.take_inner_doc(0);
         let mut tables = Vec::new();
         let mut records = Vec::new();
         let mut fns = Vec::new();
         let mut seeds = Vec::new();
         loop {
+            // `///` lines here document whichever declaration follows. `at` is
+            // captured before the `auth`/`mut` prefixes so the doc attaches
+            // across them (they precede the modifier keyword).
+            let at = self.pos;
             match self.peek().kind {
-                TokenKind::KwTable => tables.push(self.table_decl()?),
+                TokenKind::KwTable => {
+                    let mut decl = self.table_decl()?;
+                    decl.doc = self.take_outer_doc(at);
+                    tables.push(decl);
+                }
                 TokenKind::KwAuth => {
                     // `auth table ...` — the identity anchor (RFD 0014).
                     // Mirrors the `mut fn` modifier dispatch below.
@@ -84,10 +206,19 @@ impl Parser {
                     let mut decl = self.table_decl()?;
                     decl.auth = Some(start);
                     decl.span = start.to(decl.span);
+                    decl.doc = self.take_outer_doc(at);
                     tables.push(decl);
                 }
-                TokenKind::KwRecord => records.push(self.record_decl()?),
-                TokenKind::KwFn => fns.push(self.fn_decl(false)?),
+                TokenKind::KwRecord => {
+                    let mut decl = self.record_decl()?;
+                    decl.doc = self.take_outer_doc(at);
+                    records.push(decl);
+                }
+                TokenKind::KwFn => {
+                    let mut decl = self.fn_decl(false)?;
+                    decl.doc = self.take_outer_doc(at);
+                    fns.push(decl);
+                }
                 TokenKind::KwMut => {
                     let start = self.bump().span;
                     if self.peek().kind != TokenKind::KwFn {
@@ -95,8 +226,11 @@ impl Parser {
                     }
                     let mut decl = self.fn_decl(true)?;
                     decl.span = start.to(decl.span);
+                    decl.doc = self.take_outer_doc(at);
                     fns.push(decl);
                 }
+                // a `seed` block is not a documentable entity — a `///` before
+                // it is left unconsumed and flagged as dangling below.
                 TokenKind::KwSeed => seeds.push(self.seed_block()?),
                 TokenKind::Eof => break,
                 _ => {
@@ -105,7 +239,12 @@ impl Parser {
                 }
             }
         }
+        // Any doc line that attached to nothing documents nothing (RFD 0016 §9).
+        if let Some(d) = self.dangling_doc() {
+            return Err(d);
+        }
         Ok(File {
+            doc,
             tables,
             records,
             fns,
@@ -123,10 +262,15 @@ impl Parser {
             match self.peek().kind {
                 TokenKind::RBrace => break self.bump().span,
                 TokenKind::Eof => return Err(self.unexpected("`}`")),
-                _ => items.push(self.table_item()?),
+                _ => {
+                    let at = self.pos;
+                    let item = self.table_item()?;
+                    items.push(self.attach_field_doc(item, at));
+                }
             }
         };
         Ok(TableDecl {
+            doc: None,
             name,
             items,
             auth: None,
@@ -146,10 +290,15 @@ impl Parser {
             match self.peek().kind {
                 TokenKind::RBrace => break self.bump().span,
                 TokenKind::Eof => return Err(self.unexpected("`}`")),
-                _ => items.push(self.table_item()?),
+                _ => {
+                    let at = self.pos;
+                    let item = self.table_item()?;
+                    items.push(self.attach_field_doc(item, at));
+                }
             }
         };
         Ok(RecordDecl {
+            doc: None,
             name,
             items,
             span: start.to(end),
@@ -167,6 +316,8 @@ impl Parser {
         self.expect(TokenKind::LParen, "`(`")?;
         let mut params = Vec::new();
         while self.peek().kind != TokenKind::RParen {
+            // `///` before a parameter (on its own line) documents it.
+            let at = self.pos;
             let pname = self.ident("parameter name")?;
             let pstart = pname.span;
             self.expect(TokenKind::Colon, "`:`")?;
@@ -179,6 +330,7 @@ impl Parser {
                 false
             };
             params.push(ParamDecl {
+                doc: self.take_outer_doc(at),
                 name: pname,
                 ty,
                 optional,
@@ -215,6 +367,7 @@ impl Parser {
         let end = self.expect(TokenKind::RBrace, "`}`")?.span;
 
         Ok(FnDecl {
+            doc: None,
             name,
             mutates,
             params,
@@ -527,6 +680,7 @@ impl Parser {
         };
 
         Ok(FieldDecl {
+            doc: None,
             is_key,
             name,
             ty,
@@ -1081,5 +1235,108 @@ mod tests {
     fn rejects_unclosed_table() {
         let d = parse_err("table t { a: int");
         assert_eq!(d.code, "L010");
+    }
+
+    #[test]
+    fn parses_doc_comments() {
+        let file = parse_ok(
+            "//! the contract\n\
+             //! second line\n\
+             \n\
+             /// a person\n\
+             auth table user {\n\
+               key id: uuid = auto\n\
+               /// the handle\n\
+               username: text unique\n\
+             }\n\
+             /// a wire shape\n\
+             record stats { /// how many\n posts: int }\n\
+             /// rename someone\n\
+             mut fn rename(\n\
+               /// the target\n\
+               user: user,\n\
+               /// the new name\n\
+               name: text,\n\
+             ) -> user { unchecked sql(\"S\") }",
+        );
+        // contract doc = the joined `//!` preamble
+        assert_eq!(file.doc.as_deref(), Some("the contract\nsecond line"));
+        // table doc, attached across the `auth` prefix
+        assert_eq!(file.tables[0].doc.as_deref(), Some("a person"));
+        // field doc (items[0] is the key field, items[1] is username)
+        let TableItem::Field(username) = &file.tables[0].items[1] else {
+            panic!("expected field");
+        };
+        assert_eq!(username.doc.as_deref(), Some("the handle"));
+        // record + record-field docs
+        assert_eq!(file.records[0].doc.as_deref(), Some("a wire shape"));
+        let TableItem::Field(posts) = &file.records[0].items[0] else {
+            panic!("expected field");
+        };
+        assert_eq!(posts.doc.as_deref(), Some("how many"));
+        // fn doc across the `mut` prefix, plus per-parameter docs
+        assert_eq!(file.fns[0].doc.as_deref(), Some("rename someone"));
+        assert_eq!(file.fns[0].params[0].doc.as_deref(), Some("the target"));
+        assert_eq!(file.fns[0].params[1].doc.as_deref(), Some("the new name"));
+    }
+
+    #[test]
+    fn doc_run_joins_across_blank_and_ordinary_comments() {
+        let file = parse_ok(
+            "/// line one\n\
+             // an ordinary comment does not break the run\n\
+             \n\
+             /// line two\n\
+             table t { key id: uuid = auto }",
+        );
+        assert_eq!(file.tables[0].doc.as_deref(), Some("line one\nline two"));
+    }
+
+    #[test]
+    fn empty_doc_is_a_no_op() {
+        // a lone `///` attaches nothing and is not dangling
+        let file = parse_ok("///\ntable t { key id: uuid = auto }");
+        assert_eq!(file.tables[0].doc, None);
+        assert!(file.doc.is_none());
+    }
+
+    #[test]
+    fn rejects_dangling_doc() {
+        // before the closing brace
+        assert_eq!(
+            parse_err("table t { key id: uuid = auto\n /// nothing\n }").code,
+            "L011"
+        );
+        // on a non-documentable row item (a unique group)
+        assert_eq!(
+            parse_err("table t { key (a, b)\n a: t\n b: t\n /// bad\n unique (a, b) }").code,
+            "L011"
+        );
+        // inside a fn body
+        assert_eq!(
+            parse_err("fn f() -> t {\n /// bad\n unchecked sql(\"S\") }").code,
+            "L011"
+        );
+        // before a seed block (seeds are not documentable)
+        assert_eq!(parse_err("/// bad\n seed { }").code, "L011");
+        // trailing at end of file
+        assert_eq!(
+            parse_err("table t { key id: uuid = auto }\n /// trailing").code,
+            "L011"
+        );
+    }
+
+    #[test]
+    fn rejects_misplaced_inner_doc() {
+        // `//!` after the first declaration
+        assert_eq!(
+            parse_err("table t { key id: uuid = auto }\n //! too late").code,
+            "L012"
+        );
+        // `//!` inside a table body
+        assert_eq!(
+            parse_err("table t { //! nope\n key id: uuid = auto }").code,
+            "L012"
+        );
     }
 }

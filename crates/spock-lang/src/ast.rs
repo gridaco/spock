@@ -10,6 +10,9 @@ pub struct Ident {
 
 #[derive(Clone, Debug)]
 pub struct File {
+    /// `//!` inner doc comments in the file preamble → the contract's doc
+    /// (RFD 0016). `None` when the file has no `//!` lines.
+    pub doc: Option<String>,
     pub tables: Vec<TableDecl>,
     pub records: Vec<RecordDecl>,
     pub fns: Vec<FnDecl>,
@@ -18,6 +21,8 @@ pub struct File {
 
 #[derive(Clone, Debug)]
 pub struct TableDecl {
+    /// `///` outer doc comments preceding the declaration (RFD 0016).
+    pub doc: Option<String>,
     pub name: Ident,
     pub items: Vec<TableItem>,
     /// `auth table ...` — the identity anchor (RFD 0014). `Some(span)` marks
@@ -50,6 +55,9 @@ pub enum TableItem {
 
 #[derive(Clone, Debug)]
 pub struct FieldDecl {
+    /// `///` outer doc comments preceding the field (RFD 0016). Covers both
+    /// table and record fields (records reuse [`TableItem::Field`]).
+    pub doc: Option<String>,
     pub is_key: bool,
     pub name: Ident,
     pub ty: TypeExpr,
@@ -146,6 +154,8 @@ pub struct OnDeleteClause {
 /// (keys, uniques, defaults, on delete) with precise spans.
 #[derive(Clone, Debug)]
 pub struct RecordDecl {
+    /// `///` outer doc comments preceding the declaration (RFD 0016).
+    pub doc: Option<String>,
     pub name: Ident,
     pub items: Vec<TableItem>,
     pub span: Span,
@@ -154,6 +164,8 @@ pub struct RecordDecl {
 /// `[mut] fn name(params) -> ret ! codes { sql("...") ... }` (§3).
 #[derive(Clone, Debug)]
 pub struct FnDecl {
+    /// `///` outer doc comments preceding the declaration (RFD 0016).
+    pub doc: Option<String>,
     pub name: Ident,
     /// `mut fn` — the fn may write. Unmarked fns are reads, and the
     /// engine enforces it per statement at load (§7.4, RFD 0012).
@@ -177,6 +189,8 @@ pub struct SqlEscape {
 
 #[derive(Clone, Debug)]
 pub struct ParamDecl {
+    /// `///` outer doc comments preceding the parameter (RFD 0016).
+    pub doc: Option<String>,
     pub name: Ident,
     pub ty: TypeExpr,
     pub optional: bool,

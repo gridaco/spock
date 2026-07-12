@@ -91,6 +91,7 @@ impl Checker {
 
         Contract {
             spock: "v0".into(),
+            doc: file.doc.clone(),
             tables,
             records,
             fns,
@@ -231,6 +232,7 @@ impl Checker {
                 };
                 fields.push(RecordField {
                     name: f.name.name.clone(),
+                    doc: f.doc.clone(),
                     ty,
                     optional: f.optional,
                 });
@@ -245,6 +247,7 @@ impl Checker {
             }
             records.push(Record {
                 name: decl.name.name.clone(),
+                doc: decl.doc.clone(),
                 fields,
             });
         }
@@ -346,6 +349,7 @@ impl Checker {
                 };
                 params.push(FnParam {
                     name: p.name.name.clone(),
+                    doc: p.doc.clone(),
                     ty,
                     optional: p.optional,
                 });
@@ -406,6 +410,7 @@ impl Checker {
 
             fns.push(FnDef {
                 name: decl.name.name.clone(),
+                doc: decl.doc.clone(),
                 readonly: !decl.mutates,
                 params,
                 returns: FnReturn {
@@ -756,6 +761,7 @@ impl Checker {
 
         Some(Table {
             name: decl.name.name.clone(),
+            doc: decl.doc.clone(),
             key,
             fields,
             uniques,
@@ -891,6 +897,7 @@ impl Checker {
 
         Some(Field {
             name: f.name.name.clone(),
+            doc: f.doc.clone(),
             ty,
             optional: f.optional,
             unique: f.unique,
@@ -1692,6 +1699,41 @@ mod tests {
     }
 
     const USER: &str = "table user { key id: uuid = auto\n username: text unique }\n";
+
+    #[test]
+    fn docs_lower_onto_every_entity() {
+        let contract = compile(
+            "//! the contract\n\
+             /// a person\n\
+             auth table user {\n\
+               key id: uuid = auto\n\
+               /// the handle\n\
+               username: text unique\n\
+               ///\n\
+               full_name: text?\n\
+             }\n\
+             /// a wire shape\n\
+             record stats { /// how many\n posts: int }\n\
+             /// find a user\n\
+             fn find(/// by handle\n name: text) -> user? { unchecked sql(\"S\") }",
+        )
+        .unwrap();
+        assert_eq!(contract.doc.as_deref(), Some("the contract"));
+        let user = contract.table("user").unwrap();
+        assert_eq!(user.doc.as_deref(), Some("a person"));
+        assert_eq!(
+            user.field("username").unwrap().doc.as_deref(),
+            Some("the handle")
+        );
+        // an empty `///` lowers to no doc, never `Some("")`
+        assert_eq!(user.field("full_name").unwrap().doc, None);
+        let stats = contract.record("stats").unwrap();
+        assert_eq!(stats.doc.as_deref(), Some("a wire shape"));
+        assert_eq!(stats.fields[0].doc.as_deref(), Some("how many"));
+        let find = contract.fn_def("find").unwrap();
+        assert_eq!(find.doc.as_deref(), Some("find a user"));
+        assert_eq!(find.params[0].doc.as_deref(), Some("by handle"));
+    }
 
     #[test]
     fn accepts_the_reference_program() {

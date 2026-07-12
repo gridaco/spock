@@ -10,6 +10,15 @@ pub enum TokenKind {
     Int(i64),
     Float(f64),
 
+    /// A doc comment (RFD 0016): `///` outer (`inner: false`) documents the
+    /// following entity; `//!` inner (`inner: true`) documents the file. The
+    /// parser lifts these out of the token stream before the recursive
+    /// descent, so they never perturb the grammar's two-token lookahead.
+    Doc {
+        inner: bool,
+        text: String,
+    },
+
     // punctuation
     LBrace,
     RBrace,
@@ -78,6 +87,7 @@ impl TokenKind {
             TokenKind::Bang => "`!`".to_string(),
             TokenKind::Pipe => "`|`".to_string(),
             TokenKind::Eof => "end of file".to_string(),
+            TokenKind::Doc { .. } => "doc comment".to_string(),
             kw => format!("keyword `{}`", keyword_text(kw)),
         }
     }
@@ -189,11 +199,36 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
             continue;
         }
 
-        // comments: // to end of line
+        // comments and doc comments (RFD 0016). `//` runs to end of line.
+        // `///` (outer) and `//!` (inner) are doc comments, kept as tokens
+        // for the parser to attach; `////`+ degrades back to an ordinary
+        // comment — Rust's rule exactly. The ordinary `//` swallow is
+        // unchanged; only `///`/`//!` are promoted.
         if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
+            let third = bytes.get(i + 2);
+            let doc_inner = third == Some(&b'!');
+            let doc_outer = third == Some(&b'/') && bytes.get(i + 3) != Some(&b'/');
+            let content_start = if doc_inner || doc_outer { i + 3 } else { i + 2 };
+            // consume to end of line; the `\n` is left for the whitespace arm
+            let mut j = content_start;
+            while j < bytes.len() && bytes[j] != b'\n' {
+                j += 1;
             }
+            if doc_inner || doc_outer {
+                // normalize: strip at most one leading space, trim trailing
+                // whitespace. `\n` (0x0A) and the ASCII sigil never split a
+                // UTF-8 sequence, so both bounds are char boundaries.
+                let raw = &source[content_start..j];
+                let text = raw.strip_prefix(' ').unwrap_or(raw).trim_end().to_string();
+                tokens.push(Token {
+                    kind: TokenKind::Doc {
+                        inner: doc_inner,
+                        text,
+                    },
+                    span: Span::new(i, j),
+                });
+            }
+            i = j;
             continue;
         }
 
@@ -457,6 +492,82 @@ mod tests {
                 TokenKind::Str("a \"b\"".into()),
                 TokenKind::Int(-42),
                 TokenKind::KwTrue,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn lexes_doc_comments() {
+        // outer doc, one leading space stripped
+        assert_eq!(
+            kinds("/// a table"),
+            vec![
+                TokenKind::Doc {
+                    inner: false,
+                    text: "a table".into()
+                },
+                TokenKind::Eof,
+            ]
+        );
+        // inner doc
+        assert_eq!(
+            kinds("//! the contract"),
+            vec![
+                TokenKind::Doc {
+                    inner: true,
+                    text: "the contract".into()
+                },
+                TokenKind::Eof,
+            ]
+        );
+        // `////` and longer degrade to ordinary comments (Rust's rule) —
+        // discarded, exactly like plain `//`
+        assert_eq!(kinds("//// not a doc"), vec![TokenKind::Eof]);
+        assert_eq!(kinds("///// also not"), vec![TokenKind::Eof]);
+        assert_eq!(kinds("// plain"), vec![TokenKind::Eof]);
+        // only one leading space is stripped; trailing whitespace trimmed
+        assert_eq!(
+            kinds("///   two-lead   "),
+            vec![
+                TokenKind::Doc {
+                    inner: false,
+                    text: "  two-lead".into()
+                },
+                TokenKind::Eof,
+            ]
+        );
+        // a lone `///` is an empty doc; terminates at EOF with no newline
+        assert_eq!(
+            kinds("///"),
+            vec![
+                TokenKind::Doc {
+                    inner: false,
+                    text: String::new()
+                },
+                TokenKind::Eof,
+            ]
+        );
+        // a doc followed by a real token on the next line
+        assert_eq!(
+            kinds("/// doc\ntable"),
+            vec![
+                TokenKind::Doc {
+                    inner: false,
+                    text: "doc".into()
+                },
+                TokenKind::KwTable,
+                TokenKind::Eof,
+            ]
+        );
+        // `//!` keeps a leading `!` of content after its sigil
+        assert_eq!(
+            kinds("//!!important"),
+            vec![
+                TokenKind::Doc {
+                    inner: true,
+                    text: "!important".into()
+                },
                 TokenKind::Eof,
             ]
         );

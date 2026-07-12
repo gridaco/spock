@@ -10,6 +10,10 @@ use std::collections::BTreeMap;
 pub struct Contract {
     /// Language version tag; `"v0"`.
     pub spock: String,
+    /// The `//!` file docs → the contract's documentation (RFD 0016).
+    /// Additive under `spock: "v0"`; absent when undocumented.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     pub tables: Vec<Table>,
     /// Named wire shapes (fn returns). Additive under `spock: "v0"` —
     /// `default` keeps pre-record contract JSON deserializable.
@@ -25,6 +29,9 @@ pub struct Contract {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Table {
     pub name: String,
+    /// The `///` docs preceding the declaration (RFD 0016). Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     /// Key field names, declaration order.
     pub key: Vec<String>,
     pub fields: Vec<Field>,
@@ -55,6 +62,9 @@ pub struct TableCheck {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Field {
     pub name: String,
+    /// The `///` docs preceding the field (RFD 0016). Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     #[serde(rename = "type")]
     pub ty: Type,
     pub optional: bool,
@@ -176,12 +186,18 @@ pub enum ErrorKind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Record {
     pub name: String,
+    /// The `///` docs preceding the declaration (RFD 0016). Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     pub fields: Vec<RecordField>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RecordField {
     pub name: String,
+    /// The `///` docs preceding the record field (RFD 0016). Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     #[serde(rename = "type")]
     pub ty: Type,
     pub optional: bool,
@@ -193,6 +209,9 @@ pub struct RecordField {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FnDef {
     pub name: String,
+    /// The `///` docs preceding the declaration (RFD 0016). Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     /// True for unmarked (read) fns: the engine rejects writing
     /// statements at load, execution uses a read transaction, and the
     /// fn surfaces on the GraphQL Query root (§7.4, RFD 0012). Pre-v2
@@ -241,6 +260,9 @@ where
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FnParam {
     pub name: String,
+    /// The `///` docs preceding the parameter (RFD 0016). Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     /// Reuses [`Type`]; a ref param binds the target key's scalar. The
     /// `on_delete` a ref carries is inert here (params delete nothing).
     #[serde(rename = "type")]
@@ -463,12 +485,15 @@ mod tests {
     fn contract_serde_roundtrip() {
         let contract = Contract {
             spock: "v0".into(),
+            doc: Some("the whole contract".into()),
             tables: vec![Table {
                 name: "user".into(),
+                doc: Some("a person".into()),
                 key: vec!["id".into()],
                 fields: vec![
                     Field {
                         name: "id".into(),
+                        doc: None,
                         ty: Type::Uuid,
                         optional: false,
                         unique: false,
@@ -477,6 +502,7 @@ mod tests {
                     },
                     Field {
                         name: "invited_by".into(),
+                        doc: Some("who invited them".into()),
                         ty: Type::Ref {
                             table: "user".into(),
                             on_delete: OnDelete::Restrict,
@@ -499,8 +525,10 @@ mod tests {
             }],
             records: vec![Record {
                 name: "stats".into(),
+                doc: None,
                 fields: vec![RecordField {
                     name: "posts".into(),
+                    doc: None,
                     ty: Type::Int,
                     optional: false,
                 }],
@@ -508,9 +536,11 @@ mod tests {
             fns: vec![FnDef {
                 readonly: false,
                 name: "rename_user".into(),
+                doc: Some("rename a user".into()),
                 params: vec![
                     FnParam {
                         name: "user".into(),
+                        doc: None,
                         ty: Type::Ref {
                             table: "user".into(),
                             on_delete: OnDelete::Restrict,
@@ -519,6 +549,7 @@ mod tests {
                     },
                     FnParam {
                         name: "name".into(),
+                        doc: Some("the new handle".into()),
                         ty: Type::Text,
                         optional: false,
                     },
@@ -558,9 +589,22 @@ mod tests {
         // the body serializes as a statement array (§6: pre-v2 JSON
         // carried a bare string; see legacy_contract_json_deserializes)
         assert!(json.contains("\"UPDATE user"));
+        // docs ride in the contract (RFD 0016)
+        assert!(json.contains("\"doc\": \"the whole contract\""));
+        assert!(json.contains("\"doc\": \"a person\""));
+        assert!(json.contains("\"doc\": \"rename a user\""));
 
         let back: Contract = serde_json::from_str(&json).unwrap();
         assert_eq!(back.tables[0].name, "user");
+        assert_eq!(back.doc.as_deref(), Some("the whole contract"));
+        assert_eq!(back.tables[0].doc.as_deref(), Some("a person"));
+        assert_eq!(back.tables[0].fields[0].doc, None); // docless field omits the key
+        assert_eq!(
+            back.tables[0].fields[1].doc.as_deref(),
+            Some("who invited them")
+        );
+        assert_eq!(back.fns[0].doc.as_deref(), Some("rename a user"));
+        assert_eq!(back.fns[0].params[1].doc.as_deref(), Some("the new handle"));
         assert_eq!(back.fns[0].errors, vec!["user_username_taken"]);
         assert_eq!(back.records[0].fields[0].name, "posts");
         assert!(matches!(
@@ -594,6 +638,8 @@ mod tests {
         let contract: Contract = serde_json::from_str(legacy).unwrap();
         assert!(contract.fns.is_empty());
         assert!(contract.records.is_empty());
+        // a pre-doc contract has no `doc` (RFD 0016 additive under `spock: "v0"`)
+        assert!(contract.doc.is_none());
 
         // pre-scalar fn JSON (no `returns.scalar` key, bare-string `sql`)
         // still loads too — the string becomes a one-statement body
@@ -607,5 +653,7 @@ mod tests {
         // pre-v2 fns: never a read, nothing minted
         assert!(!contract.fns[0].readonly);
         assert!(contract.fns[0].refusals.is_empty());
+        // a pre-doc fn (no `doc` key) loads with no doc
+        assert!(contract.fns[0].doc.is_none());
     }
 }
