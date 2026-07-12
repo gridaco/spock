@@ -221,10 +221,13 @@ style isn't Conventional Commits, so its auto-changelog would be noise).
 - **Single source of truth:** `[workspace.package] version`. The git tag
   mirrors it; every npm package version equals it, exact-pinned.
 - **Trigger:** bump the version → commit → `git tag vX.Y.Z && git push --tags`.
-- **First public release is `0.1.0`, not `0.0.x`.** `0.0.1` is a
-  name-reservation placeholder; `0.1.0` says "first real distributed release"
-  while staying honestly pre-1.0. `1.0.0` is reserved for a stability
-  commitment Spock is explicitly not making yet.
+- **First public release is `0.1.1`.** `0.0.1` was a name-reservation
+  placeholder; the first real distributed release is `0.1.x`, staying honestly
+  pre-1.0 (`1.0.0` is reserved for a stability commitment Spock is not making
+  yet). `0.1.0` itself was skipped: its first publish hit a transient registry
+  error *after* the provenance attestation was recorded, which left `0.1.0`
+  reserved-but-unpublished on npm and unrecoverable — so we bumped past it. A
+  version can never be reused; a burned one is simply skipped.
 - **Changelog: hand-curated `CHANGELOG.md`.** Given the commit style,
   auto-generation is noisier than a short hand-written "what changed in the
   language surface" per release.

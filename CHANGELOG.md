@@ -3,10 +3,11 @@
 All notable changes to Spock. Spock is a pre-1.0 prototype language; minor
 versions may break.
 
-## 0.1.0 — 2026-07-13
+## 0.1.1 — 2026-07-13
 
 First distributed release (RFD 0020). Spock is now installable from npm — no
-clone, no build.
+clone, no build. (`0.1.0` was skipped: an npm provenance-publish glitch left
+that version reserved-but-unpublished on the registry.)
 
 - **Distribution.** `npm i -g spock` / `npx spock` on macOS (arm64, x64), Linux
   (x64), and Windows (x64). One npm package bundles a prebuilt binary per

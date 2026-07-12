@@ -1,6 +1,6 @@
 {
   "name": "spock",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Spock — prototype application backends as a single, inspectable source of truth. It's only logical.",
   "bin": {
     "spock": "bin/spock.js"
