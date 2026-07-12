@@ -207,3 +207,91 @@ in **RFD 0019 — The external plane** (`0019-external-plane.md`), which the
 byte-substrate trait (§1.5) and the two-phase `pending → committed` lifecycle
 (§1.6) already anticipate. Until then, storage v0 stays instant and infallible by
 construction; the simulator, when built, is additive.
+
+## 8. Proposals for later (no code — future design seeds)
+
+Three forward-looking proposals, recorded as design seeds. Each **extends or
+reconsiders a v0 decision**; none is decided here, and none of the three is a
+storage-only concern — they interlock (8.1 is the prerequisite for 8.2; 8.2 gives
+8.3 its richest constraints), and 8.1 and 8.3 land in territory already owned by
+RFD 0019 and RFD 0013.
+
+### 8.1 A namespace for the growing builtin vocabulary (`storage.object`)
+
+v0 deliberately made `storage_object` a **flat** table name (§1.1) — no `::`, no
+import grammar, LLM-writable — and that was right for a *single* builtin table.
+But the external plane (RFD 0019) will add siblings: `email.message`,
+`payment.charge`, `job.run`, `search.index`. A flat namespace of reserved
+snake_case names (`storage_object`, then `email_message`, `payment_charge`, …)
+grows collision-prone, and the reserved-name list (E048 and its future kin)
+becomes compiler lore rather than something legible on the page.
+
+**Proposal:** a **dotted namespace** for protocol-owned builtins — `storage.object`
+(or `storage::object`). Open questions: dot vs. `::`; whether it is a real module
+system or just sugar over a reserved prefix; whether it *stays a plain ref* so all
+of §1.1's ref-machinery reuse survives; how it reads in a field type
+(`avatar: storage.object?`); and the GraphQL projection (dots are illegal in type
+names → `StorageObject`). The v0 reversal (`auth table`, not `auth::user`) sets the
+bar: a namespace earns its separator only when flat names actually *fail* — and
+that is an **external-plane-wide** decision (RFD 0019), not a storage-local one.
+Recorded here because storage is where the first reserved name lives.
+
+### 8.2 First-class well-known file types (`storage.object.image`)
+
+Today every file is an **untyped** `storage_object` — `name`, `content_type`,
+`size`, `checksum`. An image's width/height, a video's duration/codec, an SVG's
+viewBox: none are captured, so every client re-derives them from the bytes.
+
+**Proposal:** **typed object kinds** — `storage.object.image` carrying
+`width`/`height`/`format`, `.video`, `.svg`, … — where the runtime extracts the
+kind's intrinsic metadata at upload and stores it as first-class, **queryable**
+columns (the differentiator over S3/Supabase: the dimensions are *contract-visible
+and governable*, like any other column, not opaque object metadata). This is also
+where the instinct *"the backend already validates the file — why not inline the
+constraint"* lands: a typed image can carry declarative limits (max dimensions,
+allowed formats) the runtime can enforce because it already decoded the bytes
+(§8.3).
+
+Design questions: subtype-with-extra-columns vs. a separate builtin table vs. a
+discriminator column; the extraction cost and a real image/video **decode
+dependency** — whose own failure and oversize modes are themselves external-plane
+work (RFD 0019); which kinds earn first-class support first (image — the dogfood's
+`avatar` and `media`); and how an unknown/unsupported type degrades (fall back to
+plain `object`). Needs §8.1's namespace to name the sub-kind.
+
+### 8.3 Unify value validation over storage objects (the `format` question, extended)
+
+*"Do we have a `format` RFD?"* — yes, effectively. **RFD 0013** resolved the
+`format` question RFD 0009 §4 deferred, for **text and numbers**, and it did so by
+*rejecting* a named-format vocabulary (`format(email)` hides its rule in compiler
+lore — an LLM-writability failure) in favor of **validator `check` fns**
+(field- and row-level) plus closed-set types. That is the mechanism to extend —
+**not** a new inline format mini-language.
+
+The gap: RFD 0013's field `check` lowers to a SQL `CHECK` over the row's *own*
+columns, but a `storage_object` field holds only an **id**. So it cannot reach the
+object's intrinsic characteristics (`size`, `content_type`, and — with §8.2 —
+`width`/`height`). *"Max 5 MB, `image/png|jpeg` only, ≤ 4096 px"* is therefore
+**unsayable at the table tier today** — the exact G13 floor-leak RFD 0013 set out
+to kill, re-opened for files.
+
+**Proposal:** let a constraint **reach the object's characteristics**, evaluated
+at **upload/attach**. Two shapes, weighed against RFD 0013's own panel:
+
+- **(a) a row `check` on `storage_object`** naming a validator fn over its own
+  columns. Purest reuse — and it lowers to a real SQL `CHECK` that fires on the
+  `pending → committed` UPDATE (§1.6), since `size`/`content_type` are that table's
+  own columns. But it is **global** to all objects, and today users cannot attach
+  anything to the builtin table.
+- **(b) a ref-reaching field check** — `avatar: storage.object.image check
+  avatar_ok` — so different fields impose different limits. More expressive, but it
+  **cannot** be a column `CHECK` (SQLite `CHECK` forbids subqueries/joins), so it
+  must be enforced at the storage-protocol boundary (a runtime guard at PUT/attach,
+  or a trigger), not by RFD 0013's CHECK-lowering.
+
+Open questions: *where* it fires (reject at the signed PUT before commit, or at
+attach?) and what the client sees (a `413`/`422` with a derived code, per §4);
+whether a *narrow* declarative sugar bounded to intrinsic columns (`size < 5MB`,
+`mime in (…)`) is worth it or it stays a `check` fn; and how it composes with
+§8.2's typed metadata. This is the natural next **value-tier** increment after
+RFD 0013, scoped to storage.
