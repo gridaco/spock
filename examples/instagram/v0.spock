@@ -1,5 +1,15 @@
-// instagram — the v0 slice
-//
+//! Instagram — the v0 slice.
+//!
+//! A working backend for the core Instagram experience: profiles and the
+//! follow graph (public follows, private-account requests, blocks and
+//! restrictions), posts and their media carousels, likes, comments, saves
+//! and collections, mentions and tags, hashtags, reporting, and
+//! notifications.
+//!
+//! The tables are the durable state; the functions below are the deliberate
+//! product surface layered over the auto-generated table CRUD — every
+//! mutation names the ways it can refuse.
+
 // This file uses only the implemented v0 surface (docs/spec/v0.md) and runs
 // on the toolchain in crates/:
 //
@@ -40,26 +50,61 @@
 // callable as read fns, so a client can pre-validate against the same rule.
 // ---------------------------------------------------------------------------
 
-fn valid_username(name: text) -> bool {
+/// A username is 1–30 characters of lowercase letters, digits, dots, and
+/// underscores — nothing else. Enforced on `user.username` and callable to
+/// pre-validate a handle before submitting.
+fn valid_username(
+  /// The candidate handle.
+  name: text,
+) -> bool {
   unchecked sql("""SELECT :name NOT GLOB '*[^a-z0-9._]*' AND length(:name) BETWEEN 1 AND 30""")
 }
-fn valid_body(body: text) -> bool {
-  // non-empty after trimming whitespace, and within the length cap — the
-  // two add_comment refusals (empty_body, body_too_long) as one rule
+
+/// A comment body is non-empty after trimming whitespace and at most 2200
+/// characters — the two former add_comment refusals (empty, too long) as
+/// one reusable rule.
+fn valid_body(
+  /// The candidate comment body.
+  body: text,
+) -> bool {
   unchecked sql("""SELECT length(trim(:body, ' ' || char(9, 10, 13))) >= 1 AND length(:body) <= 2200""")
 }
-fn nonempty(s: text) -> bool {
-  // non-empty once surrounding whitespace is trimmed (a spaces-only value
-  // is empty) — matches the retired empty_reason guard
+
+/// True when the text holds something other than whitespace (a spaces-only
+/// value counts as empty). Used to keep report reasons non-empty.
+fn nonempty(
+  /// The candidate text.
+  s: text,
+) -> bool {
   unchecked sql("""SELECT length(trim(:s, ' ' || char(9, 10, 13))) > 0""")
 }
-fn unit_interval(v: float) -> bool {
+
+/// True when the value lies in the closed interval [0.0, 1.0] — used for
+/// the normalized x/y placement of a media tag.
+fn unit_interval(
+  /// The value to bound-check.
+  v: float,
+) -> bool {
   unchecked sql("""SELECT :v BETWEEN 0.0 AND 1.0""")
 }
-fn non_negative(n: int) -> bool {
+
+/// True when the integer is zero or greater — used to keep media positions
+/// non-negative.
+fn non_negative(
+  /// The value to bound-check.
+  n: int,
+) -> bool {
   unchecked sql("""SELECT :n >= 0""")
 }
-fn distinct_pair(a: uuid, b: uuid) -> bool {
+
+/// True when the two ids differ — the rule behind every "no self-pair"
+/// check (a user cannot follow, block, or restrict themselves).
+fn distinct_pair(
+  /// The first id.
+  a: uuid,
+  /// The second id.
+  b: uuid,
+) -> bool {
   unchecked sql("""SELECT :a <> :b""")
 }
 
@@ -67,21 +112,36 @@ fn distinct_pair(a: uuid, b: uuid) -> bool {
 // people and places
 // ---------------------------------------------------------------------------
 
+/// A person on the network: their profile and privacy setting.
+///
+/// This is the identity anchor — `user.id` is the actor that `spock_actor()`
+/// returns and `= me` stamps, so who is signed in is always a `user`.
 // the identity anchor (RFD 0014): `user.id` is the actor. `spock_actor()`
 // returns it and `= me` stamps it; a dev `X-Spock-Actor` header (or a seed
 // persona) selects who is calling — the seam a verified JWT later fills.
 auth table user {
   key id: uuid = auto
+  /// The handle — shown everywhere, unique across the network, and limited
+  /// to lowercase letters, digits, dots, and underscores (`valid_username`).
   username: text check valid_username unique
+  /// Display name; absent until the user sets one.
   full_name: text?
+  /// Short freeform profile bio.
   bio: text?
+  /// When true the account is private: new followers need an approved
+  /// request, and posts stay hidden from non-followers.
   private: bool = false
+  /// When the account was created.
   joined_at: timestamp = now
 }
 
+/// A physical place a post can be tagged to, identified by an external
+/// `place_id` (e.g. a maps provider's id).
 table location {
   key id: uuid = auto
+  /// Human-readable place name.
   name: text
+  /// The external provider's stable id for this place.
   place_id: text unique
 }
 
@@ -89,29 +149,49 @@ table location {
 // content
 // ---------------------------------------------------------------------------
 
+/// A post: one or more media under a caption, by an author, optionally at a
+/// location. Archiving hides it while keeping its likes and comments;
+/// deleting cascades them away.
 table post {
   key id: uuid = auto
+  /// The author, stamped from the session at insert time (`= me`) — a client
+  /// cannot forge it.
   // `= me` (RFD 0014): the floor stamps the author from the session and a
   // client cannot forge it — `author` leaves post_insert_input. G12's
   // authorship-forgery half, closed on the floor.
   author: user = me
+  /// The caption text, if any.
   caption: text?
+  /// The place this post is tagged to, if any.
   location: location?
-  archived_at: timestamp?      // archive keeps likes/comments; delete cascades them
+  /// Set when the post is archived: it disappears from feeds but its likes
+  /// and comments survive. Null means live.
+  archived_at: timestamp?
+  /// When the post went live.
   published_at: timestamp = now
 }
 
+/// One image or video in a post's carousel, ordered by `position`. A post can
+/// hold several media; each carries its own dimensions and processing status.
 // a carousel is ordered media under one post; "a post needs at least one
 // media" is not sayable (G14). kind/status are closed-set types now (G1,
 // taken); the 0..range on position is a validator (RFD 0013).
 table media {
   key id: uuid = auto
+  /// The post this media belongs to.
   post: post on delete cascade
+  /// Zero-based order within the carousel.
   position: int check non_negative
+  /// Whether this media is a still image or a video.
   kind: "image" | "video"
+  /// Pixel width, once known.
   width: int?
+  /// Pixel height, once known.
   height: int?
+  /// Video duration in milliseconds; null for images.
   duration_ms: int?
+  /// Processing state — uploads start `pending` and become `ready` (or
+  /// `failed`) as the pipeline runs.
   status: "pending" | "ready" | "failed" = "pending"
   unique (post, position)
 }
@@ -120,36 +200,58 @@ table media {
 // the graph
 // ---------------------------------------------------------------------------
 
+/// A directed follow edge: `follower` follows `target`. The pair is the key,
+/// so a follow is idempotent, and a user cannot follow themselves.
 table follow {
   key (follower, target)
+  /// The user doing the following.
   follower: user
+  /// The user being followed.
   target: user
+  /// When the follow was created.
   since: timestamp = now
   check (follower, target) distinct_pair
 }
 
+/// A request to follow a private account, awaiting the target's decision.
+/// Approving it creates the `follow` edge.
 table follow_request {
   key (requester, target)
+  /// The user asking to follow.
   requester: user
+  /// The private account being asked.
   target: user
-  status: "pending" | "approved" | "denied" = "pending"   // G1, taken
+  /// Where the request stands: awaiting a decision, accepted, or refused.
+  status: "pending" | "approved" | "denied" = "pending"
+  /// When the request was made.
   requested_at: timestamp = now
+  /// When the target approved or denied it; null while pending.
   responded_at: timestamp?
   check (requester, target) distinct_pair
 }
 
+/// A block: `blocker` has blocked `blocked`, severing the relationship both
+/// ways and hiding each from the other.
 table block {
   key (blocker, blocked)
+  /// The user who placed the block.
   blocker: user
+  /// The user who was blocked.
   blocked: user
+  /// When the block was placed.
   at: timestamp = now
   check (blocker, blocked) distinct_pair
 }
 
+/// A restriction: `restricted`'s comments on `restricting`'s posts land held
+/// (visible only to their author) instead of public.
 table restriction {
   key (restricting, restricted)
+  /// The user who applied the restriction.
   restricting: user
+  /// The restricted user, whose comments are quietly held.
   restricted: user
+  /// When the restriction was applied.
   at: timestamp = now
   check (restricting, restricted) distinct_pair
 }
@@ -158,45 +260,71 @@ table restriction {
 // interactions
 // ---------------------------------------------------------------------------
 
+/// A like on a post. The (post, user) pair is the key, so liking is
+/// idempotent.
 table like {
   key (post, user)
+  /// The liked post.
   post: post on delete cascade
+  /// The user who liked it.
   user: user
+  /// When the like was placed.
   at: timestamp = now
 }
 
+/// A comment on a post, optionally a reply to another comment.
 table comment {
   key id: uuid = auto
+  /// The post being commented on.
   post: post on delete cascade
-  // deleted parents do not break replies (the PRD's rule): the reply
-  // survives with its parent link nulled — G7's set-null half, taken
+  /// The comment this one replies to, if any. When a parent is deleted its
+  /// replies survive with this link nulled.
   parent: comment? on delete set null
+  /// Who wrote the comment.
   author: user
+  /// The comment text — non-empty and at most 2200 chars (`valid_body`).
   body: text check valid_body
-  status: "visible" | "held" = "visible"   // G1, taken
+  /// `visible` normally, or `held` when the author is restricted by the post
+  /// owner (shown only to its author until released).
+  status: "visible" | "held" = "visible"
+  /// When the comment was posted.
   at: timestamp = now
 }
 
+/// A structured @-mention of a profile inside a post or comment. It stores
+/// the profile reference, so it survives the mentioned user renaming.
 // a structured mention: the ref survives renames (C2). Exactly one of
 // post/comment should be set — not sayable (G5)
 table mention {
   key id: uuid = auto
-  profile: user                // the mentioned profile
+  /// The mentioned profile.
+  profile: user
+  /// The post the mention appears in, if any.
   post: post? on delete cascade
+  /// The comment the mention appears in, if any.
   comment: comment? on delete cascade
-  display: text                // what the author typed
+  /// The literal text the author typed (e.g. `@maya`).
+  display: text
+  /// When the mention was created.
   at: timestamp = now
 }
 
-// unique(media, tagged) + removed_at means a removed tag can never be
-// re-applied — partial uniqueness again (G6)
+/// A person tagged at a point on a media. `removed_at` tombstones a removed
+/// tag; because (media, tagged) is unique, a removed tag can never be
+/// re-applied.
 table media_tag {
   key id: uuid = auto
+  /// The media the tag sits on.
   media: media on delete cascade
+  /// The tagged person.
   tagged: user
-  x: float check unit_interval   // 0.0–1.0 placement — a validator now (RFD 0013)
+  /// Horizontal placement, 0.0–1.0 across the media (`unit_interval`).
+  x: float check unit_interval
+  /// Vertical placement, 0.0–1.0 down the media (`unit_interval`).
   y: float check unit_interval
+  /// When the tag was applied.
   at: timestamp = now
+  /// Set when the tagged person removed themselves; null while the tag is live.
   removed_at: timestamp?
   unique (media, tagged)
 }
@@ -205,27 +333,40 @@ table media_tag {
 // the library
 // ---------------------------------------------------------------------------
 
+/// A post the user saved to their private library. The (user, post) pair is
+/// the key, so saving is idempotent.
 table save {
   key (user, post)
+  /// The user who saved the post.
   user: user
+  /// The saved post.
   post: post on delete cascade
+  /// When the post was saved.
   at: timestamp = now
 }
 
+/// A named collection of saved posts, owned by a user; names are unique per
+/// owner.
 table collection {
   key id: uuid = auto
+  /// The user who owns the collection.
   owner: user
+  /// The collection's display name, unique among this owner's collections.
   name: text
+  /// When the collection was created.
   created_at: timestamp = now
   unique (owner, name)
 }
 
-// "a collection entry must also be a save" is a cross-table invariant v0
-// cannot state (G14)
+/// A post filed into a collection. (By product rule the post should also be
+/// saved, though that cross-table invariant is not enforced here.)
 table collection_post {
   key (collection, post)
+  /// The collection the post is filed under.
   collection: collection on delete cascade
+  /// The filed post.
   post: post on delete cascade
+  /// When the post was filed.
   at: timestamp = now
 }
 
@@ -233,13 +374,19 @@ table collection_post {
 // discovery
 // ---------------------------------------------------------------------------
 
+/// A hashtag, identified by its normalized tag text (the normalized form is
+/// the identity).
 table hashtag {
-  key tag: text                // the normalized form is the identity (C6)
+  /// The normalized tag text, without the leading `#`.
+  key tag: text
 }
 
+/// Links a post to a hashtag it carries.
 table post_hashtag {
   key (post, tag)
+  /// The tagged post.
   post: post on delete cascade
+  /// The hashtag it carries.
   tag: hashtag
 }
 
@@ -252,25 +399,43 @@ table post_hashtag {
 // set null keeps the report when its target dies — the audit trail
 // survives, though the link is gone; soft delete remains the full
 // answer (G7)
+/// A user's report of a post, comment, or profile for review. The target
+/// link survives its target being deleted, so the audit trail is kept.
 table report {
   key id: uuid = auto
+  /// The user who filed the report.
   reporter: user
+  /// The reported post, if that is what was reported.
   post: post? on delete set null
+  /// The reported comment, if that is what was reported.
   comment: comment? on delete set null
+  /// The reported profile, if that is what was reported.
   profile: user?
+  /// Why it was reported — must be non-empty (`nonempty`).
   reason: text check nonempty
-  status: "open" | "reviewed" | "actioned" = "open"   // G1, taken
+  /// Review state: newly filed, looked at, or acted on.
+  status: "open" | "reviewed" | "actioned" = "open"
+  /// When the report was filed.
   at: timestamp = now
 }
 
+/// An activity notification delivered to a recipient — a follow, request,
+/// like, comment, mention, or tag from another user.
 table notification {
   key id: uuid = auto
+  /// Who receives the notification.
   recipient: user
+  /// Who caused it (the follower, liker, commenter, …).
   actor: user
-  kind: "follow" | "follow_request" | "like" | "comment" | "mention" | "tag"   // G1, taken
+  /// What kind of activity this notifies about.
+  kind: "follow" | "follow_request" | "like" | "comment" | "mention" | "tag"
+  /// The post it concerns, when relevant.
   post: post? on delete cascade
+  /// The comment it concerns, when relevant.
   comment: comment? on delete cascade
+  /// When the activity happened.
   at: timestamp = now
+  /// When the recipient read it; null while unread.
   read_at: timestamp?
 }
 
@@ -287,12 +452,19 @@ table notification {
 // so seven refusals retired here (G1/G13, taken).
 // ---------------------------------------------------------------------------
 
+/// Change a user's handle. Refuses if the new handle is already taken or
+/// is not a valid username, and reports `not_found` if the user is unknown.
 // the PRD's "invalid usernames are rejected" is now the field's own
 // `check valid_username` (RFD 0013, taken): the floor's insert_user_one
 // enforces it too, and rename's UPDATE trips the same named CHECK — the
 // `invalid_username` refusal and its guard are retired. `not_found` is
 // left meaning what it says.
-mut fn rename_user(user: user, username: text) -> user ! user_username_taken | user_username_invalid | not_found {
+mut fn rename_user(
+  /// The user to rename.
+  user: user,
+  /// The new handle.
+  username: text,
+) -> user ! user_username_taken | user_username_invalid | not_found {
   unchecked sql("""
     UPDATE user SET username = :username
     WHERE id = :user
@@ -300,6 +472,9 @@ mut fn rename_user(user: user, username: text) -> user ! user_username_taken | u
   """)
 }
 
+/// Follow a public account. Refuses if either party has blocked the other,
+/// or if the target is private (use `request_follow` for those). Re-following
+/// is idempotent.
 // follow, public profiles only. A self-follow is now the table's
 // `check (follower, target) distinct_pair` (RFD 0013, taken); `blocked`
 // and `account_private` stay refusals — cross-table state a CHECK cannot
@@ -308,7 +483,12 @@ mut fn rename_user(user: user, username: text) -> user ! user_username_taken | u
 // but the exemption is now a visible NOT EXISTS on each guard instead
 // of W1's leading already-exists escape (W1, softened). A missing
 // target falls through to the FK: `bad_request`, truthfully.
-mut fn follow(follower: user, target: user) -> follow ! blocked | account_private {
+mut fn follow(
+  /// The user who will follow.
+  follower: user,
+  /// The public account to follow.
+  target: user,
+) -> follow ! blocked | account_private {
   unchecked sql("""
     SELECT spock_refuse('blocked')
     WHERE NOT EXISTS (SELECT 1 FROM follow
@@ -331,7 +511,14 @@ mut fn follow(follower: user, target: user) -> follow ! blocked | account_privat
   """)
 }
 
-mut fn unfollow(follower: user, target: user) -> follow? {
+/// Unfollow an account. Idempotent: returns null if there was no follow to
+/// begin with.
+mut fn unfollow(
+  /// The user who will unfollow.
+  follower: user,
+  /// The account to stop following.
+  target: user,
+) -> follow? {
   // idempotent by arity: miss = null = already unfollowed (C1)
   unchecked sql("""
     DELETE FROM follow
@@ -340,6 +527,9 @@ mut fn unfollow(follower: user, target: user) -> follow? {
   """)
 }
 
+/// Ask to follow a private account. Refuses if either party has blocked the
+/// other, or if the target is public (just `follow` those). Re-requesting is
+/// idempotent, and a previously denied request revives to pending.
 // follow a private profile: request. A denied request revives to pending —
 // a policy the PRD leaves open, adopted from the answer sheet (pg.sql;
 // v1-B1) — and saying so still takes a CASE per column (W1). A public
@@ -347,7 +537,12 @@ mut fn unfollow(follower: user, target: user) -> follow? {
 // guards carry the same existing-row exemption as follow/like/save: a
 // pending request whose target later went public (or got floor-blocked)
 // is returned, not refused — re-request stays idempotent.
-mut fn request_follow(requester: user, target: user) -> follow_request ! blocked | account_public {
+mut fn request_follow(
+  /// The user asking to follow.
+  requester: user,
+  /// The private account being asked.
+  target: user,
+) -> follow_request ! blocked | account_public {
   unchecked sql("""
     SELECT spock_refuse('blocked')
     WHERE NOT EXISTS (SELECT 1 FROM follow_request
@@ -373,6 +568,10 @@ mut fn request_follow(requester: user, target: user) -> follow_request ! blocked
   """)
 }
 
+/// Approve a pending follow request: flips it to approved, creates the follow
+/// edge, and notifies the requester — all in one transaction. Idempotent, so
+/// re-approving re-notifies no one. Refuses a denied request (revive it via
+/// `request_follow` first).
 // UNBROKEN (G3, taken): approving flips the request, creates the follow
 // edge, and writes the acceptance notification — three tables, one
 // transaction, the flow the single-statement wall famously severed.
@@ -382,7 +581,12 @@ mut fn request_follow(requester: user, target: user) -> follow_request ! blocked
 // and — crucially — cannot resurrect an edge the requester has since
 // unfollowed: only the pending→approved transition creates the follow.
 // A denied request refuses by name — revive it via request_follow first.
-mut fn approve_follow_request(requester: user, target: user) -> follow_request ! request_denied | not_found {
+mut fn approve_follow_request(
+  /// The user who made the request.
+  requester: user,
+  /// The account that was asked (and is approving).
+  target: user,
+) -> follow_request ! request_denied | not_found {
   unchecked sql("""
     SELECT spock_refuse('request_denied')
     WHERE (SELECT status FROM follow_request
@@ -413,8 +617,15 @@ mut fn approve_follow_request(requester: user, target: user) -> follow_request !
   """)
 }
 
+/// Deny a pending follow request. Refuses if the request was already
+/// approved (unfollow instead), and reports `not_found` if there is none.
 // denying an approved request is a named refusal, not a silent miss
-mut fn deny_follow_request(requester: user, target: user) -> follow_request ! request_approved | not_found {
+mut fn deny_follow_request(
+  /// The user who made the request.
+  requester: user,
+  /// The account that was asked (and is denying).
+  target: user,
+) -> follow_request ! request_approved | not_found {
   unchecked sql("""
     SELECT spock_refuse('request_approved')
     WHERE (SELECT status FROM follow_request
@@ -430,9 +641,16 @@ mut fn deny_follow_request(requester: user, target: user) -> follow_request ! re
   """)
 }
 
+/// Block a user. Severs the relationship both ways — any follows and pending
+/// requests between them are removed in the same transaction. Idempotent.
 // blocking severs the relationship both ways (PRD): follows and pending
 // requests die in the same transaction the block lands in (G3, taken)
-mut fn block_user(blocker: user, blocked: user) -> block {
+mut fn block_user(
+  /// The user placing the block.
+  blocker: user,
+  /// The user to block.
+  blocked: user,
+) -> block {
   unchecked sql("""
     DELETE FROM follow
     WHERE (follower = :blocker AND target = :blocked)
@@ -451,7 +669,13 @@ mut fn block_user(blocker: user, blocked: user) -> block {
   """)
 }
 
-mut fn unblock(blocker: user, blocked: user) -> block? {
+/// Lift a block. Idempotent: returns null if there was no block.
+mut fn unblock(
+  /// The user who placed the block.
+  blocker: user,
+  /// The user to unblock.
+  blocked: user,
+) -> block? {
   unchecked sql("""
     DELETE FROM block
     WHERE blocker = :blocker AND blocked = :blocked
@@ -459,7 +683,14 @@ mut fn unblock(blocker: user, blocked: user) -> block? {
   """)
 }
 
-mut fn restrict_user(restricting: user, restricted: user) -> restriction {
+/// Restrict a user: their comments on your posts will land held rather than
+/// public. Idempotent.
+mut fn restrict_user(
+  /// The user applying the restriction.
+  restricting: user,
+  /// The user to restrict.
+  restricted: user,
+) -> restriction {
   unchecked sql("""
     INSERT INTO restriction (restricting, restricted)
     VALUES (:restricting, :restricted)
@@ -468,7 +699,13 @@ mut fn restrict_user(restricting: user, restricted: user) -> restriction {
   """)
 }
 
-mut fn unrestrict_user(restricting: user, restricted: user) -> restriction? {
+/// Lift a restriction. Idempotent: returns null if there was none.
+mut fn unrestrict_user(
+  /// The user who applied the restriction.
+  restricting: user,
+  /// The user to unrestrict.
+  restricted: user,
+) -> restriction? {
   unchecked sql("""
     DELETE FROM restriction
     WHERE restricting = :restricting AND restricted = :restricted
@@ -480,6 +717,9 @@ mut fn unrestrict_user(restricting: user, restricted: user) -> restriction? {
 // the deliberate surface — content and interactions
 // ---------------------------------------------------------------------------
 
+/// Like a post, notifying its author. Refuses across a block, or on a private
+/// author you don't follow (your own posts are exempt). Idempotent — a second
+/// like neither errors nor re-notifies.
 // the PRD's interaction rules by name: no liking across a block, no
 // liking a private author you don't follow (self exempt) — and the act
 // now writes the notification it produces (G3, taken; the counter G15
@@ -488,7 +728,12 @@ mut fn unrestrict_user(restricting: user, restricted: user) -> restriction? {
 // (the W1 wrinkle, now handled); the exemption on the notification
 // keeps re-likes from re-notifying. A missing post falls to the FK:
 // `bad_request`, truthfully.
-mut fn like_post(user: user, post: post) -> like ! blocked | account_private {
+mut fn like_post(
+  /// The user liking the post.
+  user: user,
+  /// The post to like.
+  post: post,
+) -> like ! blocked | account_private {
   unchecked sql("""
     SELECT spock_refuse('blocked')
     WHERE NOT EXISTS (SELECT 1 FROM "like" WHERE post = :post AND user = :user)
@@ -521,7 +766,13 @@ mut fn like_post(user: user, post: post) -> like ! blocked | account_private {
   """)
 }
 
-mut fn unlike_post(user: user, post: post) -> like? {
+/// Remove a like. Idempotent: returns null if the post wasn't liked.
+mut fn unlike_post(
+  /// The user unliking the post.
+  user: user,
+  /// The post to unlike.
+  post: post,
+) -> like? {
   unchecked sql("""
     DELETE FROM "like"
     WHERE post = :post AND user = :user
@@ -529,9 +780,17 @@ mut fn unlike_post(user: user, post: post) -> like? {
   """)
 }
 
+/// Save a post to your private library. Same visibility refusals as
+/// `like_post` (saving implies seeing); saves are private, so no one is
+/// notified. Idempotent.
 // same visibility refusals as like_post: saving implies seeing. No
 // notification — saves are private.
-mut fn save_post(user: user, post: post) -> save ! blocked | account_private {
+mut fn save_post(
+  /// The user saving the post.
+  user: user,
+  /// The post to save.
+  post: post,
+) -> save ! blocked | account_private {
   unchecked sql("""
     SELECT spock_refuse('blocked')
     WHERE NOT EXISTS (SELECT 1 FROM save WHERE user = :user AND post = :post)
@@ -557,9 +816,16 @@ mut fn save_post(user: user, post: post) -> save ! blocked | account_private {
   """)
 }
 
+/// Unsave a post, also removing it from any of the user's collections.
+/// Idempotent: returns null if the post wasn't saved.
 // unsaving also drops the post from the user's own collections (PRD) —
 // the second table G3 used to forbid (taken); no more stale entries
-mut fn unsave_post(user: user, post: post) -> save? {
+mut fn unsave_post(
+  /// The user unsaving the post.
+  user: user,
+  /// The post to unsave.
+  post: post,
+) -> save? {
   unchecked sql("""
     DELETE FROM collection_post
     WHERE post = :post
@@ -573,6 +839,10 @@ mut fn unsave_post(user: user, post: post) -> save? {
   """)
 }
 
+/// Add a comment to a post (optionally as a reply), notifying the post
+/// author. A comment from a restricted user lands held instead of visible.
+/// Refuses a parent from another post, comments across a block or on a
+/// private author you don't follow, and an empty or over-long body.
 // every guard is a named refusal now; the restriction rule stays policy,
 // not refusal — a comment from a restricted user lands held instead of
 // visible, one CASE in the insert (W2). The held path does not notify.
@@ -584,7 +854,17 @@ mut fn unsave_post(user: user, post: post) -> save? {
 // `not_found` is declared because it is reachable here: the answering
 // INSERT..SELECT needs the post row (for the held CASE), so a missing
 // post is the arity miss, not the siblings' FK bad_request.
-mut fn add_comment(author: user, post: post, body: text, parent: comment?) -> comment ! parent_mismatch | blocked | account_private | comment_body_invalid | not_found {
+mut fn add_comment(
+  /// Who is writing the comment.
+  author: user,
+  /// The post being commented on.
+  post: post,
+  /// The comment text (non-empty, at most 2200 chars).
+  body: text,
+  /// The comment being replied to, if this is a reply. Must belong to the
+  /// same post.
+  parent: comment?,
+) -> comment ! parent_mismatch | blocked | account_private | comment_body_invalid | not_found {
   unchecked sql("""
     SELECT spock_refuse('parent_mismatch')
     WHERE :parent IS NOT NULL
@@ -626,8 +906,16 @@ mut fn add_comment(author: user, post: post, body: text, parent: comment?) -> co
   """)
 }
 
+/// The post author releases a held comment, making it visible (the other
+/// half of the restriction flow). Returns null if the comment isn't held or
+/// the actor doesn't own the post.
 // the post author releases a held comment (the restriction flow's other half)
-mut fn approve_comment(comment: comment, actor: user) -> comment? {
+mut fn approve_comment(
+  /// The held comment to release.
+  comment: comment,
+  /// The user acting — must be the post's author.
+  actor: user,
+) -> comment? {
   unchecked sql("""
     UPDATE comment SET status = 'visible'
     WHERE id = :comment AND status = 'held'
@@ -636,9 +924,16 @@ mut fn approve_comment(comment: comment, actor: user) -> comment? {
   """)
 }
 
+/// Delete a comment. Allowed for the comment's author or the post's owner.
+/// Returns null if the actor is neither.
 // the author or the post owner may delete; `actor` is client-asserted (G12).
 // Hard delete — the PRD wants audit-preserving soft delete (G7)
-mut fn delete_comment(comment: comment, actor: user) -> comment? {
+mut fn delete_comment(
+  /// The comment to delete.
+  comment: comment,
+  /// The user acting — the comment's author or the post's owner.
+  actor: user,
+) -> comment? {
   unchecked sql("""
     DELETE FROM comment
     WHERE id = :comment
@@ -647,9 +942,16 @@ mut fn delete_comment(comment: comment, actor: user) -> comment? {
   """)
 }
 
+/// Remove yourself from a tag. Idempotent; the tombstoned row then blocks any
+/// re-tag of you on that media. Returns null if the tag isn't yours.
 // idempotent self-removal from a tag; the tombstoned row then blocks any
 // re-tag forever via unique(media, tagged) (G6)
-mut fn remove_media_tag(tag: media_tag, actor: user) -> media_tag? {
+mut fn remove_media_tag(
+  /// The tag to remove.
+  tag: media_tag,
+  /// The user acting — must be the tagged person.
+  actor: user,
+) -> media_tag? {
   unchecked sql("""
     UPDATE media_tag
     SET removed_at = coalesce(removed_at, spock_now())
@@ -658,10 +960,16 @@ mut fn remove_media_tag(tag: media_tag, actor: user) -> media_tag? {
   """)
 }
 
+/// Archive one of your own posts (hides it from feeds, keeps its likes and
+/// comments). Acts as the signed-in user via `spock_actor()`; a post that
+/// isn't yours returns null. Idempotent.
 // the author archives their own post — the actor is the seam now, not a
 // client-asserted param (RFD 0014, G12 sound): a non-author matches no row
 // (arity miss = not_found), anonymous (NULL) likewise.
-mut fn archive_post(post: post) -> post? {
+mut fn archive_post(
+  /// The post to archive — must be authored by the signed-in user.
+  post: post,
+) -> post? {
   unchecked sql("""
     UPDATE post
     SET archived_at = coalesce(archived_at, spock_now())
@@ -670,7 +978,12 @@ mut fn archive_post(post: post) -> post? {
   """)
 }
 
-mut fn unarchive_post(post: post) -> post? {
+/// Restore one of your own archived posts. Acts as the signed-in user via
+/// `spock_actor()`; returns null if the post isn't yours.
+mut fn unarchive_post(
+  /// The post to restore — must be authored by the signed-in user.
+  post: post,
+) -> post? {
   unchecked sql("""
     UPDATE post SET archived_at = NULL
     WHERE id = :post AND author = spock_actor()
@@ -678,11 +991,18 @@ mut fn unarchive_post(post: post) -> post? {
   """)
 }
 
+/// Delete one of your own posts. Cascades to its media, likes, comments,
+/// saves, collection entries, hashtag links, mentions, tags, and
+/// notifications; reports survive with their link nulled. Acts as the
+/// signed-in user via `spock_actor()`; returns null if the post isn't yours.
 // hard delete, idempotent by arity; the declared cascades take media,
 // likes, comments, saves, collection entries, hashtag links, mentions,
 // tags, notifications — while reports survive with nulled links (the
 // set-null half of G7; soft delete remains the full audit answer)
-mut fn delete_post(post: post) -> post? {
+mut fn delete_post(
+  /// The post to delete — must be authored by the signed-in user.
+  post: post,
+) -> post? {
   unchecked sql("""
     DELETE FROM post
     WHERE id = :post AND author = spock_actor()
@@ -690,12 +1010,20 @@ mut fn delete_post(post: post) -> post? {
   """)
 }
 
+/// Report a post for review. Refuses an empty reason.
 // id, status, and timestamp all ride their declared defaults (G4, taken);
 // the empty-reason rule is now `reason: text check nonempty` (RFD 0013) —
 // the floor's insert_report_one enforces it too, and this INSERT trips the
 // same named CHECK, so the empty_reason refusal is retired.
 // "No unbounded duplicates per reporter and target" stays unsaid (G5, G6)
-mut fn report_post(reporter: user, post: post, reason: text) -> report ! report_reason_invalid {
+mut fn report_post(
+  /// The user filing the report.
+  reporter: user,
+  /// The post being reported.
+  post: post,
+  /// Why it's being reported (must be non-empty).
+  reason: text,
+) -> report ! report_reason_invalid {
   unchecked sql("""
     INSERT INTO report (reporter, post, reason)
     VALUES (:reporter, :post, :reason)
@@ -703,12 +1031,21 @@ mut fn report_post(reporter: user, post: post, reason: text) -> report ! report_
   """)
 }
 
+/// File a saved post into one of your collections. Refuses if the actor
+/// doesn't own the collection, or if the post isn't saved yet. Idempotent.
 // the owner files a saved post into a collection; "must already be
 // saved" is a cross-table rule no table can declare (G14) but a write
 // guard can now refuse by name — until the floor writes around it (G13).
 // A missing collection makes the ownership subquery NULL, so neither
 // refusal fires and the FK answers `bad_request`, truthfully.
-mut fn add_to_collection(collection: collection, post: post, actor: user) -> collection_post ! not_owner | not_saved {
+mut fn add_to_collection(
+  /// The collection to file into — must be owned by the actor.
+  collection: collection,
+  /// The post to file — must already be saved by the actor.
+  post: post,
+  /// The user acting — the collection's owner.
+  actor: user,
+) -> collection_post ! not_owner | not_saved {
   unchecked sql("""
     SELECT spock_refuse('not_owner')
     WHERE (SELECT owner FROM collection WHERE id = :collection) <> :actor
@@ -726,7 +1063,16 @@ mut fn add_to_collection(collection: collection, post: post, actor: user) -> col
   """)
 }
 
-mut fn remove_from_collection(collection: collection, post: post, actor: user) -> collection_post? {
+/// Remove a post from one of your collections. Idempotent; returns null if
+/// the actor doesn't own the collection or the post wasn't filed.
+mut fn remove_from_collection(
+  /// The collection to remove from — must be owned by the actor.
+  collection: collection,
+  /// The post to remove.
+  post: post,
+  /// The user acting — the collection's owner.
+  actor: user,
+) -> collection_post? {
   unchecked sql("""
     DELETE FROM collection_post
     WHERE collection = :collection AND post = :post
@@ -735,7 +1081,12 @@ mut fn remove_from_collection(collection: collection, post: post, actor: user) -
   """)
 }
 
-mut fn mark_notifications_read(user: user) -> [notification] {
+/// Mark all of a user's unread notifications as read, returning the ones just
+/// updated.
+mut fn mark_notifications_read(
+  /// The user whose notifications to mark read.
+  user: user,
+) -> [notification] {
   unchecked sql("""
     UPDATE notification
     SET read_at = spock_now()
@@ -754,49 +1105,87 @@ mut fn mark_notifications_read(user: user) -> [notification] {
 // still hand-rolled (G16 — deferred to the filter layer, deliberately)
 // ---------------------------------------------------------------------------
 
+/// A post's like and visible-comment counts.
 record engagement {
+  /// Number of likes.
   likes: int
+  /// Number of visible comments.
   comments: int
 }
 
+/// One row of the home feed: a post with its counts and the viewer's own
+/// like/save state, flattened for direct rendering.
 record feed_item {
+  /// The post's id.
   post: uuid
+  /// The author's handle.
   author: text
+  /// The caption, if any.
   caption: text?
+  /// When the post went live.
   published_at: timestamp
+  /// Like count.
   likes: int
+  /// Visible-comment count.
   comments: int
+  /// Whether the viewer has liked this post.
   viewer_liked: bool
+  /// Whether the viewer has saved this post.
   viewer_saved: bool
 }
 
+/// A profile page: the user's public details plus follower/following/post
+/// counts and whether the viewer follows them.
 record profile_page {
+  /// The user's id.
   id: uuid
+  /// The user's handle.
   username: text
+  /// Display name, if set.
   full_name: text?
+  /// Profile bio, if set.
   bio: text?
+  /// Whether the account is private.
   private: bool
+  /// How many users follow this profile.
   followers: int
+  /// How many users this profile follows.
   following: int
+  /// How many live posts this profile has.
   posts: int
+  /// Whether the viewer follows this profile.
   viewer_follows: bool
 }
 
+/// A compact profile for search results and lists.
 record profile_card {
+  /// The user's id.
   id: uuid
+  /// The user's handle.
   username: text
+  /// Display name, if set.
   full_name: text?
+  /// Follower count.
   followers: int
 }
 
 
+/// The viewer's home feed: their own posts and those of accounts they follow,
+/// newest first, excluding archived posts and anyone they block or are
+/// blocked by. Pass the oldest `published_at` you've seen as `before` to page.
 // followed authors plus own posts, newest first, cursor on published_at
 // with an id tiebreaker — rows tied exactly on a boundary timestamp can
 // still be skipped by the single-column cursor; real keyset pagination
 // wants a compound cursor the protocol should own (G16). The flat record
 // is the ceiling: no nested author object, no media list — the client
 // hydrates via the floor (G8)
-fn home_feed(viewer: user, before: timestamp?) -> [feed_item] {
+fn home_feed(
+  /// The user whose feed to build.
+  viewer: user,
+  /// Page cursor: return posts published strictly before this time. Omit for
+  /// the first page.
+  before: timestamp?,
+) -> [feed_item] {
   unchecked sql("""
     SELECT
       p.id AS post,
@@ -821,7 +1210,14 @@ fn home_feed(viewer: user, before: timestamp?) -> [feed_item] {
   """)
 }
 
-fn profile(username: text, viewer: user?) -> profile_page ! not_found {
+/// Look up a profile by handle, with its follower/following/post counts and
+/// whether the viewer follows it. Reports `not_found` for an unknown handle.
+fn profile(
+  /// The handle to look up.
+  username: text,
+  /// The viewer, used to compute `viewer_follows`; may be omitted.
+  viewer: user?,
+) -> profile_page ! not_found {
   unchecked sql("""
     SELECT
       u.id AS id,
@@ -838,11 +1234,16 @@ fn profile(username: text, viewer: user?) -> profile_page ! not_found {
   """)
 }
 
+/// Search profiles by handle or display name (substring match), shortest
+/// handle first as a crude relevance. Returns up to 20 compact cards.
 // substring match, shortest-username-first as a crude relevance; the
 // LIKE metacharacters must be escaped by hand or :q becomes a wildcard
 // language (G16); excluding blocked/disabled profiles needs viewer
 // context this signature lacks (G12)
-fn search_profiles(q: text) -> [profile_card] {
+fn search_profiles(
+  /// The search text; matched as a substring of handle and display name.
+  q: text,
+) -> [profile_card] {
   unchecked sql("""
     SELECT
       u.id AS id,
@@ -857,7 +1258,11 @@ fn search_profiles(q: text) -> [profile_card] {
   """)
 }
 
-fn post_engagement(post: post) -> engagement {
+/// A post's like and visible-comment counts.
+fn post_engagement(
+  /// The post to count.
+  post: post,
+) -> engagement {
   unchecked sql("""
     SELECT
       (SELECT count(*) FROM "like"  WHERE post = :post) AS likes,
@@ -865,15 +1270,27 @@ fn post_engagement(post: post) -> engagement {
   """)
 }
 
-fn post_media(post: post) -> [media] {
+/// A post's media, in carousel order.
+fn post_media(
+  /// The post whose media to list.
+  post: post,
+) -> [media] {
   unchecked sql("""
     SELECT * FROM media WHERE post = :post ORDER BY position
   """)
 }
 
+/// A post's visible comments, newest first. Held comments are excluded (even
+/// from their own author). Page with `before`.
 // held comments are hidden even from their own author here — saying
 // "visible, or held-and-mine" wants a viewer param on every read (G12)
-fn post_comments(post: post, before: timestamp?) -> [comment] {
+fn post_comments(
+  /// The post whose comments to list.
+  post: post,
+  /// Page cursor: return comments strictly before this time. Omit for the
+  /// first page.
+  before: timestamp?,
+) -> [comment] {
   unchecked sql("""
     SELECT * FROM comment
     WHERE post = :post AND status = 'visible'
@@ -883,10 +1300,18 @@ fn post_comments(post: post, before: timestamp?) -> [comment] {
   """)
 }
 
+/// Public posts carrying a hashtag, newest first. Archived posts and private
+/// authors are excluded. Page with `before`.
 // public discovery: archived posts and private authors are excluded here —
 // but the borrowed floor (`GET /rest/v1/post`) still serves them, because
 // the floor cannot filter (G13)
-fn hashtag_page(tag: hashtag, before: timestamp?) -> [post] {
+fn hashtag_page(
+  /// The hashtag to list posts for.
+  tag: hashtag,
+  /// Page cursor: return posts published strictly before this time. Omit for
+  /// the first page.
+  before: timestamp?,
+) -> [post] {
   unchecked sql("""
     SELECT p.* FROM post p
     JOIN post_hashtag ph ON ph.post = p.id
@@ -898,7 +1323,15 @@ fn hashtag_page(tag: hashtag, before: timestamp?) -> [post] {
   """)
 }
 
-fn location_page(place: location, before: timestamp?) -> [post] {
+/// Public posts tagged at a location, newest first. Archived posts and
+/// private authors are excluded. Page with `before`.
+fn location_page(
+  /// The location to list posts for.
+  place: location,
+  /// Page cursor: return posts published strictly before this time. Omit for
+  /// the first page.
+  before: timestamp?,
+) -> [post] {
   unchecked sql("""
     SELECT p.* FROM post p
     JOIN user u ON u.id = p.author
@@ -909,10 +1342,17 @@ fn location_page(place: location, before: timestamp?) -> [post] {
   """)
 }
 
+/// A user's saved-posts library, newest post first. Page with `before`.
 // the saved-posts library (private to the saver by convention the open
 // tier cannot enforce — G12/G13); cursor rides published_at because the
 // save time is not in the returned shape (G8)
-fn saved_posts(user: user, before: timestamp?) -> [post] {
+fn saved_posts(
+  /// The user whose saved posts to list.
+  user: user,
+  /// Page cursor: return posts published strictly before this time. Omit for
+  /// the first page.
+  before: timestamp?,
+) -> [post] {
   unchecked sql("""
     SELECT p.* FROM post p
     JOIN save s ON s.post = p.id
@@ -923,8 +1363,16 @@ fn saved_posts(user: user, before: timestamp?) -> [post] {
   """)
 }
 
+/// Posts a user is tagged in — live tags only, archived posts excluded,
+/// newest first. Page with `before`.
 // the tagged-posts surface: live tags only, archived posts excluded
-fn tagged_posts(user: user, before: timestamp?) -> [post] {
+fn tagged_posts(
+  /// The tagged user.
+  user: user,
+  /// Page cursor: return posts published strictly before this time. Omit for
+  /// the first page.
+  before: timestamp?,
+) -> [post] {
   unchecked sql("""
     SELECT DISTINCT p.* FROM post p
     JOIN media m ON m.post = p.id
@@ -937,7 +1385,14 @@ fn tagged_posts(user: user, before: timestamp?) -> [post] {
   """)
 }
 
-fn notifications(user: user, before: timestamp?) -> [notification] {
+/// A user's notifications, newest first (read and unread). Page with `before`.
+fn notifications(
+  /// The recipient whose notifications to list.
+  user: user,
+  /// Page cursor: return notifications strictly before this time. Omit for
+  /// the first page.
+  before: timestamp?,
+) -> [notification] {
   unchecked sql("""
     SELECT * FROM notification
     WHERE recipient = :user AND (:before IS NULL OR at < :before)
@@ -946,8 +1401,12 @@ fn notifications(user: user, before: timestamp?) -> [notification] {
   """)
 }
 
+/// How many unread notifications a user has.
 // a bare number — the wrapper record this once needed is gone (G9, taken)
-fn unread_count(user: user) -> int {
+fn unread_count(
+  /// The user to count unread notifications for.
+  user: user,
+) -> int {
   unchecked sql("""
     SELECT count(*) FROM notification
     WHERE recipient = :user AND read_at IS NULL
