@@ -11,6 +11,7 @@ import type { FnDef } from "@/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Doc } from "@/components/doc"
 import { ErrCodes } from "@/components/err-codes"
 
 interface RunResult {
@@ -108,6 +109,7 @@ export class FnRunner extends Component<{ name: string }, State> {
           <p className="text-sm text-muted-foreground mt-0.5">
             function · {fn.readonly ? "GET" : "POST"} <code>/rest/v1/rpc/{fn.name}</code>
           </p>
+          <Doc text={fn.doc} className="text-sm mt-1.5 max-w-3xl" />
           <pre className="mt-2 rounded-md border bg-muted/40 px-3 py-2.5 font-mono text-[13.5px] overflow-x-auto">
             {fnSignature(fn)}
           </pre>
@@ -140,7 +142,7 @@ export class FnRunner extends Component<{ name: string }, State> {
           {(fn.params ?? []).length ? (
             <div className="flex flex-col gap-2 max-w-xl">
               {(fn.params ?? []).map((p) => (
-                <div key={p.name} className="grid grid-cols-[170px_1fr] items-center gap-2">
+                <div key={p.name} className="grid grid-cols-[170px_1fr] items-center gap-x-2 gap-y-1">
                   <label htmlFor={`p_${p.name}`} className="font-mono text-[13px]">
                     {p.name}{" "}
                     <span className="text-muted-foreground">
@@ -156,6 +158,7 @@ export class FnRunner extends Component<{ name: string }, State> {
                       this.setState((s) => ({ args: { ...s.args, [p.name]: e.target.value } }))
                     }
                   />
+                  <Doc text={p.doc} className="col-start-2 text-xs" />
                 </div>
               ))}
             </div>

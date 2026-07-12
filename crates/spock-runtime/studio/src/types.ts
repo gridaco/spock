@@ -14,6 +14,7 @@ export interface DefaultVal {
 
 export interface Field {
   name: string
+  doc?: string | null
   type: TypeRef
   optional?: boolean
   unique?: boolean
@@ -28,6 +29,7 @@ export interface DerivedError {
 
 export interface Table {
   name: string
+  doc?: string | null
   key: string[]
   fields: Field[]
   uniques?: string[][]
@@ -37,12 +39,14 @@ export interface Table {
 
 export interface RecordField {
   name: string
+  doc?: string | null
   type: TypeRef
   optional?: boolean
 }
 
 export interface RecordDef {
   name: string
+  doc?: string | null
   fields: RecordField[]
 }
 
@@ -54,12 +58,14 @@ export interface Returns {
 
 export interface Param {
   name: string
+  doc?: string | null
   type: TypeRef
   optional?: boolean
 }
 
 export interface FnDef {
   name: string
+  doc?: string | null
   readonly: boolean
   params: Param[]
   returns: Returns
@@ -70,6 +76,7 @@ export interface FnDef {
 
 export interface Contract {
   spock: string
+  doc?: string | null
   module?: string
   name?: string
   tables: Table[]

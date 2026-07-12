@@ -5,6 +5,7 @@ import type { AppState } from "@/lib/app-context"
 import { readsActor } from "@/lib/contract"
 import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
+import { Doc } from "@/components/doc"
 import { ErrCodes } from "@/components/err-codes"
 
 // The surface ledger (RFD 0015 §8): the v0 slice of the exposure surface,
@@ -39,6 +40,11 @@ export class Overview extends Component {
             the v0 slice of the exposure surface, rendered from <code>/~contract</code> — role × via
             arrives with v1 governance
           </p>
+          {/* the contract's own `//!` documentation (RFD 0016) */}
+          <Doc
+            text={contract.doc}
+            className="text-sm mt-3 border-l-2 border-muted-foreground/40 bg-muted/40 rounded-r-md px-3.5 py-2.5 max-w-3xl"
+          />
 
           <SectionLabel>Identity</SectionLabel>
           <Card className="p-4 text-sm">

@@ -5,6 +5,7 @@ import type { AppState } from "@/lib/app-context"
 import { isActorSensitive, returnStr, typeStr } from "@/lib/contract"
 import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
+import { Doc } from "@/components/doc"
 import { ErrCodes } from "@/components/err-codes"
 
 export class FunctionsOverview extends Component {
@@ -58,6 +59,7 @@ export class FunctionsOverview extends Component {
                         <Code2 size={14} className="text-muted-foreground" />
                         {f.name}
                       </span>
+                      <Doc text={f.doc} className="text-xs mt-1 line-clamp-2 max-w-md" />
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">
                       <span className="flex items-center gap-1">

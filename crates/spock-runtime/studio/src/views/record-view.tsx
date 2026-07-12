@@ -5,6 +5,7 @@ import { typeStr } from "@/lib/contract"
 import type { RecordDef } from "@/types"
 import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
+import { Doc } from "@/components/doc"
 
 // App keys each view by route.name, so this remounts (and componentDidMount
 // re-runs) when the selected record changes — no componentDidUpdate needed.
@@ -34,10 +35,11 @@ export class RecordView extends Component<{ name: string }> {
       <div className="h-full overflow-y-auto">
         <div className="p-6 max-w-3xl">
           <h1 className="text-xl font-semibold tracking-tight">{rec.name}</h1>
-          <p className="text-sm text-muted-foreground mt-0.5 mb-4">
+          <p className="text-sm text-muted-foreground mt-0.5">
             record · a named fn-return shape (scalars only)
           </p>
-          <Card className="overflow-hidden p-0">
+          <Doc text={rec.doc} className="text-sm mt-1.5 max-w-2xl" />
+          <Card className="overflow-hidden p-0 mt-4">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
@@ -49,9 +51,12 @@ export class RecordView extends Component<{ name: string }> {
               <tbody>
                 {rec.fields.map((f, i) => (
                   <tr key={f.name} className="border-b last:border-0">
-                    <td className="px-3 py-2 text-muted-foreground font-mono">{i + 1}</td>
-                    <td className="px-3 py-2 font-mono">{f.name}</td>
-                    <td className="px-3 py-2 font-mono">
+                    <td className="px-3 py-2 text-muted-foreground font-mono align-top">{i + 1}</td>
+                    <td className="px-3 py-2 font-mono align-top">
+                      {f.name}
+                      <Doc text={f.doc} className="text-xs mt-0.5 font-normal max-w-md" />
+                    </td>
+                    <td className="px-3 py-2 font-mono align-top">
                       {typeStr(f.type)}
                       {f.optional ? (
                         <Badge variant="outline" className="ml-2">

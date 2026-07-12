@@ -4,6 +4,7 @@ import { AppContext } from "@/lib/app-context"
 import type { AppState } from "@/lib/app-context"
 import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
+import { Doc } from "@/components/doc"
 
 export class TablesOverview extends Component {
   static contextType = AppContext
@@ -55,6 +56,7 @@ export class TablesOverview extends Component {
                         <Table2 size={14} className="text-muted-foreground" />
                         {t.name}
                       </span>
+                      <Doc text={t.doc} className="text-xs mt-1 line-clamp-2 max-w-md" />
                     </td>
                     <td className="px-3 py-2 font-mono">{t.key.join(", ")}</td>
                     <td className="px-3 py-2 font-mono">{t.fields.length}</td>
