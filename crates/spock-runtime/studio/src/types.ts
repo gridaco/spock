@@ -34,6 +34,8 @@ export interface Table {
   fields: Field[]
   uniques?: string[][]
   anchor?: boolean
+  // The protocol-owned storage_object table (RFD 0018): read-only on the floor.
+  builtin?: boolean
   errors: DerivedError[]
 }
 
@@ -102,6 +104,7 @@ export type Route =
   | { kind: "tables" }
   | { kind: "fns" }
   | { kind: "records" }
+  | { kind: "storage" }
   | { kind: "table"; name: string }
   | { kind: "fn"; name: string }
   | { kind: "record"; name: string }

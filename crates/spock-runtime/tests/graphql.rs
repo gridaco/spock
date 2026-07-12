@@ -83,7 +83,7 @@ seed {
 
 async fn start() -> String {
     let contract = spock_lang::compile(PROGRAM).expect("program compiles");
-    let conn = engine::open(&contract, None).expect("engine opens and seeds");
+    let conn = engine::open(&contract, None, None).expect("engine opens and seeds");
     let app = Arc::new(App::new(contract, conn));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -734,7 +734,7 @@ table media {
 }
 "#;
     let contract = spock_lang::compile(P).expect("program compiles");
-    let conn = engine::open(&contract, None).expect("engine opens");
+    let conn = engine::open(&contract, None, None).expect("engine opens");
     let app = Arc::new(App::new(contract, conn));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -782,7 +782,7 @@ table follow {
 }
 "#;
     let contract = spock_lang::compile(P).expect("program compiles");
-    let conn = engine::open(&contract, None).expect("engine opens");
+    let conn = engine::open(&contract, None, None).expect("engine opens");
     let app = Arc::new(App::new(contract, conn));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

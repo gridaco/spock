@@ -25,6 +25,7 @@ export default defineConfig({
       "/~whoami": "http://127.0.0.1:4000",
       "/rest": "http://127.0.0.1:4000",
       "/graphql": "http://127.0.0.1:4000",
+      "/storage": "http://127.0.0.1:4000",
     },
   },
 })

@@ -1,13 +1,15 @@
-import { Component } from "react"
-import type { ReactNode } from "react"
+import { Component, useRef, useState } from "react"
+import type { ChangeEvent, ReactNode } from "react"
 import { DataGrid } from "react-data-grid"
 import type { Column } from "react-data-grid"
-import { Columns3, KeyRound, RefreshCw, Rows3, Search } from "lucide-react"
+import { Columns3, KeyRound, RefreshCw, Rows3, Search, Upload } from "lucide-react"
 
 import { api } from "@/lib/api"
 import { AppContext } from "@/lib/app-context"
 import type { AppState } from "@/lib/app-context"
+import { useApp } from "@/lib/app-context"
 import { cellText, defaultStr, typeStr } from "@/lib/contract"
+import { isFileField, setFileField, uploadFile } from "@/lib/storage"
 import { cn } from "@/lib/utils"
 import type { Table } from "@/types"
 
@@ -17,6 +19,7 @@ import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Doc } from "@/components/doc"
 import { ErrCodes } from "@/components/err-codes"
+import { FileThumb } from "@/components/file-thumb"
 
 type Row = Record<string, unknown>
 type Mode = "data" | "schema"
@@ -108,29 +111,35 @@ export class TableView extends Component<{ name: string }, State> {
   }
 
   private columns(table: Table): Column<Row>[] {
-    return table.fields.map((f) => ({
-      key: f.name,
-      name: f.name,
-      resizable: true,
-      renderHeaderCell: () => (
-        // the field's `///` doc rides along as a native hover tooltip
-        <span className="flex items-center gap-1.5 normal-case" title={f.doc ?? undefined}>
-          {table.key.includes(f.name) ? (
-            <KeyRound size={12} className="text-muted-foreground" />
-          ) : null}
-          <span className="font-mono text-foreground text-[12.5px] font-semibold">{f.name}</span>
-          <span className="font-mono text-muted-foreground text-[11px] font-normal">
-            {typeStr(f.type)}
+    return table.fields.map((f) => {
+      const file = isFileField(f)
+      return {
+        key: f.name,
+        name: f.name,
+        resizable: true,
+        width: file ? 180 : undefined,
+        renderHeaderCell: () => (
+          // the field's `///` doc rides along as a native hover tooltip
+          <span className="flex items-center gap-1.5 normal-case" title={f.doc ?? undefined}>
+            {table.key.includes(f.name) ? (
+              <KeyRound size={12} className="text-muted-foreground" />
+            ) : null}
+            <span className="font-mono text-foreground text-[12.5px] font-semibold">{f.name}</span>
+            <span className="font-mono text-muted-foreground text-[11px] font-normal">
+              {typeStr(f.type)}
+            </span>
           </span>
-        </span>
-      ),
-      renderCell: ({ row }: { row: Row }) => {
-        const v = row[f.name]
-        if (v === null || v === undefined)
-          return <span className="text-muted-foreground italic">NULL</span>
-        return <span className="font-mono">{cellText(v)}</span>
-      },
-    }))
+        ),
+        renderCell: file
+          ? ({ row }: { row: Row }) => <FileCell table={table} row={row} field={f.name} />
+          : ({ row }: { row: Row }) => {
+              const v = row[f.name]
+              if (v === null || v === undefined)
+                return <span className="text-muted-foreground italic">NULL</span>
+              return <span className="font-mono">{cellText(v)}</span>
+            },
+      }
+    })
   }
 
   render() {
@@ -197,7 +206,9 @@ export class TableView extends Component<{ name: string }, State> {
             <Note>
               Reads are <b className="text-foreground">actor-blind</b> in v0 — impersonation changes{" "}
               <b className="text-foreground">fn</b> results and <code>= me</code> stamps, not table
-              reads. Inline <b className="text-foreground">editing</b> waits on REST writes;{" "}
+              reads. <b className="text-foreground">File</b> columns (→ <code>storage_object</code>)
+              upload through the storage gate and attach via the GraphQL floor; other inline{" "}
+              <b className="text-foreground">editing</b> waits on REST writes, and{" "}
               <b className="text-foreground">filtering</b> waits on the filter RFD.
             </Note>
             <div className="flex-1 min-h-0 border rounded-md overflow-hidden mt-3">
@@ -313,6 +324,60 @@ function SchemaMode({ table, meCols }: { table: Table; meCols: string[] }) {
           </h2>
           <ErrCodes codes={table.errors.map((e) => ({ code: e.code, kind: e.kind }))} />
         </>
+      ) : null}
+    </div>
+  )
+}
+
+// An in-grid file column (RFD 0018): a thumbnail of the attached object plus an
+// upload/replace control. Picking a file runs the storage gate (mint → PUT)
+// then attaches the new object id to this row through the GraphQL floor, all
+// under the current persona, and refreshes.
+function FileCell({ table, row, field }: { table: Table; row: Row; field: string }) {
+  const app = useApp()
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
+  const value = (row[field] ?? null) as string | null
+
+  const onPick = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (inputRef.current) inputRef.current.value = ""
+    if (!file) return
+    setBusy(true)
+    setErr(null)
+    try {
+      const id = await uploadFile(file, app.actor)
+      const keyValues = Object.fromEntries(table.key.map((k) => [k, row[k]]))
+      await setFileField(table, keyValues, field, id, app.actor)
+      app.reload()
+    } catch (ex) {
+      setErr(ex instanceof Error ? ex.message : String(ex))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-1.5 h-full">
+      <input ref={inputRef} type="file" hidden onChange={onPick} />
+      {value ? (
+        <FileThumb id={value} size={22} />
+      ) : (
+        <span className="text-muted-foreground italic text-xs">NULL</span>
+      )}
+      <button
+        onClick={() => inputRef.current?.click()}
+        disabled={busy}
+        title={value ? "Replace file" : "Upload a file"}
+        className="inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-accent disabled:opacity-50"
+      >
+        <Upload size={11} /> {busy ? "…" : value ? "Replace" : "Upload"}
+      </button>
+      {err ? (
+        <span className="text-destructive text-xs" title={err}>
+          !
+        </span>
       ) : null}
     </div>
   )

@@ -20,7 +20,7 @@ rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 axum = "0.8"
 async-graphql = { version = "7", default-features = false, features = ["dynamic-schema", "graphiql"] }
 async-graphql-value = "7"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", features = ["json"] }
 assert_cmd = "2"

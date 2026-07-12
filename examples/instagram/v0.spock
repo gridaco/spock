@@ -25,13 +25,16 @@
 //   - accounts, sessions, recovery, actor identity — blocked on auth
 //     (RFD 0009); every fn below takes its actor as a client-asserted
 //     parameter (G12)
-//   - media upload/processing pipeline — storage is out of v0's scope;
-//     the `media` table models the resulting state
+//   - post media *processing* pipeline — transcoding and display variants
+//     are out of v0's scope (RFD 0018); `media.file` holds the original
+//     stored file, and `kind`/`width`/`height`/`status` describe it. Both
+//     `media.file` and `user.avatar` are seeded from real assets via
+//     `file("./seed/…")` (RFD 0018)
 //   - moderation review flows (claim, action) — report_post records;
 //     nothing consumes
-//   - profile avatar and the tag/mention/comment permission fields — the
-//     avatar needs the media pipeline, and permissions are meaningless
-//     until a real viewer identity can be checked against them (G12)
+//   - the tag/mention/comment permission fields — permissions are
+//     meaningless until a real viewer identity can be checked against them
+//     (G12)
 //   - edit-profile / edit-post / create-collection fns — on the open
 //     tier they would duplicate the floor (`update_user_by_pk`,
 //     `update_post_by_pk`, `insert_collection_one`) guard-for-guard;
@@ -128,6 +131,10 @@ auth table user {
   full_name: text?
   /// Short freeform profile bio.
   bio: text?
+  /// The profile photo — a stored file (RFD 0018). Uploaded through the
+  /// storage protocol (`POST /storage/v1/object/upload/sign` → `PUT` → attach
+  /// here), served by a signed URL; absent until the user sets one.
+  avatar: storage_object?
   /// When true the account is private: new followers need an approved
   /// request, and posts stay hidden from non-followers.
   private: bool = false
@@ -180,6 +187,10 @@ table media {
   key id: uuid = auto
   /// The post this media belongs to.
   post: post on delete cascade
+  /// The original uploaded image or video — a stored file (RFD 0018). The
+  /// bytes live in the storage layer; `kind`/`width`/`height`/`status` below
+  /// describe the (out-of-scope) processing of this original.
+  file: storage_object
   /// Zero-based order within the carousel.
   position: int check non_negative
   /// Whether this media is a still image or a video.
@@ -1418,10 +1429,12 @@ fn unread_count(
 // ---------------------------------------------------------------------------
 
 seed {
-  // people; noor is private, rex is blocked by maya
-  maya = user { username: "maya", full_name: "Maya Chen", bio: "photographer" }
-  luis = user { username: "luis" }
-  vera = user { username: "vera", bio: "coffee, mostly" }
+  // people; noor is private, rex is blocked by maya. avatars are seeded from
+  // real files via file("./seed/…") (RFD 0018); noor and rex have none.
+  maya = user { username: "maya", full_name: "Maya Chen", bio: "photographer",
+                avatar: file("./seed/maya.png") }
+  luis = user { username: "luis", avatar: file("./seed/luis.png") }
+  vera = user { username: "vera", bio: "coffee, mostly", avatar: file("./seed/vera.png") }
   noor = user { username: "noor", full_name: "Noor Haddad", private: true }
   rex  = user { username: "rex" }
 
@@ -1432,12 +1445,16 @@ seed {
   p2 = post { author: luis, caption: "steady hands" }
   p3 = post { author: noor, caption: "the garden, gated" }
 
-  media { post: p1, position: 0, kind: "image", width: 3024, height: 4032, status: "ready" }
-  media { post: p1, position: 1, kind: "image", width: 3024, height: 4032, status: "ready" }
-  m3 = media { post: p2, position: 0, kind: "video", width: 1920, height: 1080, duration_ms: 12500, status: "ready" }
+  media { post: p1, position: 0, kind: "image", file: file("./seed/sunset-1.png"),
+          width: 3024, height: 4032, status: "ready" }
+  media { post: p1, position: 1, kind: "image", file: file("./seed/sunset-2.png"),
+          width: 3024, height: 4032, status: "ready" }
+  m3 = media { post: p2, position: 0, kind: "video", file: file("./seed/clip.mp4"),
+               width: 1920, height: 1080, duration_ms: 12500, status: "ready" }
   // "ready" because p3 is published — nothing in the schema gates publish
   // on processing state (G1: no state machine; G14: no cross-table rule)
-  media { post: p3, position: 0, kind: "image", width: 3024, height: 4032, status: "ready" }
+  media { post: p3, position: 0, kind: "image", file: file("./seed/garden.png"),
+          width: 3024, height: 4032, status: "ready" }
 
   // the graph; maya is an approved follower of the private profile
   follow { follower: luis, target: maya }

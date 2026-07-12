@@ -2,7 +2,7 @@
 //! `gen` (derived artifacts — TypeScript types, GraphQL SDL; RFD 0010),
 //! `run` (materialize + serve the HTTP protocol). docs/spec/v0.md.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 
@@ -69,7 +69,7 @@ fn main() -> ExitCode {
             // defaults against their checks, and replay the seed — so
             // anything `spock run` would reject at load surfaces here,
             // without starting a server.
-            if let Err(e) = spock_runtime::engine::open(&contract, None) {
+            if let Err(e) = spock_runtime::engine::open(&contract, None, Some(&source_dir(&file))) {
                 eprintln!("error: {e}");
                 return ExitCode::FAILURE;
             }
@@ -114,7 +114,7 @@ fn main() -> ExitCode {
             let Some(contract) = load(&file) else {
                 return ExitCode::FAILURE;
             };
-            match run(contract, port, db) {
+            match run(contract, port, db, source_dir(&file)) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -156,7 +156,7 @@ fn main() -> ExitCode {
 /// a data-independent artifact.
 fn graphql_sdl(mut contract: Contract) -> anyhow::Result<String> {
     contract.seed.clear();
-    let conn = spock_runtime::engine::open(&contract, None)?;
+    let conn = spock_runtime::engine::open(&contract, None, None)?;
     let app = Arc::new(spock_runtime::App::new(contract, conn));
     Ok(spock_runtime::graphql::schema(app)?.sdl())
 }
@@ -177,6 +177,12 @@ fn emit(out: Option<PathBuf>, content: String) -> ExitCode {
             ExitCode::SUCCESS
         }
     }
+}
+
+/// The directory a `.spock` file lives in — the root for `file("...")` seed
+/// assets (RFD 0018). Empty (cwd-relative) when the path has no parent.
+fn source_dir(file: &Path) -> PathBuf {
+    file.parent().map(|p| p.to_path_buf()).unwrap_or_default()
 }
 
 /// Read, compile, and (on failure) render every diagnostic.
@@ -203,8 +209,13 @@ fn load(path: &PathBuf) -> Option<Contract> {
     }
 }
 
-fn run(contract: Contract, port: u16, db: Option<PathBuf>) -> anyhow::Result<()> {
-    let conn = spock_runtime::engine::open(&contract, db.as_deref())?;
+fn run(
+    contract: Contract,
+    port: u16,
+    db: Option<PathBuf>,
+    base_dir: PathBuf,
+) -> anyhow::Result<()> {
+    let conn = spock_runtime::engine::open(&contract, db.as_deref(), Some(base_dir.as_path()))?;
     println!(
         "spock v0 — contract loaded: {} table(s), {} fn(s), {} seed row(s) replayed",
         contract.tables.len(),
@@ -213,6 +224,7 @@ fn run(contract: Contract, port: u16, db: Option<PathBuf>) -> anyhow::Result<()>
     );
 
     let app = Arc::new(spock_runtime::App::new(contract, conn));
+    let storage = spock_runtime::storage::storage_active(&app.contract);
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
@@ -222,8 +234,13 @@ fn run(contract: Contract, port: u16, db: Option<PathBuf>) -> anyhow::Result<()>
         println!("  GET  /rest/v1/{{table}}     open reads (identity view)");
         println!("  POST /rest/v1/rpc/{{fn}}    call a declared fn");
         println!("  POST /graphql/v1          GraphQL reads + writes (GraphiQL in the browser)");
+        if storage {
+            println!("  *    /storage/v1/object    upload + serve files (signed URLs)");
+        }
+        // `serve` owns the in-process orphan sweep for a storage contract
+        // (RFD 0018 §1.6); the binary only decides when to stop.
         tokio::select! {
-            result = spock_runtime::http::serve(app, listener) => result?,
+            result = spock_runtime::http::serve(app.clone(), listener) => result?,
             _ = tokio::signal::ctrl_c() => {}
         }
         Ok::<(), anyhow::Error>(())

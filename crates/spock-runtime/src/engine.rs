@@ -12,7 +12,7 @@ use spock_lang::ddl::ddl;
 use spock_lang::ir::{Contract, SeedValue};
 
 use crate::error::ApiError;
-use crate::write::insert_row;
+use crate::write::{insert_row, insert_row_tx};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -33,7 +33,11 @@ pub enum EngineError {
 /// Open the database (in-memory when `path` is `None`), materialize the
 /// schema, and replay the seed. A file database is recreated from scratch:
 /// no migrations in v0.
-pub fn open(contract: &Contract, path: Option<&Path>) -> Result<Connection, EngineError> {
+pub fn open(
+    contract: &Contract,
+    path: Option<&Path>,
+    base_dir: Option<&Path>,
+) -> Result<Connection, EngineError> {
     let mut conn = match path {
         None => Connection::open_in_memory()?,
         Some(p) => {
@@ -59,9 +63,15 @@ pub fn open(contract: &Contract, path: Option<&Path>) -> Result<Connection, Engi
     for statement in ddl(contract) {
         conn.execute_batch(&statement)?;
     }
+    // The byte backend's physical table (RFD 0018) — created after the contract
+    // tables so its `ON DELETE CASCADE` foreign key to `storage_object` resolves.
+    // Not a contract table, so it never reaches REST/GraphQL/codegen.
+    if crate::storage::storage_active(contract) {
+        crate::storage::blob::default_blob_store().init(&conn)?;
+    }
     validate_fns(contract, &conn)?;
     check_defaults(contract, &conn)?;
-    seed(contract, &mut conn)?;
+    seed(contract, &mut conn, base_dir)?;
     Ok(conn)
 }
 
@@ -373,7 +383,11 @@ fn validate_return_columns(
 }
 
 /// Replay the seed (§7.3) through the same write path as the dev surface.
-fn seed(contract: &Contract, conn: &mut Connection) -> Result<(), EngineError> {
+fn seed(
+    contract: &Contract,
+    conn: &mut Connection,
+    base_dir: Option<&Path>,
+) -> Result<(), EngineError> {
     // binding name -> the bound row's key value (as JSON)
     let mut bindings: HashMap<String, Json> = HashMap::new();
 
@@ -395,6 +409,16 @@ fn seed(contract: &Contract, conn: &mut Connection) -> Result<(), EngineError> {
                     .get(binding)
                     .cloned()
                     .expect("checked: bindings resolve"),
+                // file("./path") (RFD 0018): read the asset, materialize a
+                // committed storage_object, and use its id as this field value.
+                SeedValue::File { path } => Json::String(seed_file(
+                    contract,
+                    conn,
+                    base_dir,
+                    path,
+                    index,
+                    &table.name,
+                )?),
             };
             body.insert(name.clone(), json);
         }
@@ -423,6 +447,79 @@ fn seed(contract: &Contract, conn: &mut Connection) -> Result<(), EngineError> {
     Ok(())
 }
 
+/// Load a `file("./path")` seed asset (RFD 0018): read the bytes relative to
+/// the source directory, materialize a committed `storage_object` through the
+/// shared write path, store the bytes in the blob store, and return the new
+/// object id (the value the referencing field will hold).
+fn seed_file(
+    contract: &Contract,
+    conn: &mut Connection,
+    base_dir: Option<&Path>,
+    rel_path: &str,
+    index: usize,
+    table_name: &str,
+) -> Result<String, EngineError> {
+    let seed_err = |message: String| EngineError::Seed {
+        index,
+        table: table_name.to_string(),
+        source: Box::new(ApiError::internal(message)),
+    };
+
+    let base = base_dir.ok_or_else(|| {
+        seed_err("file(...) seed needs a source directory; run against a .spock file".into())
+    })?;
+    let full = base.join(rel_path);
+    let bytes = std::fs::read(&full)
+        .map_err(|e| seed_err(format!("cannot read seed asset `{rel_path}`: {e}")))?;
+
+    let content_type = mime_guess::from_path(&full)
+        .first_or_octet_stream()
+        .to_string();
+    let name = full
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string();
+    let checksum = crate::storage::sha256_hex(&bytes);
+
+    let storage_table = contract
+        .table(spock_lang::ir::STORAGE_OBJECT_TABLE)
+        .ok_or_else(|| seed_err("file(...) used but storage is not active".into()))?;
+
+    let mut body = Map::new();
+    body.insert("name".into(), Json::String(name));
+    body.insert("content_type".into(), Json::String(content_type));
+    body.insert("size".into(), Json::Number((bytes.len() as i64).into()));
+    body.insert("checksum".into(), Json::String(checksum));
+    body.insert("state".into(), Json::String("committed".into()));
+
+    // The metadata row and its bytes commit together (RFD 0018): insert the
+    // object on one transaction (uncommitted), write the bytes on the same tx,
+    // then commit — so a blob-write failure can never leave a committed byteless
+    // row. Mirrors the request path's PUT (storage::put_object).
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| seed_err(format!("begin seed transaction: {e}")))?;
+    let stored = insert_row_tx(contract, storage_table, &tx, &body, None).map_err(|source| {
+        EngineError::Seed {
+            index,
+            table: storage_table.name.clone(),
+            source: Box::new(source),
+        }
+    })?;
+    let id = stored
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| seed_err("seeded storage_object has no id".into()))?
+        .to_string();
+    crate::storage::blob::default_blob_store()
+        .put(&tx, &id, &bytes)
+        .map_err(|e| seed_err(format!("blob write for seed asset `{rel_path}`: {e}")))?;
+    tx.commit()
+        .map_err(|e| seed_err(format!("commit seed asset `{rel_path}`: {e}")))?;
+    Ok(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,7 +528,7 @@ mod tests {
 
     fn open_err(fn_src: &str) -> String {
         let contract = spock_lang::compile(&format!("{BASE}{fn_src}")).expect("compiles");
-        match open(&contract, None) {
+        match open(&contract, None, None) {
             Ok(_) => panic!("expected a load failure for: {fn_src}"),
             Err(e) => e.to_string(),
         }
@@ -439,7 +536,7 @@ mod tests {
 
     fn open_ok(fn_src: &str) {
         let contract = spock_lang::compile(&format!("{BASE}{fn_src}")).expect("compiles");
-        open(&contract, None).expect("loads");
+        open(&contract, None, None).expect("loads");
     }
 
     #[test]
@@ -451,7 +548,7 @@ mod tests {
              table t { key id: uuid = auto\n reason: text check nonempty = \"\" }",
         )
         .expect("compiles");
-        let err = open(&contract, None).unwrap_err().to_string();
+        let err = open(&contract, None, None).unwrap_err().to_string();
         assert!(err.contains("fails its own `check`"), "{err}");
 
         // a member-valid default loads clean
@@ -460,7 +557,7 @@ mod tests {
              table t { key id: uuid = auto\n reason: text check nz = \"ok\" }",
         )
         .expect("compiles");
-        open(&contract, None).expect("loads");
+        open(&contract, None, None).expect("loads");
     }
 
     #[test]
@@ -496,7 +593,7 @@ mod tests {
              }",
         )
         .expect("compiles");
-        let mut conn = open(&contract, None).expect("loads");
+        let mut conn = open(&contract, None, None).expect("loads");
 
         let f = contract.fn_def("add").expect("declared");
         let row = crate::func::call(
@@ -540,7 +637,7 @@ mod tests {
              }",
         )
         .expect("compiles");
-        let mut conn = open(&contract, None).expect("loads");
+        let mut conn = open(&contract, None, None).expect("loads");
         let table = contract.table("comment").expect("declared");
 
         let parent_id: String = conn
@@ -680,7 +777,7 @@ mod tests {
              }}"
         ))
         .expect("compiles");
-        let mut conn = open(&contract, None).expect("loads: columns match by name");
+        let mut conn = open(&contract, None, None).expect("loads: columns match by name");
         let f = contract.fn_def("sneaky").expect("declared");
         let err = crate::func::call(
             &contract,
@@ -753,5 +850,62 @@ mod tests {
              }"
         )
         .contains("statement 2: the SQL returns no columns"));
+    }
+
+    #[test]
+    fn file_seed_reads_the_asset_into_a_committed_object() {
+        // a real asset on disk, resolved relative to base_dir
+        let dir = std::env::temp_dir().join(format!("spock-seed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let asset = dir.join("pic.png");
+        let payload: &[u8] = b"\x89PNG\r\n\x1a\nseed-bytes";
+        std::fs::write(&asset, payload).unwrap();
+
+        let src = "auth table user { key id: uuid = auto\n \
+                   username: text unique\n avatar: storage_object? }\n\
+                   seed { u = user { username: \"u\", avatar: file(\"./pic.png\") } }\n";
+        let contract = spock_lang::compile(src).expect("compiles");
+        let conn = open(&contract, None, Some(&dir)).expect("opens + seeds the file");
+
+        // the storage_object is committed with inferred metadata
+        let (state, ct, size): (String, String, i64) = conn
+            .query_row(
+                "SELECT state, content_type, size FROM \"storage_object\"",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, "committed");
+        assert_eq!(ct, "image/png");
+        assert_eq!(size, payload.len() as i64);
+
+        // the bytes landed in the blob store, byte-identical
+        let bytes: Vec<u8> = conn
+            .query_row("SELECT bytes FROM \"storage_blob\"", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bytes, payload);
+
+        // and the user references it
+        let referenced: i64 = conn
+            .query_row(
+                "SELECT 1 FROM \"user\" u JOIN \"storage_object\" o ON u.avatar = o.id",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(referenced, 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn file_seed_missing_asset_fails_load() {
+        let src = "auth table user { key id: uuid = auto\n \
+                   username: text unique\n avatar: storage_object? }\n\
+                   seed { u = user { username: \"u\", avatar: file(\"./nope.png\") } }\n";
+        let contract = spock_lang::compile(src).expect("compiles");
+        let dir = std::env::temp_dir();
+        let err = open(&contract, None, Some(&dir)).unwrap_err().to_string();
+        assert!(err.contains("nope.png"), "{err}");
     }
 }

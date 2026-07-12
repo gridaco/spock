@@ -344,7 +344,7 @@ seed {
 
     fn setup() -> (Contract, Connection) {
         let contract = spock_lang::compile(PROGRAM).expect("compiles");
-        let conn = engine::open(&contract, None).expect("loads");
+        let conn = engine::open(&contract, None, None).expect("loads");
         (contract, conn)
     }
 
@@ -376,7 +376,7 @@ seed {
              seed { account { handle: \"maya\" } }",
         )
         .expect("compiles");
-        let mut conn = engine::open(&contract, None).expect("loads");
+        let mut conn = engine::open(&contract, None, None).expect("loads");
         let f = contract.fn_def("whoami").unwrap();
         // anonymous (no actor) → NULL
         assert!(super::call(&contract, f, &mut conn, &Map::new(), None)
@@ -405,7 +405,7 @@ seed {
              seed { account { handle: \"maya\" } }",
         )
         .expect("compiles");
-        let mut conn = engine::open(&contract, None).expect("loads");
+        let mut conn = engine::open(&contract, None, None).expect("loads");
         let f = contract.fn_def("add_note").unwrap();
         let note = super::call(
             &contract,
@@ -428,7 +428,7 @@ seed {
              seed { account { handle: \"maya\" } }",
         )
         .expect("compiles");
-        let mut conn = engine::open(&contract, None).expect("loads");
+        let mut conn = engine::open(&contract, None, None).expect("loads");
         let note = contract.table("note").unwrap();
         let body = args(&[("body", "hi".into())]);
         // impersonated → owner stamped from the actor, never from the body
@@ -458,7 +458,8 @@ seed {
              fn whoami() -> uuid? { unchecked sql(\"SELECT spock_actor()\") }",
         )
         .expect("compiles");
-        let err = engine::open(&contract, None).expect_err("no anchor → spock_actor unresolved");
+        let err =
+            engine::open(&contract, None, None).expect_err("no anchor → spock_actor unresolved");
         assert!(
             format!("{err}").contains("spock_actor"),
             "expected a 'no such function: spock_actor' load error, got: {err}"

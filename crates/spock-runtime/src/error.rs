@@ -137,6 +137,32 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    /// A missing, malformed, or expired storage signed URL (RFD 0018 §4).
+    /// The signature is the only credential, so a bad one is 401.
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        ApiError {
+            status: 401,
+            code: "unauthorized".into(),
+            kind: "unauthorized",
+            table: None,
+            fields: vec![],
+            message: message.into(),
+        }
+    }
+
+    /// A write against the wrong object state (RFD 0018): a byte PUT to an
+    /// object that is not awaiting an upload — already committed, or gone.
+    pub fn conflict(message: impl Into<String>) -> Self {
+        ApiError {
+            status: 409,
+            code: "conflict".into(),
+            kind: "conflict",
+            table: None,
+            fields: vec![],
+            message: message.into(),
+        }
+    }
 }
 
 pub fn kind_str(kind: ErrorKind) -> &'static str {

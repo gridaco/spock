@@ -214,7 +214,7 @@ seed {
 
 async fn start_program(program: &str) -> String {
     let contract = spock_lang::compile(program).expect("program compiles");
-    let conn = engine::open(&contract, None).expect("engine opens and seeds");
+    let conn = engine::open(&contract, None, None).expect("engine opens and seeds");
     let app = Arc::new(App::new(contract, conn));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -532,7 +532,7 @@ async fn studio_assets_are_served() {
 async fn a_table_named_rpc_fails_startup() {
     let contract =
         spock_lang::compile("table rpc { key id: uuid = auto\n a: int }").expect("compiles");
-    let conn = engine::open(&contract, None).expect("engine opens");
+    let conn = engine::open(&contract, None, None).expect("engine opens");
     let app = Arc::new(App::new(contract, conn));
     assert!(http::router(app).is_err());
 }
