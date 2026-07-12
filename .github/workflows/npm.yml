@@ -176,7 +176,11 @@ jobs:
 
       - name: npm publish
         if: steps.resolve.outputs.dry_run != 'true'
-        run: cd npm && npm publish --tag "${{ steps.resolve.outputs.dist_tag }}"
+        # Provenance is disabled: with a large (~11 MB) package it intermittently
+        # races the tarball PUT and returns a false "cannot publish over
+        # previously published version" (npm/cli). Tokenless OIDC auth is
+        # independent of provenance and still applies.
+        run: cd npm && npm publish --tag "${{ steps.resolve.outputs.dist_tag }}" --no-provenance
 
   verify:
     name: verify ${{ matrix.key }}
