@@ -1,0 +1,221 @@
+name: npm
+
+# Distribution of the `spock` CLI over npm (RFD 0020). One package bundles a
+# prebuilt binary per platform; a Node shim (npm/bin/spock.js) execs the one
+# matching the host. Publishing is tokenless via npm Trusted Publishing (OIDC):
+# this workflow file name (npm.yml) is what the trusted-publisher config on
+# npmjs.com is pinned to, and `id-token: write` lets `npm publish` authenticate
+# without a token.
+#
+# Trigger it manually (Actions -> npm -> Run workflow) to dry-run or publish a
+# prerelease under a dist-tag; push a `vX.Y.Z` tag to cut a real `latest`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.1.0 or 0.1.0-rc.1)"
+        required: true
+        default: "0.1.0-rc.1"
+      dist_tag:
+        description: "npm dist-tag (keeps prereleases off `latest`)"
+        required: true
+        default: "next"
+      dry_run:
+        description: "Build and pack only — do not publish"
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: build ${{ matrix.key }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { key: darwin-arm64, os: macos-14,     target: aarch64-apple-darwin,     smoke: true }
+          - { key: darwin-x64,   os: macos-14,     target: x86_64-apple-darwin,      smoke: false }
+          - { key: linux-x64,    os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, smoke: true }
+          - { key: win32-x64,    os: windows-2025, target: x86_64-pc-windows-msvc,   smoke: true }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: crates/spock-runtime/studio/pnpm-lock.yaml
+
+      - name: build studio SPA
+        run: |
+          pnpm -C crates/spock-runtime/studio install --frozen-lockfile
+          pnpm -C crates/spock-runtime/studio build
+
+      - name: guard — studio embedded assets present
+        run: |
+          f=crates/spock-runtime/studio/dist/index.html
+          test -f "$f" || { echo "::error::$f missing — studio would embed empty"; exit 1; }
+          bytes=$(wc -c < "$f")
+          test "$bytes" -gt 200 || { echo "::error::$f is only $bytes bytes"; exit 1; }
+          echo "studio dist/index.html: $bytes bytes"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: cargo build --release
+        run: cargo build --release -p spock-cli --target ${{ matrix.target }}
+
+      - name: smoke test (native arch only)
+        if: matrix.smoke
+        run: |
+          exe=spock; [ "${{ runner.os }}" = "Windows" ] && exe=spock.exe
+          bin="target/${{ matrix.target }}/release/$exe"
+          "$bin" --version
+          "$bin" check examples/instagram/v0.spock
+
+      - name: stage binary
+        run: |
+          exe=spock; [ "${{ runner.os }}" = "Windows" ] && exe=spock.exe
+          mkdir -p out
+          cp "target/${{ matrix.target }}/release/$exe" "out/$exe"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.key }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for OIDC trusted publishing
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      dist_tag: ${{ steps.resolve.outputs.dist_tag }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      - name: use latest npm (Trusted Publishing needs >= 11.5.1)
+        run: npm install -g npm@latest
+
+      - name: resolve version, tag, dry_run
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            v="${GITHUB_REF_NAME#v}"; tag="latest"; dry="false"
+          else
+            v="${{ inputs.version }}"; tag="${{ inputs.dist_tag }}"; dry="${{ inputs.dry_run }}"
+          fi
+          printf 'version=%s\n'  "$v"   >> "$GITHUB_OUTPUT"
+          printf 'dist_tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'dry_run=%s\n'  "$dry" >> "$GITHUB_OUTPUT"
+          echo "resolved: version=$v dist_tag=$tag dry_run=$dry"
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: bin-*
+
+      - name: assemble platform binaries into the package
+        run: |
+          set -e
+          for d in artifacts/bin-*; do
+            key="${d#artifacts/bin-}"
+            exe=spock; [ "$key" = "win32-x64" ] && exe=spock.exe
+            mkdir -p "npm/binaries/$key"
+            cp "$d/$exe" "npm/binaries/$key/$exe"
+            [ "$key" = "win32-x64" ] || chmod +x "npm/binaries/$key/$exe"
+          done
+          echo "=== assembled ==="; ls -laR npm/binaries
+
+      - name: guard — all four platforms present
+        run: |
+          set -e
+          for key in darwin-arm64 darwin-x64 linux-x64 win32-x64; do
+            exe=spock; [ "$key" = "win32-x64" ] && exe=spock.exe
+            test -s "npm/binaries/$key/$exe" || { echo "::error::missing binary for $key"; exit 1; }
+          done
+
+      - name: stamp version
+        run: cd npm && npm version "${{ steps.resolve.outputs.version }}" --no-git-tag-version --allow-same-version
+
+      - name: npm publish (dry run)
+        if: steps.resolve.outputs.dry_run == 'true'
+        run: cd npm && npm publish --dry-run --tag "${{ steps.resolve.outputs.dist_tag }}"
+
+      - name: npm publish
+        if: steps.resolve.outputs.dry_run != 'true'
+        run: cd npm && npm publish --tag "${{ steps.resolve.outputs.dist_tag }}"
+
+  verify:
+    name: verify ${{ matrix.key }}
+    needs: publish
+    if: needs.publish.outputs.dry_run != 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { key: darwin-arm64, os: macos-14 }
+          - { key: linux-x64,    os: ubuntu-22.04 }
+          - { key: win32-x64,    os: windows-2025 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: install spock from npm
+        run: |
+          v="${{ needs.publish.outputs.version }}"
+          for i in $(seq 1 12); do
+            if npm install -g "spock@$v"; then echo "installed spock@$v"; break; fi
+            echo "attempt $i: spock@$v not visible yet; waiting"; sleep 6
+          done
+          spock --version
+
+      - name: spock check
+        run: spock check examples/instagram/v0.spock
+
+      - name: spock run + studio embed served
+        if: runner.os != 'Windows'
+        run: |
+          spock run examples/instagram/v0.spock --port 4123 &
+          pid=$!
+          ok=""
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4123/~health >/dev/null 2>&1; then ok=1; break; fi
+            sleep 0.5
+          done
+          if [ -z "$ok" ]; then echo "::error::server did not start"; kill "$pid" 2>/dev/null || true; exit 1; fi
+          curl -fsS http://127.0.0.1:4123/~studio | grep -qi "<!doctype html" && echo "studio served OK"
+          kill "$pid" 2>/dev/null || true

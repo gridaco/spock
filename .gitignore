@@ -1,3 +1,6 @@
 /target
 **/*.rs.bk
 .DS_Store
+
+# Prebuilt binaries assembled into the npm package at release time (RFD 0020).
+/npm/binaries/

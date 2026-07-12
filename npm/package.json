@@ -1,21 +1,38 @@
 {
   "name": "spock",
-  "version": "0.0.1",
-  "description": "Name reservation for the Spock language package.",
-  "main": "index.js",
-  "private": false,
-  "scripts": {
-    "test": "echo \"No npm tests. Spock is implemented in Rust.\""
+  "version": "0.1.0",
+  "description": "Spock — prototype application backends as a single, inspectable source of truth. It's only logical.",
+  "bin": {
+    "spock": "bin/spock.js"
+  },
+  "files": [
+    "bin/",
+    "binaries/"
+  ],
+  "engines": {
+    "node": ">=18"
   },
   "keywords": [
     "spock",
+    "backend",
+    "prototype",
     "language",
-    "compiler",
-    "rust"
+    "graphql",
+    "sqlite",
+    "codegen"
   ],
-  "author": "",
+  "homepage": "https://github.com/gridaco/spock#readme",
+  "bugs": {
+    "url": "https://github.com/gridaco/spock/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gridaco/spock.git",
+    "directory": "npm"
+  },
   "license": "MIT",
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   }
 }
