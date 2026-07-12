@@ -17,6 +17,25 @@ language: real enough to run, deliberately not aimed at production. You
 validate the product by running its backend, and the artifact that survives is
 the spec.
 
+## Install
+
+Spock ships as a single npm package with a prebuilt binary for macOS, Linux,
+and Windows — no build step, no toolchain:
+
+```sh
+# run without installing
+npx spock run app.spock
+
+# or install globally
+npm i -g spock
+```
+
+```sh
+spock check app.spock            # parse + check a program
+spock run app.spock              # materialize + serve (GraphQL, REST, /~studio)
+spock gen types app.spock        # emit TypeScript types
+```
+
 ## The picture
 
 Today, one product rule — say, *"a member may publish a draft post"* — is
