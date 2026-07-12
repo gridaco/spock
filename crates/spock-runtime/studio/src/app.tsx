@@ -6,6 +6,7 @@ import {
   Code2,
   Database,
   ExternalLink,
+  HardDrive,
   LayoutDashboard,
   Moon,
   RefreshCw,
@@ -20,6 +21,7 @@ import { AppContext } from "@/lib/app-context"
 import type { AppState, StatusContent } from "@/lib/app-context"
 import { isDark, toggleTheme } from "@/lib/theme"
 import { isActorSensitive } from "@/lib/contract"
+import { hasStorage } from "@/lib/storage"
 import { cn } from "@/lib/utils"
 import type { Contract, Persona, Route, WhoAmI } from "@/types"
 
@@ -37,6 +39,7 @@ import { FnRunner } from "@/views/fn-runner"
 import { FunctionsOverview } from "@/views/functions-overview"
 import { Overview } from "@/views/overview"
 import { RecordView } from "@/views/record-view"
+import { StorageView } from "@/views/storage-view"
 import { TableView } from "@/views/table-view"
 import { TablesOverview } from "@/views/tables-overview"
 
@@ -163,6 +166,8 @@ function renderView(route: Route): ReactNode {
       return <FnRunner key={route.name} name={route.name} />
     case "record":
       return <RecordView key={route.name} name={route.name} />
+    case "storage":
+      return <StorageView />
     default:
       return null
   }
@@ -178,6 +183,8 @@ function sectionOf(route: Route): string {
     case "fns":
     case "fn":
       return "fns"
+    case "storage":
+      return "storage"
     default:
       return ""
   }
@@ -226,6 +233,14 @@ function Rail({
             label="Functions"
             active={sec === "fns"}
             onClick={() => navigate({ kind: "fns" })}
+          />
+        ) : null}
+        {hasStorage(contract) ? (
+          <RailItem
+            icon={<HardDrive size={16} />}
+            label="Storage"
+            active={sec === "storage"}
+            onClick={() => navigate({ kind: "storage" })}
           />
         ) : null}
       </nav>
@@ -316,6 +331,14 @@ class NavList extends Component<
             active={route.kind === "overview"}
             onClick={() => navigate({ kind: "overview" })}
           />
+          {hasStorage(contract) ? (
+            <NavItem
+              icon={<HardDrive size={15} />}
+              name="Storage"
+              active={route.kind === "storage"}
+              onClick={() => navigate({ kind: "storage" })}
+            />
+          ) : null}
           {contract.tables.length ? <NavGroup label="Tables" /> : null}
           {contract.tables
             .filter((t) => match(t.name))
@@ -426,6 +449,8 @@ function tabLabel(route: Route): string {
       return "Functions"
     case "records":
       return "Records"
+    case "storage":
+      return "Storage"
     default:
       return route.name
   }
@@ -444,6 +469,8 @@ function tabIcon(route: Route): ReactNode {
     case "records":
     case "record":
       return <Braces size={15} />
+    case "storage":
+      return <HardDrive size={15} />
     default:
       return null
   }

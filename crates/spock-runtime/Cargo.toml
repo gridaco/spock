@@ -18,6 +18,14 @@ tokio.workspace = true
 uuid.workspace = true
 time.workspace = true
 thiserror.workspace = true
+# Storage byte plane (RFD 0018): native HMAC signed URLs. `sha2 = 0.10` pairs
+# with `hmac`'s `digest 0.10`; `getrandom` mints the per-run signing secret.
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+getrandom = "0.2"
+# content-type inference for `file("...")` seed assets (RFD 0018).
+mime_guess = "2"
 # Embeds the compiled studio SPA (studio/dist) into the binary. `debug-embed`
 # forces embedding in debug builds too, so `spock run` serves it from any cwd
 # (matching the old include_str! behavior) — the console stays fully offline.

@@ -6,6 +6,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// The protocol-owned name of the storage metadata table (RFD 0018). A file
+/// field is a reference to it; the checker injects it (gated on a reference)
+/// and reserves the name. The single source of truth shared by the checker,
+/// the DDL/codegen emitters, and the runtime's storage protocol.
+pub const STORAGE_OBJECT_TABLE: &str = "storage_object";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Contract {
     /// Language version tag; `"v0"`.
@@ -47,6 +53,15 @@ pub struct Table {
     /// Additive under `spock: "v0"` — `default` keeps pre-actor JSON loading.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub anchor: bool,
+    /// A protocol-owned builtin table (RFD 0018): `true` on the injected
+    /// `storage_object` metadata table. Injected only when a program
+    /// references it (storage-needs-a-consumer), it is readable and joinable
+    /// but **not** writable through the open floor — the derived
+    /// auto-CRUD mutations are suppressed, so metadata cannot desync from
+    /// bytes. Additive under `spock: "v0"` — `default` keeps pre-storage JSON
+    /// loading.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub builtin: bool,
     /// Derived errors (§6.1). Never hand-written.
     pub errors: Vec<DerivedError>,
 }
@@ -346,6 +361,15 @@ pub enum SeedValue {
         #[serde(rename = "ref")]
         binding: String,
     },
+    /// `file("./path")` (RFD 0018): the relative path to a local asset. At seed
+    /// time the runtime reads it, materializes a committed `storage_object`, and
+    /// stores the value's target key (the object id). Object-shaped like `Ref`,
+    /// distinguished by the `file` key; the contract carries the path, not the
+    /// bytes.
+    File {
+        #[serde(rename = "file")]
+        path: String,
+    },
     Str(String),
     Int(i64),
     /// Tried after `Int`: an untagged whole number stays an integer.
@@ -516,6 +540,7 @@ mod tests {
                 uniques: vec![],
                 checks: vec![],
                 anchor: false,
+                builtin: false,
                 errors: vec![DerivedError {
                     code: "user_already_exists".into(),
                     kind: ErrorKind::Key,

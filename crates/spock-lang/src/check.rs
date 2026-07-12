@@ -19,6 +19,110 @@ pub fn check(file: &ast::File) -> Result<Contract, Vec<Diagnostic>> {
     }
 }
 
+/// Does the program reference the `storage_object` builtin table (RFD 0018)?
+/// A reference is a field or fn parameter typed `storage_object`. This gates
+/// the injection: storage-needs-a-consumer.
+fn references_storage_object(file: &ast::File) -> bool {
+    let is_storage = |ty: &ast::TypeExpr| matches!(&ty.kind, ast::TypeExprKind::Named(n) if n == STORAGE_OBJECT_TABLE);
+    let in_tables = file.tables.iter().any(|t| {
+        t.items
+            .iter()
+            .any(|item| matches!(item, ast::TableItem::Field(f) if is_storage(&f.ty)))
+    });
+    let in_fns = file
+        .fns
+        .iter()
+        .any(|f| f.params.iter().any(|p| is_storage(&p.ty)));
+    in_tables || in_fns
+}
+
+/// A `file("...")` seed path is safe when it is relative and cannot escape the
+/// source file's directory: non-empty, no leading separator or drive prefix,
+/// and no `..` component. Resolution happens at seed time (RFD 0018).
+fn safe_seed_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.starts_with('\\')
+        && path.chars().nth(1) != Some(':') // reject a `C:` drive prefix
+        && !path.split(['/', '\\']).any(|c| c == "..")
+}
+
+/// One field of the synthesized `storage_object` table. Builtin fields carry
+/// no source docs and no field-level `check`.
+fn builtin_field(name: &str, ty: Type, optional: bool, default: Option<DefaultValue>) -> Field {
+    Field {
+        name: name.to_string(),
+        doc: None,
+        ty,
+        optional,
+        unique: false,
+        default,
+        check: None,
+    }
+}
+
+/// Synthesize the `storage_object` builtin metadata table (RFD 0018 §2). A
+/// file field references it; the runtime's storage protocol writes it. `owner`
+/// is a `= me` reference to the identity anchor — present only when the program
+/// has an `auth table` (there is no identity to stamp otherwise) and optional,
+/// so an anonymous upload leaves it NULL. All required fields have defaults, so
+/// a protocol write supplying only bytes never trips a `_required` error.
+fn synthesize_storage_object(anchor: Option<&str>) -> Table {
+    let mut fields = vec![builtin_field(
+        "id",
+        Type::Uuid,
+        false,
+        Some(DefaultValue::Auto),
+    )];
+    if let Some(anchor) = anchor {
+        fields.push(builtin_field(
+            "owner",
+            Type::Ref {
+                table: anchor.to_string(),
+                on_delete: OnDelete::SetNull,
+            },
+            true,
+            Some(DefaultValue::Actor),
+        ));
+    }
+    fields.push(builtin_field("name", Type::Text, true, None));
+    fields.push(builtin_field("content_type", Type::Text, true, None));
+    fields.push(builtin_field("size", Type::Int, true, None));
+    fields.push(builtin_field("checksum", Type::Text, true, None));
+    fields.push(builtin_field(
+        "state",
+        Type::Set {
+            values: vec!["pending".to_string(), "committed".to_string()],
+        },
+        false,
+        Some(DefaultValue::Str {
+            value: "pending".to_string(),
+        }),
+    ));
+    fields.push(builtin_field(
+        "created_at",
+        Type::Timestamp,
+        false,
+        Some(DefaultValue::Now),
+    ));
+    Table {
+        name: STORAGE_OBJECT_TABLE.to_string(),
+        doc: Some(
+            "A stored file. Metadata for a byte object whose bytes live in the \
+             runtime's blob store: created pending on upload, committed when its \
+             bytes land, swept when abandoned or unreferenced (RFD 0018)."
+                .to_string(),
+        ),
+        key: vec!["id".to_string()],
+        fields,
+        uniques: Vec::new(),
+        checks: Vec::new(),
+        anchor: false,
+        builtin: true,
+        errors: Vec::new(),
+    }
+}
+
 #[derive(Default)]
 struct Checker {
     diags: Vec<Diagnostic>,
@@ -43,6 +147,30 @@ impl Checker {
                 names.insert(&table.name.name, table.name.span);
             }
         }
+
+        // The `storage_object` builtin metadata table (RFD 0018). Its name is
+        // protocol-owned (E048 if a user declares it), and it is injected as a
+        // normal, floor-read-only table only when a program references it
+        // (storage-needs-a-consumer, mirroring the anchor-gated `spock_actor()`).
+        // The name must enter the namespace *before* Phase A so a referencing
+        // field resolves (E003 otherwise); the synthesized table itself is
+        // pushed *after* Phase A but before the cross-table checks, so it gains
+        // a foreign key, derived errors, DDL, and surface for free.
+        let user_declared_storage = if let Some(&span) = names.get(STORAGE_OBJECT_TABLE) {
+            self.error(
+                "E048",
+                format!("`{STORAGE_OBJECT_TABLE}` is a reserved builtin table name (RFD 0018)"),
+                span,
+            );
+            true
+        } else {
+            false
+        };
+        let inject_storage = references_storage_object(file) && !user_declared_storage;
+        if inject_storage {
+            names.insert(STORAGE_OBJECT_TABLE, Span::new(0, 0));
+        }
+
         let table_names: HashSet<&str> = names.keys().copied().collect();
 
         // Phase A: lower each table in isolation.
@@ -53,6 +181,22 @@ impl Checker {
                 spans.insert(table.name.clone(), decl.name.span);
                 tables.push(table);
             }
+        }
+
+        // Inject the synthesized `storage_object` now (RFD 0018): after user
+        // tables are lowered (so the identity anchor is known for `owner = me`)
+        // and before the cross-table checks and derived errors run over it.
+        // This ordering is load-bearing — a refactor that moves it will either
+        // fail to validate `owner`'s `= me` (E047) or lose the derived errors.
+        if inject_storage {
+            let anchor = file
+                .tables
+                .iter()
+                .find(|d| d.auth.is_some())
+                .map(|d| d.name.name.as_str());
+            let table = synthesize_storage_object(anchor);
+            spans.insert(table.name.clone(), Span::new(0, 0));
+            tables.push(table);
         }
 
         // Phase B: cross-table validation (needs every table's key resolved).
@@ -767,6 +911,7 @@ impl Checker {
             uniques,
             checks,
             anchor: decl.auth.is_some(), // RFD 0014; E-ACT01/E-ACT02 in phase B
+            builtin: false,              // user tables are never builtin (RFD 0018)
             errors: Vec::new(),          // filled in phase B
         })
     }
@@ -1266,6 +1411,38 @@ impl Checker {
                 Some(SeedValue::Ref {
                     binding: ident.name.clone(),
                 })
+            }
+            ast::SeedValue::File { path, span } => {
+                // file() loads a local asset into a storage_object (RFD 0018);
+                // it may only feed a field that references storage_object.
+                let is_storage_ref = matches!(
+                    &field.ty,
+                    Type::Ref { table, .. } if table == STORAGE_OBJECT_TABLE
+                );
+                if !is_storage_ref {
+                    self.error(
+                        "E049",
+                        format!(
+                            "`file(...)` loads a stored file; field `{}` must reference `{STORAGE_OBJECT_TABLE}`",
+                            field.name
+                        ),
+                        *span,
+                    );
+                    return None;
+                }
+                // The path is resolved at seed time relative to the source dir;
+                // keep it inside that subtree (fail-closed at compile time).
+                if !safe_seed_path(path) {
+                    self.error(
+                        "E050",
+                        format!(
+                            "seed asset path `{path}` must be relative and stay within the source directory (no leading `/`, no `..`)"
+                        ),
+                        *span,
+                    );
+                    return None;
+                }
+                Some(SeedValue::File { path: path.clone() })
             }
             ast::SeedValue::Lit(lit) => {
                 // Literal against the field's *value* type (refs bottom out
@@ -2509,5 +2686,37 @@ mod tests {
         );
         // only the unbacked code is minted — references are not refusals
         assert_eq!(f.refusals, vec!["account_private"]);
+    }
+
+    // --- file() seed assets (RFD 0018) ---
+    const STORAGE_USER: &str = "auth table user { key id: uuid = auto\n \
+         username: text unique\n avatar: storage_object? }\n";
+
+    #[test]
+    fn file_seed_requires_a_storage_object_ref() {
+        // file() on a non-storage field is E049
+        let src = "auth table user { key id: uuid = auto\n username: text unique }\n\
+                   seed { u = user { username: file(\"./x.png\") } }\n";
+        assert!(codes(src).contains(&"E049"), "{:?}", codes(src));
+    }
+
+    #[test]
+    fn file_seed_rejects_path_escape() {
+        let src = format!(
+            "{STORAGE_USER}seed {{ u = user {{ username: \"u\", avatar: file(\"../x.png\") }} }}\n"
+        );
+        assert!(codes(&src).contains(&"E050"), "{:?}", codes(&src));
+        let abs = format!(
+            "{STORAGE_USER}seed {{ u = user {{ username: \"u\", avatar: file(\"/etc/x\") }} }}\n"
+        );
+        assert!(codes(&abs).contains(&"E050"), "{:?}", codes(&abs));
+    }
+
+    #[test]
+    fn file_seed_on_a_storage_ref_compiles() {
+        // the checker never reads the file — a well-typed, relative path is
+        // accepted; a missing asset surfaces at load, not compile
+        let src = format!("{STORAGE_USER}seed {{ u = user {{ username: \"u\", avatar: file(\"./seed/x.png\") }} }}\n");
+        assert!(codes(&src).is_empty(), "{:?}", codes(&src));
     }
 }

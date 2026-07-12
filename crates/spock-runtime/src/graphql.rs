@@ -308,6 +308,13 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
     // only where something is settable).
     let mut mutation = Object::new("Mutation");
     for table in &contract.tables {
+        // A builtin table (RFD 0018: `storage_object`) is read-only on the
+        // open floor — the storage protocol is its only write path, so
+        // metadata cannot desync from bytes. Reads (Pass 3) keep it queryable
+        // and joinable.
+        if table.builtin {
+            continue;
+        }
         mutation = mutation.field(insert_one_field(table));
         if has_settable_fields(table) {
             mutation = mutation.field(update_by_pk_field(table));
@@ -1161,7 +1168,7 @@ mod tests {
 
     fn build(source: &str) -> Result<Schema, SchemaBuildError> {
         let contract = spock_lang::compile(source).expect("program compiles");
-        let conn = engine::open(&contract, None).expect("engine opens");
+        let conn = engine::open(&contract, None, None).expect("engine opens");
         schema(Arc::new(App::new(contract, conn)))
     }
 

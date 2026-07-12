@@ -244,6 +244,7 @@ Deviations from Hasura, each deliberate:
 | D4 | no configuration layer; relationship names are spec-fixed (§3) (Hasura: console/metadata tracking) | derivation must be total; a prototype language has no metadata step |
 | D5 | no raw FK scalar sibling for reference fields (Hasura: `author_id` column + `author` relationship) | Spock's reference field *is* the semantic name; the key is one hop away |
 | D6 | query depth bounded (32) (Hasura: unlimited unless configured) | self-references allow unbounded nesting; a prototype runtime ships safe |
+| D7 | the builtin `storage_object` table (RFD 0018) is readable/joinable but emits **no** insert/update/delete mutations | files are governed rows, but the storage protocol (v0.md §8.3) is their only write path — floor CRUD would let metadata desync from bytes |
 
 ## 9. Migration from the v0.0 surface (executed)
 

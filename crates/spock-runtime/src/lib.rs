@@ -10,6 +10,7 @@ pub mod error;
 pub mod func;
 pub mod graphql;
 pub mod http;
+pub mod storage;
 pub mod value;
 pub mod write;
 
@@ -18,10 +19,18 @@ use std::sync::Mutex;
 use rusqlite::Connection;
 use spock_lang::ir::Contract;
 
-/// Shared server state: the contract and the (serialized) database.
+use crate::storage::blob::{default_blob_store, BlobStore};
+use crate::storage::sign::Signer;
+
+/// Shared server state: the contract, the (serialized) database, and — for a
+/// contract that uses storage (RFD 0018) — the per-run URL signer and the byte
+/// backend. The signer and store are always present but only ever touched when
+/// the storage surface is active, so `App::new` keeps its two-argument shape.
 pub struct App {
     pub contract: Contract,
     pub db: Mutex<Connection>,
+    pub signer: Signer,
+    pub blobs: Box<dyn BlobStore>,
 }
 
 impl App {
@@ -29,6 +38,8 @@ impl App {
         App {
             contract,
             db: Mutex::new(db),
+            signer: Signer::random(),
+            blobs: default_blob_store(),
         }
     }
 }

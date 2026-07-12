@@ -837,6 +837,14 @@ impl Parser {
 
     fn seed_value(&mut self) -> Result<SeedValue, Diagnostic> {
         let tok = self.peek().clone();
+        // `file("./path")` — a seed-time asset load (RFD 0018). A soft keyword:
+        // `file` is only special immediately before `(`, so a binding or field
+        // named `file` is unaffected.
+        if let TokenKind::Ident(name) = &tok.kind {
+            if name == "file" && matches!(self.peek2().kind, TokenKind::LParen) {
+                return self.seed_file(tok.span);
+            }
+        }
         let value = match &tok.kind {
             TokenKind::Str(s) => SeedValue::Lit(Lit::Str(s.clone(), tok.span)),
             TokenKind::Int(v) => SeedValue::Lit(Lit::Int(*v, tok.span)),
@@ -847,10 +855,27 @@ impl Parser {
                 name: name.clone(),
                 span: tok.span,
             }),
-            _ => return Err(self.unexpected("a literal or a seed binding")),
+            _ => return Err(self.unexpected("a literal, a seed binding, or file(\"...\")")),
         };
         self.bump();
         Ok(value)
+    }
+
+    // file_value = "file" "(" str ")"
+    fn seed_file(&mut self, start: Span) -> Result<SeedValue, Diagnostic> {
+        self.bump(); // `file`
+        self.expect(TokenKind::LParen, "`(` after `file`")?;
+        let tok = self.peek().clone();
+        let TokenKind::Str(path) = &tok.kind else {
+            return Err(self.unexpected("a string path, e.g. file(\"./avatar.png\")"));
+        };
+        let path = path.clone();
+        self.bump();
+        let close = self.expect(TokenKind::RParen, "`)` to close `file(...)`")?;
+        Ok(SeedValue::File {
+            path,
+            span: start.to(close.span),
+        })
     }
 }
 

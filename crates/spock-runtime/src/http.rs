@@ -56,7 +56,7 @@ pub fn router(app: Arc<App>) -> Result<Router, StartupError> {
             schema,
             app: app.clone(),
         });
-    Ok(Router::new()
+    let mut base = Router::new()
         .route("/~contract", get(contract))
         .route("/~health", get(health))
         .route("/~studio", get(studio_index))
@@ -66,15 +66,45 @@ pub fn router(app: Arc<App>) -> Result<Router, StartupError> {
         .route("/~whoami", get(whoami))
         .route("/rest/v1/rpc/{name}", post(rpc_call).get(rpc_get))
         .route("/rest/v1/{table}", get(list_rows))
-        .route("/rest/v1/{table}/{id}", get(get_row))
-        .fallback(not_found)
-        .with_state(app)
-        .merge(gql))
+        .route("/rest/v1/{table}/{id}", get(get_row));
+
+    // The storage byte plane (RFD 0018), mounted only when the contract carries
+    // the `storage_object` builtin — sibling to `/rest` and `/graphql`. Its
+    // paths are static and top-level, so no user table can shadow them (and the
+    // builtin name is reserved at compile time, E048).
+    if crate::storage::storage_active(&app.contract) {
+        use crate::storage;
+        use axum::extract::DefaultBodyLimit;
+        base = base
+            .route(
+                "/storage/v1/object/upload/sign",
+                post(storage::post_upload_sign),
+            )
+            .route(
+                "/storage/v1/object/sign/{id}",
+                post(storage::post_download_sign),
+            )
+            .route(
+                "/storage/v1/object/{id}",
+                get(storage::get_object)
+                    .put(storage::put_object)
+                    .layer(DefaultBodyLimit::max(storage::MAX_UPLOAD_BYTES)),
+            );
+    }
+
+    Ok(base.fallback(not_found).with_state(app).merge(gql))
 }
 
 /// Serve the app on an already-bound listener until the task is stopped.
 /// A GraphQL schema-derivation failure (§8.2 naming laws) aborts startup.
 pub async fn serve(app: Arc<App>, listener: tokio::net::TcpListener) -> std::io::Result<()> {
+    // The runtime owns background reconciliation: a storage contract sweeps its
+    // orphaned objects for the life of the server (RFD 0018 §1.6), so every
+    // embedder gets it — not just the CLI. The task is aborted when the server's
+    // runtime is dropped.
+    if crate::storage::storage_active(&app.contract) {
+        tokio::spawn(crate::storage::sweep_loop(app.clone()));
+    }
     let router = router(app).map_err(std::io::Error::other)?;
     axum::serve(listener, router).await
 }
@@ -351,7 +381,7 @@ fn resolve_fn<'a>(app: &'a App, name: &str) -> Result<&'a spock_lang::ir::FnDef,
 /// type — canonicalized exactly like a by-key path segment so an uppercased
 /// or braced uuid still matches the stored lowercase-canonical key. Never a
 /// 404: a malformed header is anonymous, not an error.
-fn resolve_actor(app: &App, headers: &HeaderMap) -> Option<SqlValue> {
+pub(crate) fn resolve_actor(app: &App, headers: &HeaderMap) -> Option<SqlValue> {
     let anchor = app.contract.anchor()?;
     let raw = headers.get("x-spock-actor")?.to_str().ok()?;
     path_key_value(app, anchor, raw).ok()

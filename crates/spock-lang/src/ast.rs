@@ -243,4 +243,12 @@ pub enum SeedValue {
     Lit(Lit),
     /// Reference to an earlier seed binding.
     Binding(Ident),
+    /// `file("./path")` — a seed-time asset load (RFD 0018): read a local file
+    /// and materialize a committed `storage_object` from it. Only valid where
+    /// the field references `storage_object`. The path is relative to the
+    /// source file's directory; it is resolved and read at seed time.
+    File {
+        path: String,
+        span: Span,
+    },
 }

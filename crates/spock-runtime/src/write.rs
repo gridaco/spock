@@ -379,7 +379,7 @@ fn key_values(table: &Table, values: &[SqlValue]) -> Vec<SqlValue> {
         .collect()
 }
 
-fn sqlite_internal(e: rusqlite::Error) -> ApiError {
+pub(crate) fn sqlite_internal(e: rusqlite::Error) -> ApiError {
     ApiError::internal(format!("sqlite: {e}"))
 }
 
