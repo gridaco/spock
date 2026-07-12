@@ -5,13 +5,14 @@ import type { AppState } from "@/lib/app-context"
 import { Badge } from "@/components/ui/badge"
 import { Card } from "@/components/ui/card"
 import { Doc } from "@/components/doc"
+import { userTables } from "@/lib/storage"
 
 export class TablesOverview extends Component {
   static contextType = AppContext
   declare context: AppState
 
   componentDidMount() {
-    const n = this.context.contract.tables.length
+    const n = userTables(this.context.contract).length
     this.context.setStatus({
       left: (
         <span>
@@ -23,7 +24,8 @@ export class TablesOverview extends Component {
 
   render() {
     const { contract, navigate } = this.context
-    const n = contract.tables.length
+    const tables = userTables(contract)
+    const n = tables.length
     return (
       <div className="h-full overflow-y-auto">
         <div className="p-6">
@@ -44,7 +46,7 @@ export class TablesOverview extends Component {
                 </tr>
               </thead>
               <tbody>
-                {contract.tables.map((t, i) => (
+                {tables.map((t, i) => (
                   <tr
                     key={t.name}
                     onClick={() => navigate({ kind: "table", name: t.name })}

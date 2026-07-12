@@ -12,7 +12,7 @@ use spock_lang::ddl::ddl;
 use spock_lang::ir::{Contract, SeedValue};
 
 use crate::error::ApiError;
-use crate::write::insert_row;
+use crate::write::{insert_row, insert_row_tx};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -493,7 +493,14 @@ fn seed_file(
     body.insert("checksum".into(), Json::String(checksum));
     body.insert("state".into(), Json::String("committed".into()));
 
-    let stored = insert_row(contract, storage_table, conn, &body, None).map_err(|source| {
+    // The metadata row and its bytes commit together (RFD 0018): insert the
+    // object on one transaction (uncommitted), write the bytes on the same tx,
+    // then commit — so a blob-write failure can never leave a committed byteless
+    // row. Mirrors the request path's PUT (storage::put_object).
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| seed_err(format!("begin seed transaction: {e}")))?;
+    let stored = insert_row_tx(contract, storage_table, &tx, &body, None).map_err(|source| {
         EngineError::Seed {
             index,
             table: storage_table.name.clone(),
@@ -505,10 +512,11 @@ fn seed_file(
         .and_then(|v| v.as_str())
         .ok_or_else(|| seed_err("seeded storage_object has no id".into()))?
         .to_string();
-
     crate::storage::blob::default_blob_store()
-        .put(conn, &id, &bytes)
+        .put(&tx, &id, &bytes)
         .map_err(|e| seed_err(format!("blob write for seed asset `{rel_path}`: {e}")))?;
+    tx.commit()
+        .map_err(|e| seed_err(format!("commit seed asset `{rel_path}`: {e}")))?;
     Ok(id)
 }
 

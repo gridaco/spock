@@ -3,7 +3,7 @@
 //! POST are validated identically.
 
 use rusqlite::types::Value as SqlValue;
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::{Map, Value as Json};
 use spock_lang::ir::{
     Contract, DefaultValue, DerivedError, ErrorKind, Field, OnDelete, Table, Type,
@@ -12,11 +12,31 @@ use spock_lang::ir::{
 use crate::error::ApiError;
 use crate::value::{json_to_sql, sql_to_json};
 
-/// Insert one row (§7.2), returning the stored row as JSON.
+/// Insert one row (§7.2), returning the stored row as JSON. The one-shot
+/// wrapper: open a transaction, insert, commit.
 pub fn insert_row(
     contract: &Contract,
     table: &Table,
     conn: &mut Connection,
+    body: &Map<String, Json>,
+    actor: Option<SqlValue>,
+) -> Result<Json, ApiError> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sqlite_internal)?;
+    let row = insert_row_tx(contract, table, &tx, body, actor)?;
+    tx.commit().map_err(sqlite_internal)?;
+    Ok(row)
+}
+
+/// Insert one row on a caller-owned transaction, **without committing** — so a
+/// caller can bind an additional write to the same atomic boundary (a seeded
+/// object's bytes land with its metadata row or not at all, RFD 0018). Value
+/// prep, ref checks, and conflict mapping are identical to [`insert_row`].
+pub(crate) fn insert_row_tx(
+    contract: &Contract,
+    table: &Table,
+    tx: &Transaction,
     body: &Map<String, Json>,
     actor: Option<SqlValue>,
 ) -> Result<Json, ApiError> {
@@ -64,10 +84,6 @@ pub fn insert_row(
         };
         values.push(value);
     }
-
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(sqlite_internal)?;
 
     // 4. provided references must exist
     for (field, value) in table.fields.iter().zip(&values) {
@@ -122,10 +138,9 @@ pub fn insert_row(
         .map_err(|e| map_conflict_error(table, e))?;
 
     // read the stored row back by key
-    let row = select_by_key(contract, table, &tx, &key_values(table, &values))?
+    let row = select_by_key(contract, table, tx, &key_values(table, &values))?
         .ok_or_else(|| ApiError::internal("inserted row not found"))?;
 
-    tx.commit().map_err(sqlite_internal)?;
     Ok(row)
 }
 

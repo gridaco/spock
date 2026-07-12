@@ -21,7 +21,7 @@ import { AppContext } from "@/lib/app-context"
 import type { AppState, StatusContent } from "@/lib/app-context"
 import { isDark, toggleTheme } from "@/lib/theme"
 import { isActorSensitive } from "@/lib/contract"
-import { hasStorage } from "@/lib/storage"
+import { hasStorage, userTables } from "@/lib/storage"
 import { cn } from "@/lib/utils"
 import type { Contract, Persona, Route, WhoAmI } from "@/types"
 
@@ -339,8 +339,8 @@ class NavList extends Component<
               onClick={() => navigate({ kind: "storage" })}
             />
           ) : null}
-          {contract.tables.length ? <NavGroup label="Tables" /> : null}
-          {contract.tables
+          {userTables(contract).length ? <NavGroup label="Tables" /> : null}
+          {userTables(contract)
             .filter((t) => match(t.name))
             .map((t) => (
               <NavItem

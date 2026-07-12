@@ -19,6 +19,12 @@ export function storageTable(contract: Contract): Table | undefined {
   return contract.tables.find((t) => t.name === STORAGE_OBJECT)
 }
 
+/** The user-authored tables — everything except protocol-owned builtins (e.g.
+ *  `storage_object`), which have their own surfaces (the Storage page). */
+export function userTables(contract: Contract): Table[] {
+  return contract.tables.filter((t) => !t.builtin)
+}
+
 /** A field that references a stored file (a `storage_object`). */
 export function isFileField(field: Field): boolean {
   return field.type.kind === "ref" && (field.type as { table?: string }).table === STORAGE_OBJECT

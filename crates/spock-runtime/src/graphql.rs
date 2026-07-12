@@ -183,6 +183,12 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
     let dup_mutation: Collide =
         |a, b, name| SchemaBuildError::DuplicateMutationField { a, b, name };
     for table in &contract.tables {
+        // builtin tables (storage_object) register no floor mutations (Pass 3b),
+        // so they claim no mutation-root names here — else a user `mut fn` could
+        // collide with a name that is never registered.
+        if table.builtin {
+            continue;
+        }
         let owner = format!("table `{}`", table.name);
         claim(
             &mut claimed_mutations,
@@ -272,6 +278,11 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
     // update anyway (nothing is settable).
     let mut inputs: Vec<InputObject> = Vec::new();
     for table in &contract.tables {
+        // no floor mutations for a builtin table → no insert/set/pk input types
+        // (they would be dead, unreferenced types in the schema).
+        if table.builtin {
+            continue;
+        }
         inputs.push(insert_input_type(contract, table));
         if has_settable_fields(table) {
             inputs.push(set_input_type(contract, table));
