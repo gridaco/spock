@@ -3,12 +3,14 @@
 Status: **accepted; implemented and verified on `main`** (2026-07-13). v0
 delivery is **npm-only** — every other channel is deferred behind it (§2). The
 pipeline (`.github/workflows/npm.yml`) builds four platform binaries, publishes
-the single `spock` package tokenlessly via OIDC trusted publishing (with
-provenance), and verifies install-and-run on macOS/Linux/Windows — `npx spock`
-works. Two v0 simplifications departed from the original draft — a single
-bundling package instead of `optionalDependencies`, and glibc instead of musl
-on Linux — each forced by a concrete constraint and marked inline. The
-maintainer decisions that remain genuinely open are in §10.
+the single `spock` package tokenlessly via OIDC trusted publishing, and
+verifies install-and-run on macOS/Linux/Windows — `npx spock` works. First
+published version: **`0.1.3`**. Three v0 simplifications departed from the
+original draft — a single bundling package instead of `optionalDependencies`,
+glibc instead of musl on Linux, and provenance attestation left off (it
+intermittently races the large tarball's publish, §5) — each forced by a
+concrete constraint and marked inline. The maintainer decisions that remain
+genuinely open are in §10.
 
 ## 0. Where this fits
 
@@ -199,9 +201,15 @@ dispatch / tag vX.Y.Z
 **Publishing is tokenless.** The publish job carries `id-token: write` and
 upgrades to the latest npm (Trusted Publishing needs ≥ 11.5.1); `npm publish`
 then authenticates through the OIDC trusted publisher configured for `spock` —
-no `NODE_AUTH_TOKEN`, and provenance is attached automatically. A `dry_run`
-input gates real publishes so the cross-platform build can be proven without
-spending an npm version; prereleases go out under a `next` dist-tag so `latest`
+no `NODE_AUTH_TOKEN`. **Provenance is disabled** (`--no-provenance`): with an
+~11 MB tarball the attestation step intermittently races the package PUT and
+the registry returns a false `E400 "cannot publish over previously published
+version"` — which *burns* the version (it's reserved but never served, and can't
+be reused). Publishing to a `next` dist-tag happened to dodge it while `latest`
+hit it repeatedly; disabling provenance removed the race entirely. Tokenless
+auth is independent of provenance, so nothing else changes. A `dry_run` input
+gates real publishes so the cross-platform build can be proven without spending
+an npm version; prereleases go out under a `next` dist-tag so `latest`
 only ever moves on a real cut.
 
 **Why hand-rolled, not `dist`.** `dist`'s value is the matrix + C-toolchain
@@ -221,13 +229,14 @@ style isn't Conventional Commits, so its auto-changelog would be noise).
 - **Single source of truth:** `[workspace.package] version`. The git tag
   mirrors it; every npm package version equals it, exact-pinned.
 - **Trigger:** bump the version → commit → `git tag vX.Y.Z && git push --tags`.
-- **First public release is `0.1.1`.** `0.0.1` was a name-reservation
+- **First public release is `0.1.3`.** `0.0.1` was a name-reservation
   placeholder; the first real distributed release is `0.1.x`, staying honestly
   pre-1.0 (`1.0.0` is reserved for a stability commitment Spock is not making
-  yet). `0.1.0` itself was skipped: its first publish hit a transient registry
-  error *after* the provenance attestation was recorded, which left `0.1.0`
-  reserved-but-unpublished on npm and unrecoverable — so we bumped past it. A
-  version can never be reused; a burned one is simply skipped.
+  yet). `0.1.0`–`0.1.2` were burned by the provenance-publish race (§5): each
+  hit the false "already published" *after* its provenance attestation was
+  recorded, leaving it reserved-but-unserved and unrecoverable. Disabling
+  provenance fixed it and `0.1.3` published cleanly. A version can never be
+  reused; a burned one is simply skipped.
 - **Changelog: hand-curated `CHANGELOG.md`.** Given the commit style,
   auto-generation is noisier than a short hand-written "what changed in the
   language surface" per release.
@@ -243,7 +252,7 @@ binaries. Zero runtime dependencies, no `postinstall`, no network at install.
   "name": "spock", "version": "0.1.0",
   "bin": { "spock": "bin/spock.js" },
   "files": ["bin/", "binaries/"],
-  "publishConfig": { "access": "public", "provenance": true }
+  "publishConfig": { "access": "public", "provenance": false }
 }
 ```
 
@@ -348,13 +357,17 @@ SQLite, self-served studio), so the onboarding gap is small — one thing:
       studio → non-empty guard → cargo build → `spock check` smoke → upload
       artifact), the publish job (assemble all binaries, stamp version, OIDC
       `npm publish`, dry-run gate), and the cross-OS verify job.
-- [x] Bump the workspace version to `0.1.0`.
-- [x] Verify e2e: dry-run + `0.1.0-rc.1` under `next`, then `0.1.0` to `latest`;
-      `/~studio` renders on macOS/Linux and the win32 binary runs via the shim.
-- [ ] Add the README "Install" section (`npx spock` primary).
-- [ ] Write `CHANGELOG.md` for `0.1.0`.
+- [x] Bump the workspace version; disable provenance (§5); ship `0.1.3`
+      (`0.1.0`–`0.1.2` burned by the provenance race).
+- [x] Verify e2e: dry-run → `0.1.0-rc.1` under `next` → `0.1.3` to `latest`;
+      CI verify installs from npm and runs on macOS/Linux/Windows, and a final
+      `npx spock@latest` on a dev Mac renders `/~studio` and serves `/~contract`.
+- [x] Add the README "Install" section (`npx spock` primary).
+- [x] Write `CHANGELOG.md`.
 
 **P1 — smoother first run.**
+- [ ] Re-enable provenance once the tarball is smaller (optionalDependencies)
+      or via a post-attestation-`E400`-tolerant publish retry (§5, §12).
 - [ ] Switch `linux-x64` to static-musl (adds Alpine) + its smoke test (D3).
 - [ ] Add `spock init [name]` (embed a starter via `include_str!`).
 - [ ] Add the `aarch64-unknown-linux-*` and `aarch64-pc-windows-msvc` targets.
@@ -380,6 +393,13 @@ Honest accounting, framed for a low-maintenance prototype.
   binary set is in one tarball. The residual rule is npm's own: a version can't
   be reused, so never re-tag a version. *Mitigation:* the `dry_run` gate proves
   the build before any real publish; prereleases use a `next` dist-tag.
+- **Provenance is off (accepted; supply-chain nicety deferred).** With an
+  ~11 MB tarball the provenance attestation intermittently races the package
+  PUT and burns the version (§5); it cost `0.1.0`–`0.1.2` before we disabled it.
+  Tokenless OIDC auth is unaffected; only the signed SLSA attestation is missing.
+  *Re-enable path (P1):* shrink the per-publish tarball via the
+  `optionalDependencies` split (§7), or add a bounded publish retry that treats
+  a post-attestation `E400` as success-if-the-version-appears.
 - **Linux is glibc-only at v0 (accepted).** Alpine/musl hosts aren't served
   until the musl follow-up (D3). *Mitigation:* covers the large majority of the
   audience's Linux now; musl is a one-line matrix change + smoke test.
