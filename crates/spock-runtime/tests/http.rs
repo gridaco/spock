@@ -529,6 +529,42 @@ async fn studio_assets_are_served() {
 }
 
 #[tokio::test]
+async fn studio_deep_link_falls_back_to_the_shell() {
+    // The console routes client-side via the History API, so a hard reload or a
+    // shared deep link hits the server at a path with no matching asset. Such a
+    // request (no file extension) serves the SPA shell — status 200, the same
+    // index.html — so the app boots and restores the view from the URL, instead
+    // of 404ing or bouncing back to the overview.
+    let base = start().await;
+    let root = reqwest::get(format!("{base}/~studio"))
+        .await
+        .expect("GET /~studio");
+    if studio_unbuilt(&root) {
+        return;
+    }
+
+    for path in [
+        "/~studio/table/user",
+        "/~studio/fn/create_post",
+        "/~studio/storage",
+    ] {
+        let resp = reqwest::get(format!("{base}{path}"))
+            .await
+            .unwrap_or_else(|_| panic!("GET {path}"));
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "deep link {path} serves the shell"
+        );
+        let body = resp.text().await.unwrap();
+        assert!(
+            body.contains("<title>spock studio</title>"),
+            "deep link {path} returns the SPA index.html"
+        );
+    }
+}
+
+#[tokio::test]
 async fn a_table_named_rpc_fails_startup() {
     let contract =
         spock_lang::compile("table rpc { key id: uuid = auto\n a: int }").expect("compiles");

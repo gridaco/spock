@@ -19,6 +19,7 @@ import {
 import { api } from "@/lib/api"
 import { AppContext } from "@/lib/app-context"
 import type { AppState, StatusContent } from "@/lib/app-context"
+import { pathToRoute, routeTitle, routeToPath, samePath } from "@/lib/router"
 import { isDark, toggleTheme } from "@/lib/theme"
 import { isActorSensitive } from "@/lib/contract"
 import { hasStorage, userTables } from "@/lib/storage"
@@ -65,7 +66,9 @@ export default class App extends Component<Record<string, never>, AppData> {
     contract: null,
     personas: [],
     actor: null,
-    route: { kind: "overview" },
+    // The view lives in the URL (lib/router.ts), so a reload or deep link
+    // restores it instead of resetting to the overview.
+    route: pathToRoute(window.location.pathname),
     reloadKey: 0,
     status: {},
     whoami: null,
@@ -74,6 +77,9 @@ export default class App extends Component<Record<string, never>, AppData> {
   }
 
   async componentDidMount() {
+    // Back/forward navigation drives the view straight off the URL.
+    window.addEventListener("popstate", this.onPopState)
+    document.title = routeTitle(this.state.route)
     const c = await api("/~contract", null)
     if (c.status !== 200) {
       this.setState({ bootError: `could not load /~contract (HTTP ${c.status})` })
@@ -83,6 +89,10 @@ export default class App extends Component<Record<string, never>, AppData> {
     const p = await api("/~personas", null)
     this.setState({ personas: (p.body as Persona[]) ?? [] })
     void this.refreshWhoami()
+  }
+
+  componentWillUnmount() {
+    window.removeEventListener("popstate", this.onPopState)
   }
 
   componentDidUpdate(_prevProps: Record<string, never>, prev: AppData) {
@@ -96,7 +106,24 @@ export default class App extends Component<Record<string, never>, AppData> {
     this.setState({ whoami: r.body as WhoAmI })
   }
 
-  private navigate = (route: Route) => this.setState({ route, status: {} })
+  // A user clicked something: push the target onto history (skipping a no-op
+  // that would just duplicate the current entry) and render it.
+  private navigate = (route: Route) => {
+    const path = routeToPath(route)
+    if (!samePath(path, window.location.pathname)) {
+      window.history.pushState(null, "", path)
+    }
+    document.title = routeTitle(route)
+    this.setState({ route, status: {} })
+  }
+
+  // The URL changed under us (back/forward button): mirror it into the view
+  // without pushing a new entry.
+  private onPopState = () => {
+    const route = pathToRoute(window.location.pathname)
+    document.title = routeTitle(route)
+    this.setState({ route, status: {} })
+  }
   private reload = () => this.setState((s) => ({ reloadKey: s.reloadKey + 1 }))
   private setActor = (actor: string | null) => this.setState({ actor })
   private setStatus = (status: StatusContent) => this.setState({ status })
