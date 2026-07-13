@@ -57,6 +57,20 @@ Rust tests skip themselves, with a note, when the bundle hasn't been built.)
   behavior depends on. Pure presentational pieces with no state stay as plain
   function components (that's not a hook).
 
+## Routing
+
+The current view lives in the URL, so a browser reload or a shared deep link
+restores it instead of dropping back to the overview. `src/lib/router.ts` maps a
+`Route` ↔ a pathname under the `/~studio` base (`/~studio/table/user`,
+`/~studio/fn/create_post`, `/~studio/storage`, …) using the **History API** —
+`app.tsx` pushes on navigation and mirrors `popstate` (back/forward) back into
+the view; no `#` hash. Because it's real paths, the server needs a matching SPA
+fallback: `serve_studio_asset`/`studio_asset` in `crates/spock-runtime/src/http.rs`
+serve `index.html` for any `/~studio/*` path that isn't an embedded asset (a path
+whose last segment has a file extension stays a genuine 404, so a broken
+`script`/`link` src still fails loudly). The impersonated **Actor** is a session
+toggle, not part of the URL — a reload restores the view but resets to anonymous.
+
 ## Theme
 
 The design system is the shadcn **Mira** style + **neutral** (monochrome) theme,

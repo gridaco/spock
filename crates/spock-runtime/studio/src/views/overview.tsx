@@ -15,7 +15,7 @@ export class Overview extends Component {
   declare context: AppState
 
   componentDidMount() {
-    this.context.setStatus({ left: <span>exposure surface · read-only</span> })
+    this.context.setStatus({ left: <span>read-only</span> })
   }
 
   render() {
@@ -37,8 +37,8 @@ export class Overview extends Component {
         <div className="p-6 max-w-5xl">
           <h1 className="text-xl font-semibold tracking-tight">Surface ledger</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            the v0 slice of the exposure surface, rendered from <code>/~contract</code> — role × via
-            arrives with v1 governance
+            A summary of everything this schema exposes — its tables, functions, and how
+            identity flows through them.
           </p>
           {/* the contract's own `//!` documentation (RFD 0016) */}
           <Doc
@@ -79,8 +79,8 @@ export class Overview extends Component {
                   ))}
                 </div>
                 <p className="text-sm text-muted-foreground mt-2.5">
-                  Stamped from the current actor, unforgeable on the floor —{" "}
-                  <b className="text-foreground">provenance, not governance</b>.
+                  Set by the server from whoever you're acting as — the client can't set
+                  or forge them.
                 </p>
               </>
             ) : (
@@ -88,9 +88,7 @@ export class Overview extends Component {
             )}
           </Card>
 
-          <SectionLabel>
-            Actor-sensitive functions <Badge variant="outline">heuristic</Badge>
-          </SectionLabel>
+          <SectionLabel>Actor-sensitive functions</SectionLabel>
           <Card className="p-4">
             {actorFns.length ? (
               <>
@@ -105,8 +103,8 @@ export class Overview extends Component {
                   ))}
                 </div>
                 <p className="text-sm text-muted-foreground mt-2.5">
-                  Bodies that reference <code>spock_actor()</code> (a body scan, not an authoritative
-                  contract bit). These re-answer under impersonation.
+                  These functions read who you're acting as, so they return different
+                  results per persona. Switch the Actor and re-run to see it.
                 </p>
               </>
             ) : (
@@ -116,18 +114,16 @@ export class Overview extends Component {
 
           {anchor ? (
             <div className="mt-4 border-l-2 border-muted-foreground/50 bg-muted/40 rounded-r-md px-4 py-3 text-sm text-muted-foreground">
-              <b className="text-foreground">⚠ ungoverned floor write — no guard.</b> The floor
-              (auto-derived GraphQL/REST writes) stays actor-blind in v0: only <code>= me</code>{" "}
-              columns are server-stamped. The seam is preparatory, not protective, until v1{" "}
-              <code>policy</code>. Studio shows this rather than faking governance the language does
-              not yet have.
+              <b className="text-foreground">⚠ Writes aren't access-controlled yet.</b>{" "}
+              Auto-generated table writes don't check who you're acting as — only{" "}
+              <code>= me</code> columns are set from the actor. Impersonation changes what
+              you see, not what you're allowed to do.
             </div>
           ) : null}
 
-          <SectionLabel>Per-op outcomes</SectionLabel>
+          <SectionLabel>Per-operation outcomes</SectionLabel>
           <p className="text-sm text-muted-foreground -mt-1 mb-2">
-            every declared failure, from the contract — <code>errors[]</code> with the minted{" "}
-            <code>refusals[]</code> subset marked
+            Every failure each operation can return. Explicit refusals are marked with ✦.
           </p>
           <Card className="overflow-hidden p-0">
             <table className="w-full text-sm">

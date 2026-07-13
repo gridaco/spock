@@ -20,7 +20,7 @@ export function ErrCodes({ codes }: { codes: ErrCode[] }) {
             "text-xs px-2 py-0.5 rounded border bg-muted/50 font-mono",
             e.refusal && "border-foreground/40",
           )}
-          title={e.refusal ? "minted via spock_refuse()" : undefined}
+          title={e.refusal ? "a declared refusal (spock_refuse)" : undefined}
         >
           {e.code}
           {e.kind ? <span className="text-muted-foreground"> · {e.kind}</span> : null}

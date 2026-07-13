@@ -187,21 +187,37 @@ async fn studio_index() -> Response {
     serve_studio_asset("index.html")
 }
 
-// GET /~studio/{*path} — the built assets (hashed JS/CSS, bundled fonts). The
-// SPA has no client-side routes, so an unknown path is a genuine 404.
+// GET /~studio/{*path} — the built assets (hashed JS/CSS, bundled fonts) plus
+// the SPA history fallback. The studio routes client-side via the History API
+// (studio/src/lib/router.ts), so a hard reload or deep link like
+// `/~studio/table/user` arrives here as a path that isn't an embedded file —
+// serve the app shell and let the SPA restore the view from window.location. A
+// path whose last segment carries a file extension is a real asset request, so
+// a miss stays a genuine 404: a broken script/style src fails loudly instead of
+// silently loading HTML.
 async fn studio_asset(Path(path): Path<String>) -> Response {
-    serve_studio_asset(&path)
+    if let Some(resp) = studio_file(&path) {
+        return resp;
+    }
+    let last = path.rsplit('/').next().unwrap_or(path.as_str());
+    if last.contains('.') {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    serve_studio_asset("index.html")
 }
 
 fn serve_studio_asset(path: &str) -> Response {
-    match StudioAssets::get(path) {
-        Some(file) => (
+    studio_file(path).unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
+}
+
+fn studio_file(path: &str) -> Option<Response> {
+    StudioAssets::get(path).map(|file| {
+        (
             [(axum::http::header::CONTENT_TYPE, file.metadata.mimetype())],
             file.data.into_owned(),
         )
-            .into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
+            .into_response()
+    })
 }
 
 // GET /~personas — the dev actor picker (RFD 0014 §4.3, RFD 0015 §6.1): the

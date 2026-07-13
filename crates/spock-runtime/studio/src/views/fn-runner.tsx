@@ -104,7 +104,7 @@ export class FnRunner extends Component<{ name: string }, State> {
           <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
             {fn.name}
             <Badge variant="outline">{fn.readonly ? "read" : "mut"}</Badge>
-            {isActorSensitive(fn) ? <Badge variant="outline">reads spock_actor()?</Badge> : null}
+            {isActorSensitive(fn) ? <Badge variant="outline">actor-sensitive</Badge> : null}
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
             function · {fn.readonly ? "GET" : "POST"} <code>/rest/v1/rpc/{fn.name}</code>
@@ -116,9 +116,9 @@ export class FnRunner extends Component<{ name: string }, State> {
 
           {readsActor(fn) ? (
             <div className="mt-2 border-l-2 border-primary/50 bg-muted/40 rounded-r-md px-3.5 py-2.5 text-[13px] text-muted-foreground">
-              This body references <code>spock_actor()</code> — its answer depends on the{" "}
-              <b className="text-foreground">Actor</b> selector above. Switch persona and re-run to
-              see it re-answer.
+              This function reads who you're acting as — its result depends on the{" "}
+              <b className="text-foreground">Actor</b> selector above. Switch persona and re-run
+              to see it change.
             </div>
           ) : null}
 
