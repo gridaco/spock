@@ -22,18 +22,18 @@ use serde_json::{json, Map, Value as JsonValue};
 use spock_lang::ir::{FnArity, Table, Type};
 
 use crate::error::ApiError;
+use crate::filter;
 use crate::graphql::{self, SchemaBuildError};
 use crate::App;
 use crate::{func, write};
 
-const DEFAULT_LIMIT: u32 = 50;
-const MAX_LIMIT: u32 = 200;
 /// The dev persona picker caps its projection so a large dev database cannot
 /// blow up the dropdown (RFD 0015 §6.1).
 const PERSONA_CAP: u32 = 100;
 
-/// Startup failures: schema-derivation collisions (§8.2 naming laws) or a
-/// table claiming a protocol-owned REST segment. Both abort load — never
+/// Startup failures: schema-derivation collisions (§8.2 naming laws), a table
+/// claiming a protocol-owned REST segment, or a column whose name collides
+/// with a reserved PostgREST control key (RFD 0021 §6). All abort load — never
 /// a request-time surprise.
 #[derive(Debug, thiserror::Error)]
 pub enum StartupError {
@@ -41,6 +41,11 @@ pub enum StartupError {
     Schema(#[from] SchemaBuildError),
     #[error("table `rpc` collides with the protocol-owned /rest/v1/rpc segment")]
     ReservedRestSegment,
+    #[error(
+        "table `{table}` column `{column}` collides with a reserved filter control key \
+         (order, limit, offset, select, and, or, not)"
+    )]
+    ReservedFilterColumn { table: String, column: String },
 }
 
 pub fn router(app: Arc<App>) -> Result<Router, StartupError> {
@@ -48,6 +53,19 @@ pub fn router(app: Arc<App>) -> Result<Router, StartupError> {
     // literally named `rpc` — collisions fail startup, never requests
     if app.contract.table("rpc").is_some() {
         return Err(StartupError::ReservedRestSegment);
+    }
+    // A column named like a PostgREST control key (`order`, `and`, …) would be
+    // unaddressable / ambiguous in a REST filter, so it fails at load, not per
+    // request — the exact set the parser treats specially (RFD 0021 §6).
+    for table in &app.contract.tables {
+        for field in &table.fields {
+            if filter::REST_RESERVED_KEYS.contains(&field.name.as_str()) {
+                return Err(StartupError::ReservedFilterColumn {
+                    table: table.name.clone(),
+                    column: field.name.clone(),
+                });
+            }
+        }
     }
     let schema = graphql::schema(app.clone())?;
     let gql = Router::new()
@@ -414,31 +432,26 @@ fn resolve_table<'a>(app: &'a App, name: &str) -> Result<&'a Table, ApiError> {
         .ok_or_else(|| ApiError::not_found(format!("no table `{name}` in this contract")))
 }
 
-// GET /{table}?limit=N — list rows, key order, capped (§8)
+// GET /{table}?col=op.val&order=…&limit=…&offset=… — filtered, ordered,
+// paged reads (RFD 0021 §6). The PostgREST operator grammar parses into the
+// one predicate IR and runs through the same composer as the GraphQL floor.
+// Query params are an ordered `Vec` (not a map): repeated keys — multiple
+// column filters, multiple `order` terms — are honored in order.
 async fn list_rows(
     State(app): State<Arc<App>>,
     Path(table): Path<String>,
-    Query(params): Query<HashMap<String, String>>,
+    Query(params): Query<Vec<(String, String)>>,
 ) -> Result<Json<JsonValue>, ApiError> {
     let table = resolve_table(&app, &table)?;
+    let q = filter::parse_rest(&app.contract, table, &params)?;
 
-    let limit = match params.get("limit") {
-        None => DEFAULT_LIMIT,
-        Some(raw) => raw
-            .parse::<u32>()
-            .map_err(|_| ApiError::bad_request("`limit` must be a non-negative integer"))?
-            .min(MAX_LIMIT),
-    };
-
-    let order = table
-        .key
-        .iter()
-        .map(|k| format!("\"{k}\" ASC"))
-        .collect::<Vec<_>>()
-        .join(", ");
+    let mut sql_params: Vec<SqlValue> = Vec::new();
+    let where_sql = filter::lower_where(&q.predicate, &mut sql_params);
+    filter::check_params(&sql_params)?;
+    let order_sql = filter::lower_order(&q.order, &table.key);
     let sql = format!(
-        "SELECT * FROM \"{}\" ORDER BY {order} LIMIT {limit}",
-        table.name
+        "SELECT * FROM \"{}\" WHERE {where_sql} ORDER BY {order_sql} LIMIT {} OFFSET {}",
+        table.name, q.limit, q.offset
     );
 
     let db = app
@@ -449,7 +462,7 @@ async fn list_rows(
         .prepare(&sql)
         .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
     let mut rows = stmt
-        .query([])
+        .query(rusqlite::params_from_iter(sql_params.iter()))
         .map_err(|e| ApiError::internal(format!("sqlite: {e}")))?;
 
     let mut out = Vec::new();

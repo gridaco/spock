@@ -1,13 +1,20 @@
 # RFD 0021 — the filter sub-language: one predicate IR, two borrowed frontends
 
-Status: **proposed** — recommending acceptance. This ratifies the filter-dialect
-recommendation RFD 0009 §4 recorded "until ratified" and unblocks the tier the
-whole surface has been waiting on: `docs/spec/graphql.md` §7 Tier 2 and filtered
-REST are "blocked on one deliberate decision: the filter language (the same
-decision REST writes wait on — one design should serve both)." This RFD is that
-one decision. It also discharges the pagination/cursor debt fn v2 deferred here
-(RFD 0012 §3), and it deliberately shapes its predicate IR as the structural
-dry-run for v1 `policy`/RLS. §14 flags the decisions that remain genuinely open.
+Status: **ACCEPTED — read half implemented in v0.** The predicate IR
+(`crates/spock-runtime/src/filter.rs`), both frontends (Hasura `bool_exp` on
+`/graphql/v1`, PostgREST operators on `/rest/v1`), ordering with the forced
+stable total order, and paging all shipped and are exercised end to end by the
+technical fixture `examples/filter-lab/` (see its FEEDBACK.md) plus the
+graphql/http suites. `docs/spec/graphql.md` §7 is reconciled (`_like` struck).
+The open decisions of §14 were resolved as recommended (offset window ceiling
+10 000; `STRICT` tables deferred; shallow key-traversal ref filter shipped;
+unknown-operator folded into `bad_request`). Still deferred, on this exact IR:
+filtered/bulk **writes** (the REST-writes milestone) and v1 `policy` (the
+reserved `Operand::Actor` / `Exists` seams, §11). This ratifies the
+filter-dialect recommendation RFD 0009 §4 recorded "until ratified"; it
+discharges the pagination/cursor debt fn v2 deferred here (RFD 0012 §3), and it
+deliberately shapes its predicate IR as the structural dry-run for v1
+`policy`/RLS.
 
 The filter sub-language is the fifth thing the roadmap has called "next" and the
 first to actually land the query layer. It has one job, seen from three angles:

@@ -215,15 +215,21 @@ an off-set value is the `invalid` error above.
   `_by_pk` / `_one` operations, relationships both directions, `limit`,
   derived errors in extensions. This is exactly the subset of Hasura that
   requires no filter language.
-- **Tier 2 — filtered and bulk**: `where: <t>_bool_exp` (Hasura's grammar:
-  per-field comparison expressions `_eq _neq _gt _gte _lt _lte _in _nin
-  _is_null`, text `_like _ilike`, combinators `_and _or _not`),
-  `order_by: [<t>_order_by!]` (`asc | desc`), `offset`, and the bulk
-  mutations `insert_<t>(objects:)`, `update_<t>(where:, _set:)`,
-  `delete_<t>(where:)` returning `<t>_mutation_response
-  { affected_rows: Int!, returning: [t!]! }`. Blocked on one deliberate
-  decision: the filter language (the same decision REST writes wait on —
-  one design should serve both).
+- **Tier 2 — filtered and bulk**. The *read* half **shipped** (RFD 0021):
+  `where: <t>_bool_exp` (per-field comparison expressions `_eq _neq _gt _gte
+  _lt _lte _in _nin _is_null`, text `_ilike`, combinators `_and _or _not`),
+  `order_by: [<t>_order_by!]` (`asc | desc`), and `offset` land on every list
+  root and reverse collection. `_like` (case-sensitive) is **refused, not
+  offered** — the SQLite floor's `LIKE` is ASCII-case-insensitive and the
+  case-sensitive form needs the banned `PRAGMA case_sensitive_like`, so
+  advertising `_like` would lie about the floor (RFD 0021 §4). Reference
+  fields carry the target's `<target>_bool_exp`, of which v0 accepts the
+  key sub-field (folded to an FK comparison); cross-table traversal is a
+  reserved node, refused for now (§5). The *write* half — the bulk mutations
+  `insert_<t>(objects:)`, `update_<t>(where:, _set:)`, `delete_<t>(where:)`
+  returning `<t>_mutation_response { affected_rows: Int!, returning: [t!]! }`
+  — is still pending; it builds on the same predicate IR and is gated to the
+  REST-writes milestone (keeping Hasura's non-null-`where` anti-footgun wall).
 - **Tier 3 — conveniences**: `on_conflict` upsert (blocked on the
   language-level upsert semantics, v1-FEEDBACK L2 — the dialect must not
   back into semantics the language has not decided), `_inc` and update

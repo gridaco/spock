@@ -28,7 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_graphql::dynamic::{
-    Field, FieldFuture, FieldValue, InputObject, InputValue, Object, ObjectAccessor,
+    Enum, Field, FieldFuture, FieldValue, InputObject, InputValue, Object, ObjectAccessor,
     ResolverContext, Scalar, Schema, SchemaError, TypeRef,
 };
 use async_graphql::ErrorExtensions;
@@ -42,13 +42,37 @@ use spock_lang::ir::{
 use time::format_description::well_known::Rfc3339;
 
 use crate::error::ApiError;
+use crate::filter::{self, CmpOp, Dir, Predicate};
 use crate::func;
 use crate::value::json_to_sql;
 use crate::write;
 use crate::App;
 
-const DEFAULT_LIMIT: i64 = 50;
-const MAX_LIMIT: i64 = 200;
+/// The scalar comparison-expression input types (Hasura `<scalar>_comparison_exp`,
+/// RFD 0021 §5). One per derived scalar; the text-shaped one also carries
+/// `_ilike`. `String` covers text and closed sets (both GraphQL `String`).
+const FILTER_SCALARS: &[&str] = &["String", "Int", "Float", "Boolean", "uuid", "timestamp"];
+
+/// Global filter type names the derivation reserves so no table can shadow them
+/// (mirrors `RESERVED_TABLE_NAMES`, but these are support types not roots):
+/// the `order_by` enum and the six `<scalar>_comparison_exp` inputs.
+fn reserved_filter_types() -> Vec<String> {
+    let mut names = vec!["order_by".to_string()];
+    names.extend(FILTER_SCALARS.iter().map(|s| comparison_exp_name(s)));
+    names
+}
+
+fn comparison_exp_name(scalar: &str) -> String {
+    format!("{scalar}_comparison_exp")
+}
+
+fn bool_exp_name(table: &str) -> String {
+    format!("{table}_bool_exp")
+}
+
+fn order_by_name(table: &str) -> String {
+    format!("{table}_order_by")
+}
 
 /// Table names the derivation reserves (graphql.md §3): they collide with
 /// the operation roots or the derived scalars. The language only admits
@@ -106,17 +130,29 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
     // cannot shadow the input type derived for `user`. A table's own four
     // names are pairwise distinct, so any duplicate is cross-table.
     let mut claimed_types: HashMap<String, String> = HashMap::new(); // type -> table
+                                                                     // the filter dialect's global support types (RFD 0021): the `order_by`
+                                                                     // enum and the `<scalar>_comparison_exp` inputs. Claimed first so a table
+                                                                     // (or its support type) that would shadow one fails at load, not per
+                                                                     // request — the same totality the naming laws demand (§13).
+    for name in reserved_filter_types() {
+        claimed_types.insert(name, "the filter surface".into());
+    }
     for table in &contract.tables {
         if RESERVED_TABLE_NAMES.contains(&table.name.as_str()) {
             return Err(SchemaBuildError::ReservedTableName {
                 table: table.name.clone(),
             });
         }
+        // `<t>_bool_exp` / `<t>_order_by` join the name space too (spec §3
+        // reserved the suffixes; this claims them — closing a request-time
+        // shadow gap, RFD 0021 §13).
         for name in [
             table.name.clone(),
             insert_input_name(&table.name),
             set_input_name(&table.name),
             pk_columns_name(&table.name),
+            bool_exp_name(&table.name),
+            order_by_name(&table.name),
         ] {
             if let Some(other) = claimed_types.insert(name.clone(), table.name.clone()) {
                 return Err(SchemaBuildError::DuplicateTypeName {
@@ -290,6 +326,18 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
         }
     }
 
+    // Pass 2d — filter input types (RFD 0021): the global `<scalar>_comparison_exp`
+    // inputs, and per-table `<t>_bool_exp` / `<t>_order_by`. Built for every
+    // table, builtin included — `storage_object` is a filterable read-only
+    // surface (§9). The `order_by` enum is registered in Pass 4.
+    for scalar in FILTER_SCALARS {
+        inputs.push(comparison_exp_type(scalar));
+    }
+    for table in &contract.tables {
+        inputs.push(bool_exp_type(contract, table));
+        inputs.push(order_by_type(table));
+    }
+
     // Pass 2c — record object types: scalar fields, no relations.
     for record in &contract.records {
         let mut obj = Object::new(record.name.clone());
@@ -349,6 +397,8 @@ pub fn schema(app: Arc<App>) -> Result<Schema, SchemaBuildError> {
     let mut builder = Schema::build("Query", Some("Mutation"), None)
         .register(Scalar::new("uuid").description("A UUID in canonical hyphenated form"))
         .register(Scalar::new("timestamp").description("An RFC 3339 UTC timestamp"))
+        // the `order_by` direction enum (RFD 0021 §7); v0 ships asc/desc only
+        .register(Enum::new("order_by").item("asc").item("desc"))
         .data(app.clone())
         // self-references permit unbounded nesting; stay above GraphiQL's
         // introspection depth while bounding pathological queries (D6)
@@ -483,6 +533,62 @@ fn pk_columns_type(contract: &Contract, table: &Table) -> InputObject {
     input
 }
 
+/// A scalar comparison-expression input `<scalar>_comparison_exp` (RFD 0021
+/// §4): the closed operator set for one scalar. Ordered ops take the scalar;
+/// `_in`/`_nin` take `[scalar!]`; `_is_null` takes `Boolean`; `_ilike` is
+/// text-only. `_like` is deliberately absent — refused, not offered (§4).
+fn comparison_exp_type(scalar: &str) -> InputObject {
+    let mut input = InputObject::new(comparison_exp_name(scalar));
+    for op in ["_eq", "_neq", "_gt", "_gte", "_lt", "_lte"] {
+        input = input.field(InputValue::new(op, TypeRef::named(scalar)));
+    }
+    input = input
+        .field(InputValue::new("_in", TypeRef::named_nn_list(scalar)))
+        .field(InputValue::new("_nin", TypeRef::named_nn_list(scalar)))
+        .field(InputValue::new(
+            "_is_null",
+            TypeRef::named(TypeRef::BOOLEAN),
+        ));
+    if scalar == TypeRef::STRING {
+        input = input.field(InputValue::new("_ilike", TypeRef::named(TypeRef::STRING)));
+    }
+    input
+}
+
+/// The per-table `<t>_bool_exp` (RFD 0021 §5): a field per column — scalar
+/// columns typed by their `<scalar>_comparison_exp`, reference columns by the
+/// target's `<target>_bool_exp` (so the key sub-field folds to an FK compare
+/// and future traversal is additive) — plus `_and`/`_or` (lists) and `_not`.
+fn bool_exp_type(contract: &Contract, table: &Table) -> InputObject {
+    let name = bool_exp_name(&table.name);
+    let mut input = InputObject::new(name.clone());
+    for f in &table.fields {
+        let ty = match &f.ty {
+            Type::Ref { table: target, .. } => TypeRef::named(bool_exp_name(target)),
+            _ => TypeRef::named(comparison_exp_name(scalar_name(contract, &f.ty))),
+        };
+        input = input.field(InputValue::new(f.name.clone(), ty));
+    }
+    input
+        .field(InputValue::new(
+            "_and",
+            TypeRef::named_nn_list(name.clone()),
+        ))
+        .field(InputValue::new("_or", TypeRef::named_nn_list(name.clone())))
+        .field(InputValue::new("_not", TypeRef::named(name)))
+}
+
+/// The per-table `<t>_order_by` (RFD 0021 §7): a field per column mapping to
+/// the `order_by` enum (`asc`/`desc`). Reference columns order by their FK
+/// value directly.
+fn order_by_type(table: &Table) -> InputObject {
+    let mut input = InputObject::new(order_by_name(&table.name));
+    for f in &table.fields {
+        input = input.field(InputValue::new(f.name.clone(), TypeRef::named("order_by")));
+    }
+    input
+}
+
 fn gql<E: std::fmt::Display>(e: E) -> async_graphql::Error {
     async_graphql::Error::new(e.to_string())
 }
@@ -512,52 +618,297 @@ fn parent_row<'a>(ctx: &ResolverContext<'a>) -> Result<&'a Json, async_graphql::
 /// null-coerced unprovided variable) is absence (v0 §5.1) → the default.
 fn read_limit(ctx: &ResolverContext<'_>) -> Result<i64, async_graphql::Error> {
     match ctx.args.get("limit") {
-        None => Ok(DEFAULT_LIMIT),
-        Some(v) if v.is_null() => Ok(DEFAULT_LIMIT),
-        Some(v) => {
-            let n = v.i64()?;
-            if n < 0 {
-                return Err(gql("`limit` must be non-negative"));
-            }
-            Ok(n.min(MAX_LIMIT))
-        }
+        None => Ok(filter::DEFAULT_LIMIT),
+        Some(v) if v.is_null() => Ok(filter::DEFAULT_LIMIT),
+        Some(v) => filter::clamp_limit(v.i64()?).map_err(api_error_to_gql),
     }
 }
 
-/// Run `SELECT *` over a table (optionally filtered by one column), key
-/// order, limited. One lock scope; no await while held (§7.2 discipline).
+/// `offset` argument (RFD 0021 §7): default 0, bounded by the depth ceiling.
+/// Absent / explicit `null` is 0.
+fn read_offset(ctx: &ResolverContext<'_>) -> Result<i64, async_graphql::Error> {
+    match ctx.args.get("offset") {
+        None => Ok(0),
+        Some(v) if v.is_null() => Ok(0),
+        Some(v) => filter::check_offset(v.i64()?).map_err(api_error_to_gql),
+    }
+}
+
+/// Run `SELECT *` over a table through the one filter composer (RFD 0021 §3):
+/// `WHERE <predicate>` (bound params), the forced stable total order, and the
+/// validated page window. One lock scope; no await while held (§7.2).
 fn query_rows(
     app: &App,
     table: &Table,
-    filter: Option<(&str, &SqlValue)>,
+    predicate: &Predicate,
+    order: &[(String, Dir)],
     limit: i64,
+    offset: i64,
 ) -> Result<Vec<Json>, async_graphql::Error> {
-    let order = table
-        .key
-        .iter()
-        .map(|k| format!("\"{k}\" ASC"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = match filter {
-        Some((column, _)) => format!(
-            "SELECT * FROM \"{}\" WHERE \"{column}\" = ?1 ORDER BY {order} LIMIT {limit}",
-            table.name
-        ),
-        None => format!(
-            "SELECT * FROM \"{}\" ORDER BY {order} LIMIT {limit}",
-            table.name
-        ),
-    };
+    let mut params: Vec<SqlValue> = Vec::new();
+    let where_sql = filter::lower_where(predicate, &mut params);
+    filter::check_params(&params).map_err(api_error_to_gql)?;
+    let order_sql = filter::lower_order(order, &table.key);
+    let sql = format!(
+        "SELECT * FROM \"{}\" WHERE {where_sql} ORDER BY {order_sql} LIMIT {limit} OFFSET {offset}",
+        table.name
+    );
 
     let db = app.db.lock().map_err(|_| gql("db lock poisoned"))?;
     let mut stmt = db.prepare(&sql).map_err(gql)?;
-    let mut rows = match filter {
-        Some((_, value)) => stmt.query([value]).map_err(gql)?,
-        None => stmt.query([]).map_err(gql)?,
-    };
+    let mut rows = stmt
+        .query(rusqlite::params_from_iter(params.iter()))
+        .map_err(gql)?;
     let mut out = Vec::new();
     while let Some(row) = rows.next().map_err(gql)? {
         out.push(write::row_to_json(&app.contract, table, row).map_err(gql)?);
+    }
+    Ok(out)
+}
+
+/// Parse the `where` argument into a [`Predicate`] (RFD 0021 §5): the value is
+/// deserialized whole to JSON and walked, so no accessor gymnastics. Absent /
+/// null `where` is the constant-true predicate.
+fn parse_where_arg(
+    contract: &Contract,
+    table: &Table,
+    ctx: &ResolverContext<'_>,
+) -> Result<Predicate, async_graphql::Error> {
+    match ctx.args.get("where") {
+        Some(v) if !v.is_null() => {
+            let json = v.deserialize::<Json>()?;
+            parse_where_json(contract, table, &json).map_err(api_error_to_gql)
+        }
+        _ => Ok(Predicate::Const(true)),
+    }
+}
+
+/// Walk a `<t>_bool_exp` JSON object into a [`Predicate`]. Multiple keys in one
+/// object are implicit `AND`; `_and`/`_or` are lists (the object form is a
+/// GraphQL type error by construction); `_not` is one bool_exp.
+fn parse_where_json(
+    contract: &Contract,
+    table: &Table,
+    json: &Json,
+) -> Result<Predicate, ApiError> {
+    let obj = json
+        .as_object()
+        .ok_or_else(|| ApiError::bad_request("`where` must be an object"))?;
+    let mut conds: Vec<Predicate> = Vec::new();
+    for (key, val) in obj {
+        match key.as_str() {
+            "_and" => conds.push(Predicate::And(parse_bool_exp_list(contract, table, val)?)),
+            "_or" => conds.push(Predicate::Or(parse_bool_exp_list(contract, table, val)?)),
+            "_not" => conds.push(Predicate::Not(Box::new(parse_where_json(
+                contract, table, val,
+            )?))),
+            col => {
+                let field = table
+                    .field(col)
+                    .ok_or_else(|| ApiError::unknown_field(&table.name, col))?;
+                match &field.ty {
+                    Type::Ref { table: target, .. } => {
+                        conds.push(parse_ref_filter(contract, table, field, target, val)?)
+                    }
+                    _ => conds.push(parse_scalar_cmp(contract, table, field, val)?),
+                }
+            }
+        }
+    }
+    Ok(match conds.len() {
+        0 => Predicate::Const(true),
+        1 => conds.pop().expect("len checked"),
+        _ => Predicate::And(conds),
+    })
+}
+
+fn parse_bool_exp_list(
+    contract: &Contract,
+    table: &Table,
+    val: &Json,
+) -> Result<Vec<Predicate>, ApiError> {
+    let arr = val
+        .as_array()
+        .ok_or_else(|| ApiError::bad_request("`_and`/`_or` take a list of conditions"))?;
+    arr.iter()
+        .map(|e| parse_where_json(contract, table, e))
+        .collect()
+}
+
+/// A reference field's filter (RFD 0021 §5): typed as the target's
+/// `<target>_bool_exp`, but v0 accepts only the target-*key* sub-field, which
+/// folds to a direct comparison on the parent's FK column (no `EXISTS`). Any
+/// non-key sub-field is the reserved cross-table traversal → `bad_request`.
+fn parse_ref_filter(
+    contract: &Contract,
+    table: &Table,
+    field: &IrField,
+    target: &str,
+    val: &Json,
+) -> Result<Predicate, ApiError> {
+    let target_table = contract
+        .table(target)
+        .ok_or_else(|| ApiError::internal("schema/contract drift: ref target"))?;
+    let key = target_table
+        .single_key()
+        .ok_or_else(|| ApiError::internal("schema/contract drift: composite ref target"))?;
+    let obj = val.as_object().ok_or_else(|| {
+        ApiError::bad_request(format!("filter on `{}` must be an object", field.name))
+    })?;
+    let mut conds: Vec<Predicate> = Vec::new();
+    for (sub, subval) in obj {
+        if sub != &key.name {
+            return Err(ApiError::bad_request(format!(
+                "relationship traversal into `{}.{}` is not supported in v0; filter by the \
+                 reference key, e.g. {{ {}: {{ {}: {{ _eq: … }} }} }} (RFD 0021 §5)",
+                table.name, field.name, field.name, key.name
+            )));
+        }
+        // fold the key sub-comparison onto the parent FK column: the parent
+        // `field` supplies both the column name and the target-key coercion
+        // (`value_type` chases the ref to the target key scalar).
+        conds.push(parse_scalar_cmp(contract, table, field, subval)?);
+    }
+    Ok(match conds.len() {
+        0 => Predicate::Const(true),
+        1 => conds.pop().expect("len checked"),
+        _ => Predicate::And(conds),
+    })
+}
+
+/// A scalar column's comparison expression (`<scalar>_comparison_exp`): each
+/// operator key becomes one leaf; multiple keys are implicit `AND`.
+fn parse_scalar_cmp(
+    contract: &Contract,
+    table: &Table,
+    field: &IrField,
+    val: &Json,
+) -> Result<Predicate, ApiError> {
+    let obj = val.as_object().ok_or_else(|| {
+        ApiError::bad_request(format!("filter on `{}` must be an object", field.name))
+    })?;
+    let col = field.name.clone();
+    let mut conds: Vec<Predicate> = Vec::new();
+    for (op, opval) in obj {
+        // the NULL law (§8.5): `null` is never a comparison value — route null
+        // intent through `_is_null`.
+        if opval.is_null() && op != "_is_null" {
+            return Err(ApiError::bad_request(format!(
+                "`{op}: null` on `{}.{}` is not allowed; use `_is_null` for null tests",
+                table.name, field.name
+            )));
+        }
+        let cmp = |o: CmpOp, membership: bool| -> Result<Predicate, ApiError> {
+            Ok(Predicate::Cmp {
+                col: col.clone(),
+                op: o,
+                value: filter::coerce_operand(contract, table, field, opval, membership)?,
+            })
+        };
+        let pred = match op.as_str() {
+            "_eq" => cmp(CmpOp::Eq, true)?,
+            "_neq" => cmp(CmpOp::Neq, true)?,
+            "_gt" => cmp(CmpOp::Gt, false)?,
+            "_gte" => cmp(CmpOp::Gte, false)?,
+            "_lt" => cmp(CmpOp::Lt, false)?,
+            "_lte" => cmp(CmpOp::Lte, false)?,
+            "_ilike" => cmp(CmpOp::Ilike, false)?,
+            "_in" | "_nin" => {
+                let arr = opval.as_array().ok_or_else(|| {
+                    ApiError::bad_request(format!("`{op}` on `{}` takes a list", field.name))
+                })?;
+                let mut values = Vec::with_capacity(arr.len());
+                for item in arr {
+                    values.push(filter::coerce_operand(contract, table, field, item, true)?);
+                }
+                Predicate::In {
+                    col: col.clone(),
+                    negated: op == "_nin",
+                    values,
+                }
+            }
+            "_is_null" => {
+                let b = opval.as_bool().ok_or_else(|| {
+                    ApiError::bad_request(format!("`_is_null` on `{}` takes a boolean", field.name))
+                })?;
+                // `_is_null: true` ⇒ IS NULL (negated = false)
+                Predicate::IsNull {
+                    col: col.clone(),
+                    negated: !b,
+                }
+            }
+            other => {
+                return Err(ApiError::bad_request(format!(
+                    "unsupported operator `{other}` on `{}.{}`",
+                    table.name, field.name
+                )))
+            }
+        };
+        conds.push(pred);
+    }
+    Ok(match conds.len() {
+        0 => Predicate::Const(true),
+        1 => conds.pop().expect("len checked"),
+        _ => Predicate::And(conds),
+    })
+}
+
+/// Parse the `order_by` argument into an ordered `(column, direction)` list
+/// (RFD 0021 §7). Deserialized whole to JSON: a list of single-key objects
+/// `[{col: asc|desc}]` (a lone object is tolerated).
+fn parse_order_arg(
+    table: &Table,
+    ctx: &ResolverContext<'_>,
+) -> Result<Vec<(String, Dir)>, async_graphql::Error> {
+    let Some(v) = ctx.args.get("order_by") else {
+        return Ok(Vec::new());
+    };
+    if v.is_null() {
+        return Ok(Vec::new());
+    }
+    let json = v.deserialize::<Json>()?;
+    parse_order_json(table, &json).map_err(api_error_to_gql)
+}
+
+fn parse_order_json(table: &Table, json: &Json) -> Result<Vec<(String, Dir)>, ApiError> {
+    let elements: Vec<&Json> = match json {
+        Json::Array(a) => a.iter().collect(),
+        obj @ Json::Object(_) => vec![obj],
+        _ => {
+            return Err(ApiError::bad_request(
+                "`order_by` must be a list of {column: asc|desc}",
+            ))
+        }
+    };
+    let mut out = Vec::new();
+    for el in elements {
+        let obj = el
+            .as_object()
+            .ok_or_else(|| ApiError::bad_request("each `order_by` entry is an object"))?;
+        // `serde_json::Map` iterates in sorted key order, so a multi-key object
+        // would silently reorder terms (`{b: desc, a: asc}` → a, b). Require one
+        // key per object; multiple sort terms use the list form (RFD 0021 §7).
+        if obj.len() != 1 {
+            return Err(ApiError::bad_request(
+                "each `order_by` entry must have exactly one {column: asc|desc}; \
+                 use the list form `[{a: asc}, {b: desc}]` for multiple terms",
+            ));
+        }
+        for (col, dirval) in obj {
+            if table.field(col).is_none() {
+                return Err(ApiError::unknown_field(&table.name, col));
+            }
+            let dir = match dirval.as_str() {
+                Some("asc") => Dir::Asc,
+                Some("desc") => Dir::Desc,
+                _ => {
+                    return Err(ApiError::bad_request(format!(
+                        "`order_by.{col}` must be `asc` or `desc`"
+                    )))
+                }
+            };
+            out.push((col.clone(), dir));
+        }
     }
     Ok(out)
 }
@@ -627,7 +978,9 @@ fn forward_ref_field(
 }
 
 /// A reverse collection on the referenced type: `<child>_by_<field>`,
-/// children whose reference column equals the parent's key.
+/// children whose reference column equals the parent's key. The client's
+/// `where` is AND-ed with that FK bind, so it can never widen the collection
+/// (RFD 0021 §5); it carries the same order/page surface as the list root.
 fn reverse_list_field(
     name: String,
     parent_table: String,
@@ -635,6 +988,7 @@ fn reverse_list_field(
     ref_field: String,
 ) -> Field {
     let child_type = child_table.clone();
+    let child_arg = child_table.clone();
     Field::new(name, TypeRef::named_nn_list_nn(child_type), move |ctx| {
         let parent_table = parent_table.clone();
         let child_table = child_table.clone();
@@ -657,18 +1011,32 @@ fn reverse_list_field(
                 .get(&key_field.name)
                 .ok_or_else(|| gql("schema/contract drift: parent key cell"))?;
             let key = json_to_sql(contract, parent, key_field, cell).map_err(gql)?;
+            let client = parse_where_arg(contract, child, &ctx)?;
+            let predicate = Predicate::And(vec![
+                Predicate::Cmp {
+                    col: ref_field.clone(),
+                    op: CmpOp::Eq,
+                    value: key,
+                },
+                client,
+            ]);
+            let order = parse_order_arg(child, &ctx)?;
             let limit = read_limit(&ctx)?;
-            let rows = query_rows(app, child, Some((ref_field.as_str(), &key)), limit)?;
+            let offset = read_offset(&ctx)?;
+            let rows = query_rows(app, child, &predicate, &order, limit, offset)?;
             Ok(Some(FieldValue::list(
                 rows.into_iter().map(FieldValue::owned_any),
             )))
         })
     })
+    .argument(list_where_arg(&child_arg))
+    .argument(list_order_arg(&child_arg))
     .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+    .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)))
 }
 
-/// `Query.<t>(limit): [t!]!` — the bare table name is the list root
-/// (Hasura convention).
+/// `Query.<t>(where, order_by, limit, offset): [t!]!` — the bare table name is
+/// the list root (Hasura convention); the filter args are Tier 2 (RFD 0021).
 fn root_list_field(table: &Table) -> Field {
     let table_name = table.name.clone();
     Field::new(
@@ -678,19 +1046,35 @@ fn root_list_field(table: &Table) -> Field {
             let table_name = table_name.clone();
             FieldFuture::new(async move {
                 let app = app_of(&ctx)?;
-                let table = app
-                    .contract
+                let contract = &app.contract;
+                let table = contract
                     .table(&table_name)
                     .ok_or_else(|| gql("schema/contract drift: table"))?;
+                let predicate = parse_where_arg(contract, table, &ctx)?;
+                let order = parse_order_arg(table, &ctx)?;
                 let limit = read_limit(&ctx)?;
-                let rows = query_rows(app, table, None, limit)?;
+                let offset = read_offset(&ctx)?;
+                let rows = query_rows(app, table, &predicate, &order, limit, offset)?;
                 Ok(Some(FieldValue::list(
                     rows.into_iter().map(FieldValue::owned_any),
                 )))
             })
         },
     )
+    .argument(list_where_arg(&table.name))
+    .argument(list_order_arg(&table.name))
     .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+    .argument(InputValue::new("offset", TypeRef::named(TypeRef::INT)))
+}
+
+/// The `where: <t>_bool_exp` list argument (RFD 0021 §5).
+fn list_where_arg(table: &str) -> InputValue {
+    InputValue::new("where", TypeRef::named(bool_exp_name(table)))
+}
+
+/// The `order_by: [<t>_order_by!]` list argument (RFD 0021 §7).
+fn list_order_arg(table: &str) -> InputValue {
+    InputValue::new("order_by", TypeRef::named_nn_list(order_by_name(table)))
 }
 
 /// Convert one argument value per the field's *value* type. `Ok(None)`
