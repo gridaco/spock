@@ -70,7 +70,7 @@ export class StorageView extends Component<Record<string, never>, State> {
     this.context.setStatus({
       left: (
         <span>
-          <b className="text-foreground">{n}</b> object{n === 1 ? "" : "s"} · read-only floor
+          <b className="text-foreground">{n}</b> object{n === 1 ? "" : "s"} · read-only
         </span>
       ),
     })
@@ -102,13 +102,13 @@ export class StorageView extends Component<Record<string, never>, State> {
         <div className="px-6 pt-5">
           <h1 className="text-xl font-semibold tracking-tight">Storage</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            the <code>storage_object</code> table — every uploaded file, its metadata a governable
-            row (RFD 0018)
+            the <code>storage_object</code> table — every uploaded file and its metadata
           </p>
           <Note>
-            Uploads here are <b className="text-foreground">unattached</b>. A file becomes durable
-            once a row references it (upload directly on a table's file column); an unreferenced
-            object is reclaimed by the orphan sweep. Owner is stamped from the selected actor.
+            Uploads here are <b className="text-foreground">unattached</b>. A file becomes
+            durable once a row references it (upload directly on a table's file column);
+            unreferenced files are cleaned up automatically. Owner is set from the selected
+            actor.
           </Note>
           <div className="flex items-center gap-2.5 my-3">
             <input ref={this.inputRef} type="file" hidden onChange={this.onPick} />

@@ -335,9 +335,9 @@ export class TableView extends Component<{ name: string }, State> {
           <div className="flex flex-col min-h-0 flex-1 px-6 pb-6 pt-4">
             {meCols.length ? (
               <Note info>
-                <b className="text-foreground">Server-stamped:</b> {meCols.join(", ")} — populated
-                from the current actor (<code>= me</code>), unforgeable on the floor. Provenance, not
-                governance.
+                <b className="text-foreground">Server-stamped:</b> {meCols.join(", ")} — set by
+                the server from whoever you're acting as (<code>= me</code>); the client can't
+                set or forge them.
               </Note>
             ) : null}
             <div className="flex items-center gap-2 my-3">
@@ -368,14 +368,12 @@ export class TableView extends Component<{ name: string }, State> {
               </Button>
             </div>
             <Note>
-              Reads are <b className="text-foreground">actor-blind</b> in v0 — impersonation changes{" "}
-              <b className="text-foreground">fn</b> results and <code>= me</code> stamps, not table
-              reads. <b className="text-foreground">Filter</b> and <b className="text-foreground">Sort</b>{" "}
-              compile to the PostgREST dialect (<code>?col=eq.…</code>, <code>?order=…</code>) — the
-              same predicate IR the GraphQL <code>where</code> uses (RFD 0021); the floor appends the
-              key to every sort so paging stays stable. <b className="text-foreground">File</b> columns
-              upload through the storage gate; inline <b className="text-foreground">editing</b> waits
-              on REST writes.
+              Table reads aren't affected by the <b className="text-foreground">Actor</b>{" "}
+              selector — impersonation changes function results and <code>= me</code> stamps,
+              not which rows you can read. <b className="text-foreground">Filter</b> and{" "}
+              <b className="text-foreground">Sort</b> run on the server. File columns upload
+              through storage; inline <b className="text-foreground">editing</b> isn't
+              available yet.
             </Note>
             <div className="flex-1 min-h-0 border rounded-md overflow-hidden mt-3">
               {err ? (
@@ -716,8 +714,9 @@ function SchemaMode({ table, meCols }: { table: Table; meCols: string[] }) {
     <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-6 pt-4">
       {meCols.length ? (
         <Note info>
-          <b className="text-foreground">Server-stamped:</b> {meCols.join(", ")} — <code>= me</code>,
-          unforgeable on the floor. Provenance, not governance.
+          <b className="text-foreground">Server-stamped:</b> {meCols.join(", ")} —{" "}
+          <code>= me</code>, set by the server from the current actor; the client can't
+          set them.
         </Note>
       ) : null}
       <Card className="overflow-hidden p-0 mt-3">
