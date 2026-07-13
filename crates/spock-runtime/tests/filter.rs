@@ -299,6 +299,35 @@ async fn refusals() {
     );
     let r = gql(&base, "{ widget(offset: 99999) { label } }").await;
     assert_eq!(r["errors"][0]["extensions"]["code"], "bad_request");
+
+    // `ilike` on a non-text column is refused (mirrors the GraphQL side, where
+    // `_ilike` exists only on `String`) — SQLite would otherwise coerce silently
+    let (status, b) = get(&base, "/rest/v1/widget?rank=ilike.5*").await;
+    assert_eq!(
+        (status, b["error"]["code"].as_str().unwrap()),
+        (422, "type_mismatch")
+    );
+
+    // deeply nested logical groups are refused before they can overflow the
+    // stack (§8.7) — 40 levels is past the depth ceiling of 32
+    let mut nested = "rank.gt.0".to_string();
+    for _ in 0..40 {
+        nested = format!("and({nested})");
+    }
+    let (status, b) = get(&base, &format!("/rest/v1/widget?and=({nested})")).await;
+    assert_eq!(
+        (status, b["error"]["code"].as_str().unwrap()),
+        (400, "bad_request")
+    );
+
+    // a multi-key `order_by` object is refused: `serde_json::Map` would sort the
+    // keys and silently reorder terms — the list form carries multiple terms
+    let r = gql(
+        &base,
+        "{ widget(order_by: {rank: asc, score: desc}) { label } }",
+    )
+    .await;
+    assert_eq!(r["errors"][0]["extensions"]["code"], "bad_request");
 }
 
 /// FINDING (the honest one): a bare `_gt` keyset over a non-unique sort column

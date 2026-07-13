@@ -143,6 +143,9 @@ export class TableView extends Component<{ name: string }, State> {
     const qs = buildQuery(filters, sorts, limit, offset)
     this.lastQuery = qs
     const res = await api(`/rest/v1/${encodeURIComponent(table.name)}?${qs}`, this.context.actor)
+    // a newer load() may have started (rewriting lastQuery) while this request
+    // was in flight — drop the now-stale response so it can't clobber fresh rows
+    if (qs !== this.lastQuery) return
     if (res.status !== 200) {
       // surface the floor's refusal (unknown_field / type_mismatch / bad_request)
       const msg = isErrorBody(res.body)
@@ -189,7 +192,9 @@ export class TableView extends Component<{ name: string }, State> {
     else this.setState(next) // typing: update the draft, defer the fetch to commit
   }
   private fSetColumn = (id: number, column: string) =>
-    this.mapRule(id, (r) => ({ ...r, column }), true)
+    // clear the value: it may not match the new column's type (a bool/set
+    // dropdown would show a non-option, and the re-fetch would type_mismatch)
+    this.mapRule(id, (r) => ({ ...r, column, value: "" }), true)
   private fSetOp = (id: number, op: string) => this.mapRule(id, (r) => ({ ...r, op }), true)
   private fDraftValue = (id: number, value: string) =>
     this.mapRule(id, (r) => ({ ...r, value }), false)

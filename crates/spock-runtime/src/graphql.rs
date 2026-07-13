@@ -885,6 +885,15 @@ fn parse_order_json(table: &Table, json: &Json) -> Result<Vec<(String, Dir)>, Ap
         let obj = el
             .as_object()
             .ok_or_else(|| ApiError::bad_request("each `order_by` entry is an object"))?;
+        // `serde_json::Map` iterates in sorted key order, so a multi-key object
+        // would silently reorder terms (`{b: desc, a: asc}` → a, b). Require one
+        // key per object; multiple sort terms use the list form (RFD 0021 §7).
+        if obj.len() != 1 {
+            return Err(ApiError::bad_request(
+                "each `order_by` entry must have exactly one {column: asc|desc}; \
+                 use the list form `[{a: asc}, {b: desc}]` for multiple terms",
+            ));
+        }
         for (col, dirval) in obj {
             if table.field(col).is_none() {
                 return Err(ApiError::unknown_field(&table.name, col));

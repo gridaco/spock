@@ -947,6 +947,17 @@ async fn the_filter_surface() {
     .await;
     assert_no_errors(&resp);
     assert_eq!(resp["data"]["post"].as_array().unwrap().len(), 2);
+    // _and: the intersection — only "golden hour" matches both patterns
+    let resp = gql(
+        &base,
+        r#"{ post(where: {_and: [{caption: {_ilike: "%golden%"}}, {caption: {_ilike: "%hour%"}}]}) { caption } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    let posts = resp["data"]["post"].as_array().unwrap();
+    assert_eq!(posts.len(), 1);
+    assert_eq!(posts[0]["caption"], "golden hour");
     let resp = gql(
         &base,
         r#"{ user(where: {_not: {username: {_eq: "maya"}}}) { username } }"#,

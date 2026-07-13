@@ -31,6 +31,11 @@ pub const MAX_OFFSET: i64 = 10_000;
 /// count — across every leaf, not any one `IN` list — would exceed it is a
 /// `bad_request`, never a `prepare()`-time 500.
 pub const MAX_FILTER_PARAMS: usize = 30_000;
+/// Cap on nested logical-group depth (`?and=(and(and(…)))`). Unbounded
+/// recursion risks a stack overflow — and the substring rebuild at each level
+/// is superlinear — before the parse ever reaches `bad_request`. Mirrors the
+/// GraphQL frontend's `.limit_depth(32)`.
+pub const MAX_FILTER_DEPTH: usize = 32;
 
 /// The single-value comparison operators. `_in`/`_nin` (list) and `_is_null`
 /// have their own [`Predicate`] variants; this is the closed set that maps
@@ -309,13 +314,13 @@ pub fn parse_rest(
                     "column projection (`select`) is not supported in v0",
                 ));
             }
-            "and" => conds.push(Predicate::And(parse_group(contract, table, val)?)),
-            "or" => conds.push(Predicate::Or(parse_group(contract, table, val)?)),
+            "and" => conds.push(Predicate::And(parse_group(contract, table, val, 1)?)),
+            "or" => conds.push(Predicate::Or(parse_group(contract, table, val, 1)?)),
             "not.and" => conds.push(Predicate::Not(Box::new(Predicate::And(parse_group(
-                contract, table, val,
+                contract, table, val, 1,
             )?)))),
             "not.or" => conds.push(Predicate::Not(Box::new(Predicate::Or(parse_group(
-                contract, table, val,
+                contract, table, val, 1,
             )?)))),
             // a plain column filter: `?col=op.val`
             col => conds.push(parse_column_op(contract, table, col, val)?),
@@ -414,7 +419,17 @@ fn split_top_level(s: &str) -> Vec<String> {
 /// Parse a logical group body: `(m1,m2,…)`. Each member is either a nested
 /// group (`and(…)`, `or(…)`, `not.and(…)`, `not.or(…)`) or a column condition
 /// `col.op.val`.
-fn parse_group(contract: &Contract, table: &Table, raw: &str) -> Result<Vec<Predicate>, ApiError> {
+fn parse_group(
+    contract: &Contract,
+    table: &Table,
+    raw: &str,
+    depth: usize,
+) -> Result<Vec<Predicate>, ApiError> {
+    if depth > MAX_FILTER_DEPTH {
+        return Err(ApiError::bad_request(format!(
+            "filter nesting exceeds the depth limit of {MAX_FILTER_DEPTH}"
+        )));
+    }
     let inner = raw
         .strip_prefix('(')
         .and_then(|s| s.strip_suffix(')'))
@@ -423,7 +438,7 @@ fn parse_group(contract: &Contract, table: &Table, raw: &str) -> Result<Vec<Pred
         })?;
     let mut out = Vec::new();
     for member in split_top_level(inner) {
-        out.push(parse_group_member(contract, table, &member)?);
+        out.push(parse_group_member(contract, table, &member, depth)?);
     }
     Ok(out)
 }
@@ -434,6 +449,7 @@ fn parse_group_member(
     contract: &Contract,
     table: &Table,
     member: &str,
+    depth: usize,
 ) -> Result<Predicate, ApiError> {
     for (prefix, negated, is_or) in [
         ("not.and(", true, false),
@@ -443,7 +459,7 @@ fn parse_group_member(
     ] {
         if let Some(rest) = member.strip_prefix(prefix) {
             let body = format!("({rest}"); // restore the paren the prefix ate
-            let members = parse_group(contract, table, &body)?;
+            let members = parse_group(contract, table, &body, depth + 1)?;
             let group = if is_or {
                 Predicate::Or(members)
             } else {
@@ -500,6 +516,13 @@ fn parse_column_op(
         "lt" => cmp(CmpOp::Lt, false),
         "lte" => cmp(CmpOp::Lte, false),
         "ilike" => {
+            // `ilike` is text-only, mirroring the GraphQL side where `_ilike`
+            // lives only on `String_comparison_exp` (text + closed sets). On a
+            // non-text column SQLite would silently coerce rather than error, so
+            // refuse loudly instead (§9).
+            if !matches!(contract.value_type(&field.ty), Type::Text | Type::Set { .. }) {
+                return Err(ApiError::type_mismatch(&table.name, col, "a text column"));
+            }
             // PostgREST aliases `*` → `%` to dodge URL-encoding (§6 deviation)
             let pattern = value.replace('*', "%");
             Ok(Predicate::Cmp {
