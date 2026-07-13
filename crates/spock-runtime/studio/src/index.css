@@ -2,6 +2,14 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/inter";
+/* Import react-data-grid's stylesheet HERE, after Tailwind — not in main.tsx.
+   RDG wraps all of its styles in `@layer rdg`, and cascade layers are ordered by
+   first appearance: importing it last registers `rdg` after Tailwind's `base`
+   layer, so RDG's cell padding wins over Tailwind v4 Preflight's
+   `*{ padding:0; margin:0 }` (which lives in `base`). Imported before Tailwind,
+   `rdg` would sort first (lowest priority) and Preflight would flatten the grid.
+   Our own `.rdg{…}` rules further down stay unlayered, so they beat all layers. */
+@import "react-data-grid/lib/styles.css";
 
 @custom-variant dark (&:is(.dark *));
 

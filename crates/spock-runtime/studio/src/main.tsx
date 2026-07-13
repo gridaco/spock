@@ -1,7 +1,7 @@
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"
-// react-data-grid styles first, so our .rdg token overrides in index.css win
-import "react-data-grid/lib/styles.css"
+// index.css owns the cascade-layer order and imports react-data-grid's stylesheet
+// into the correctly-ordered `rdg` layer (see the @layer note there).
 import "./index.css"
 import { initTheme } from "@/lib/theme"
 import App from "@/app"
