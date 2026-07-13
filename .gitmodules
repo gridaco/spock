@@ -1,0 +1,3 @@
+[submodule "uhura"]
+	path = uhura
+	url = https://github.com/gridaco/uhura.git

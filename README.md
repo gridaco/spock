@@ -626,11 +626,33 @@ prints the SDL for offline schema tooling.
 The npm package metadata lives under `npm/` only to reserve the package name.
 It is not the primary implementation target.
 
+## Uhura, the client language
+
+Spock's doctrine forbids Spock from building a client language — "generate
+types, never the client" (`docs/rfd/0010`), "borrow, don't build"
+(`docs/rfd/0009`). That slot is filled by
+[Uhura](https://github.com/gridaco/uhura): a declarative UI language and
+deterministic headless experience runtime that owns non-authoritative
+UI-session state and experience behavior, with Spock as its canonical
+provider. No fact may be authoritative in both languages.
+
+Uhura is a subsystem of the Spock project: its canonical source lives in its
+own repository and is included here as a git submodule at `uhura/`. Today this
+is topology only — Spock's workspace, build, and CI do not touch the
+submodule, and `cargo` builds work without it (clone with
+`--recurse-submodules` only if you want the Uhura tree). Once Uhura is
+minimally stable, its tooling ships through the unified `spock` toolchain,
+and the runtime integration lands as contract projection plus a provider
+adapter.
+
 ## Repository Layout
 
 - `examples/` contains product requirements and current-valid Spock examples.
 - `docs/rfd/` contains discussion drafts and proposal-only language ideas.
 - `npm/` contains package metadata for npm name reservation.
+- `uhura/` is the Uhura client language (git submodule of
+  [gridaco/uhura](https://github.com/gridaco/uhura); not yet wired into the
+  build).
 
 ## References and prior work
 
