@@ -168,6 +168,27 @@ async fn the_whole_protocol() {
     assert_eq!(resp.status().as_u16(), 404); // table writes live on /graphql/v1
 }
 
+#[tokio::test]
+async fn local_browser_clients_can_preflight_the_protocol() {
+    let base = start().await;
+    let response = reqwest::Client::new()
+        .request(reqwest::Method::OPTIONS, format!("{base}/graphql/v1"))
+        .header("Origin", "http://127.0.0.1:8787")
+        .header("Access-Control-Request-Method", "POST")
+        .header(
+            "Access-Control-Request-Headers",
+            "content-type,x-spock-actor",
+        )
+        .send()
+        .await
+        .expect("OPTIONS preflight");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(response.headers()["access-control-allow-origin"], "*");
+    assert_eq!(response.headers()["access-control-allow-methods"], "*");
+    assert_eq!(response.headers()["access-control-allow-headers"], "*");
+}
+
 async fn rpc(base: &str, name: &str, body: Option<Value>) -> (u16, Value) {
     let mut req = reqwest::Client::new().post(format!("{base}/rest/v1/rpc/{name}"));
     if let Some(body) = body {
