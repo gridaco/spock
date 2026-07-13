@@ -114,8 +114,9 @@ until doctrine asks (graphql.md §7).
 ## 3. The order
 
 Tier-1 rename → codegen proof → `fn` → **fn v2 (RFD 0012)** →
-**value constraints (RFD 0013)** → filter RFD → Tier 2 + REST writes →
-auth — with track 9 filling gaps and track 8 trailing usage throughout.
+**value constraints (RFD 0013)** → **filter, read half (RFD 0021)** →
+REST/GraphQL bulk writes → auth — with track 9 filling gaps and track 8
+trailing usage throughout.
 
 (Revised July 2026: fn v2 — declared refusals, multi-statement bodies,
 read/write polarity — jumped ahead of the filter RFD on the dogfood
@@ -129,6 +130,13 @@ validator-fn `check`s, RFD 0013 — jumped ahead of the filter RFD by the
 same third rule. It resolves the `format` question §4 deferred, and it
 un-collapses the fn-guard refusals the borrowed floor cannot keep
 (v0-FEEDBACK G1/G13). The filter RFD is next.)
+
+(Shipped July 2026: the filter sub-language's read half — RFD 0021. One
+owned predicate IR, two borrowed frontends, forced stable total order,
+page + offset-depth caps, the pagination debt above discharged for derived
+surfaces (read fns stay author-owned — the `view` boundary). Dogfooded by
+the technical fixture `examples/filter-lab/`. Filtered/bulk *writes* and v1
+`policy` build on the same IR.)
 
 Four rules generate this ordering; if the ordering is ever revisited, argue
 with the rules, not the sequence:
@@ -160,9 +168,12 @@ with the rules, not the sequence:
   hand-written `spock` npm client after REST writes, per-app generated
   types); generate types, never the client; the GraphQL path stays
   borrowed.
-- **Filter dialect.** Recommendation: one predicate IR, two mirrored
-  frontends (Hasura `bool_exp`, PostgREST operators) — doctrine applied,
-  but it is contract surface, so it is recorded here until ratified.
+- ~~**Filter dialect.**~~ **Ratified and shipped — RFD 0021.** One owned
+  predicate IR (`spock-runtime`), two mirrored frontends (Hasura `bool_exp`,
+  PostgREST operators); the read half (`where`/`order_by`/`offset`, forced
+  stable total order, page + depth caps) is live and dogfooded by
+  `examples/filter-lab/`. Filtered/bulk *writes* build on the same IR and land
+  with the REST-writes milestone; the IR is shaped as the v1 `policy` dry-run.
 - ~~**`format` — column formats as a language feature**~~ **Resolved —
   RFD 0013** (July 2026). The research ran (judged design panel: curated
   format vocabulary vs raw-SQL check vs named domain — all three rejected)

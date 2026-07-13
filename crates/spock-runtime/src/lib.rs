@@ -7,6 +7,7 @@
 
 pub mod engine;
 pub mod error;
+pub mod filter;
 pub mod func;
 pub mod graphql;
 pub mod http;

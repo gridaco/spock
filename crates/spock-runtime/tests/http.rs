@@ -536,3 +536,106 @@ async fn a_table_named_rpc_fails_startup() {
     let app = Arc::new(App::new(contract, conn));
     assert!(http::router(app).is_err());
 }
+
+/// The filter sub-language over REST (RFD 0021 §6): the PostgREST operator
+/// grammar into the same predicate IR — `col=op.val`, `is.*`, `in.(…)`,
+/// `and`/`or` groups, `order`/`offset`, the `like` and depth-ceiling refusals,
+/// and the reserved-column startup guard.
+#[tokio::test]
+async fn the_rest_filter_surface() {
+    let base = start().await;
+
+    // maya's id, for the reference filter below
+    let (_, users) = get(&base, "/rest/v1/user").await;
+    let maya_id = users["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["username"] == "maya")
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let rows = |body: &Value| body["rows"].as_array().unwrap().len();
+
+    // -- eq ---------------------------------------------------------------
+    let (status, body) = get(&base, "/rest/v1/user?username=eq.maya").await;
+    assert_eq!(status, 200);
+    assert_eq!(rows(&body), 1);
+    assert_eq!(body["rows"][0]["username"], "maya");
+
+    // -- is.null / not.is.null (luis has no bio) --------------------------
+    let (_, body) = get(&base, "/rest/v1/user?bio=is.null").await;
+    assert_eq!(rows(&body), 1);
+    assert_eq!(body["rows"][0]["username"], "luis");
+    let (_, body) = get(&base, "/rest/v1/user?bio=not.is.null").await;
+    assert_eq!(rows(&body), 1);
+    assert_eq!(body["rows"][0]["username"], "maya");
+
+    // -- in.(…) -----------------------------------------------------------
+    let (_, body) = get(&base, "/rest/v1/user?username=in.(maya,luis,ghost)").await;
+    assert_eq!(rows(&body), 2);
+
+    // -- ilike with the * → % alias --------------------------------------
+    let (_, body) = get(&base, "/rest/v1/user?username=ilike.*MAY*").await;
+    assert_eq!(rows(&body), 1);
+    assert_eq!(body["rows"][0]["username"], "maya");
+
+    // -- implicit AND of two column filters -------------------------------
+    let (_, body) = get(&base, "/rest/v1/user?username=eq.maya&bio=eq.photographer").await;
+    assert_eq!(rows(&body), 1);
+
+    // -- an or() group ----------------------------------------------------
+    let (_, body) = get(
+        &base,
+        "/rest/v1/user?or=(username.eq.maya,username.eq.luis)",
+    )
+    .await;
+    assert_eq!(rows(&body), 2);
+
+    // -- order desc + forced pk tiebreak ----------------------------------
+    let (_, body) = get(&base, "/rest/v1/user?order=username.desc").await;
+    let names: Vec<&str> = body["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["username"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["maya", "luis"]);
+
+    // -- reference filter: the FK scalar column, folded to `=` ------------
+    let (_, body) = get(&base, &format!("/rest/v1/post?author=eq.{maya_id}")).await;
+    assert_eq!(rows(&body), 1);
+
+    // -- `like` (case-sensitive) is refused with a naming hint ------------
+    let (status, body) = get(&base, "/rest/v1/user?username=like.maya").await;
+    assert_eq!((status, error_code(&body)), (400, "bad_request"));
+
+    // -- the offset depth ceiling -----------------------------------------
+    let (status, body) = get(&base, "/rest/v1/user?offset=20000").await;
+    assert_eq!((status, error_code(&body)), (400, "bad_request"));
+
+    // -- an unknown column is unknown_field -------------------------------
+    let (status, body) = get(&base, "/rest/v1/user?nope=eq.1").await;
+    assert_eq!((status, error_code(&body)), (422, "unknown_field"));
+
+    // -- a bad order direction is bad_request -----------------------------
+    let (status, body) = get(&base, "/rest/v1/user?order=username.sideways").await;
+    assert_eq!((status, error_code(&body)), (400, "bad_request"));
+}
+
+/// A column named like a reserved PostgREST control key fails at load, not per
+/// request (RFD 0021 §6) — the same totality as the other naming laws.
+#[tokio::test]
+async fn reserved_filter_column_fails_startup() {
+    let contract = spock_lang::compile("table thing { key id: uuid = auto\n order: int }")
+        .expect("compiles: `order` is a legal spock column name");
+    let conn = engine::open(&contract, None, None).expect("engine opens");
+    let app = Arc::new(App::new(contract, conn));
+    let err = http::router(app).unwrap_err();
+    assert!(
+        matches!(err, http::StartupError::ReservedFilterColumn { .. }),
+        "expected ReservedFilterColumn, got {err:?}"
+    );
+}

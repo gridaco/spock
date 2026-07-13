@@ -1,0 +1,62 @@
+//! filter-lab — a technical fixture for the filter sub-language (RFD 0021).
+//!
+//! Unlike `examples/instagram` (a plausible product), this schema models no
+//! domain. It exists only to stress the query layer: one filterable column of
+//! every scalar shape, a closed set, nullable columns for the NULL law, a
+//! self-reference for FK and reverse-collection filtering, a composite key,
+//! and seed rows chosen to straddle the sharp edges — ordering ties, NULL
+//! placement, `%`/`_` wildcard escaping, and ASCII-only case folding.
+//!
+//! The findings this fixture surfaced are recorded in FEEDBACK.md, in the
+//! dogfooding tradition of the instagram example. It is exercised end to end
+//! by crates/spock-runtime/tests/filter.rs.
+
+/// A widget: one column per filterable shape. Nothing here means anything —
+/// the columns are named for the machinery they exercise.
+table widget {
+  key id: uuid = auto
+  /// text: ordering ties, `ilike` patterns, `%`/`_` literals, case folding.
+  label: text
+  /// int: numeric comparison and the keyset probe. Deliberately non-unique
+  /// (three rows share rank 1) so the forced pk tiebreak has something to do.
+  rank: int
+  /// float: real-valued comparison.
+  score: float
+  /// bool: `is.true`/`_eq: true` filtering (stored as INTEGER 0/1).
+  active: bool
+  /// a closed set (RFD 0013): membership is validated, an off-set operand is
+  /// a `type_mismatch`, and the field stays a GraphQL `String`.
+  kind: "alpha" | "beta" | "gamma"
+  /// nullable text: the NULL law (`_eq: null` refused) and NULLS placement.
+  note: text?
+  /// timestamp: range and ordering over canonical (lexically-sortable) values.
+  made_at: timestamp
+  /// a self-reference: FK-by-key filtering and the reverse collection
+  /// `widget_by_parent`.
+  parent: widget?
+}
+
+/// A composite-key edge — a table with no single key, to prove filtering and
+/// the forced total order still work when the tiebreak is a compound key.
+table edge {
+  key (src, dst)
+  src: widget
+  dst: widget
+  weight: int
+}
+
+seed {
+  // Three rank-1 rows (a, b, c) create an ordering tie: paged by rank they
+  // must never skip or duplicate, which only the forced pk tiebreak buys.
+  // `b` omits `note` (→ null). Labels carry a literal `%`, a literal `_`, and
+  // a non-ASCII accent to probe `ilike` escaping and case folding.
+  a = widget { label: "alpha one",  rank: 1, score: 1.5,  active: true,  kind: "alpha", note: "first", made_at: "2026-01-01T00:00:00Z" }
+  b = widget { label: "Alpha Two",  rank: 1, score: 2.5,  active: false, kind: "alpha",                made_at: "2026-01-02T00:00:00Z" }
+  c = widget { label: "beta_three", rank: 1, score: 3.5,  active: true,  kind: "beta",  note: "3rd",   made_at: "2026-01-03T00:00:00Z" }
+  d = widget { label: "50% off",    rank: 2, score: 0.5,  active: false, kind: "beta",  note: "sale",  made_at: "2026-01-04T00:00:00Z", parent: a }
+  e = widget { label: "café",       rank: 3, score: 10.0, active: true,  kind: "gamma", note: "accent", made_at: "2026-01-05T00:00:00Z", parent: a }
+
+  edge { src: a, dst: b, weight: 5 }
+  edge { src: a, dst: c, weight: 3 }
+  edge { src: b, dst: c, weight: 8 }
+}

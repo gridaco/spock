@@ -838,3 +838,178 @@ table follow {
     let resp = gql(&base, r#"{ valid_username(name: "NOPE!") }"#, Value::Null).await;
     assert_eq!(resp["data"]["valid_username"], false);
 }
+
+/// The filter sub-language over GraphQL (RFD 0021): `where` / `order_by` /
+/// `offset`, the reserved-Exists refusal, the NULL law, and the depth ceiling.
+#[tokio::test]
+async fn the_filter_surface() {
+    let base = start().await;
+
+    // -- introspection: the derived filter types appear ---------------------
+    let resp = gql(&base, "{ __schema { types { name } } }", Value::Null).await;
+    assert_no_errors(&resp);
+    let types: Vec<&str> = resp["data"]["__schema"]["types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "user_bool_exp",
+        "user_order_by",
+        "String_comparison_exp",
+        "uuid_comparison_exp",
+        "order_by",
+    ] {
+        assert!(types.contains(&expected), "missing filter type {expected}");
+    }
+
+    // -- _eq --------------------------------------------------------------
+    let resp = gql(
+        &base,
+        r#"{ user(where: {username: {_eq: "maya"}}) { username } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    let users = resp["data"]["user"].as_array().unwrap();
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0]["username"], "maya");
+
+    // -- _is_null: true (luis has no bio) ---------------------------------
+    let resp = gql(
+        &base,
+        "{ user(where: {bio: {_is_null: true}}) { username } }",
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    let users = resp["data"]["user"].as_array().unwrap();
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0]["username"], "luis");
+
+    // -- order_by desc + the forced pk tiebreak (stable) ------------------
+    let resp = gql(
+        &base,
+        "{ post(order_by: {caption: desc}) { caption } }",
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    let caps: Vec<&str> = resp["data"]["post"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["caption"].as_str().unwrap())
+        .collect();
+    assert_eq!(caps, vec!["golden hour", "first light"]);
+
+    // -- _ilike (ASCII case-insensitive), % wildcard ----------------------
+    let resp = gql(
+        &base,
+        r#"{ post(where: {caption: {_ilike: "%LIGHT%"}}) { caption } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    let caps = resp["data"]["post"].as_array().unwrap();
+    assert_eq!(caps.len(), 1);
+    assert_eq!(caps[0]["caption"], "first light");
+
+    // -- limit + offset over a stable order -------------------------------
+    let resp = gql(
+        &base,
+        "{ post(order_by: {caption: asc}, limit: 1, offset: 1) { caption } }",
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    let caps = resp["data"]["post"].as_array().unwrap();
+    assert_eq!(caps.len(), 1);
+    assert_eq!(caps[0]["caption"], "golden hour");
+
+    // -- _in --------------------------------------------------------------
+    let resp = gql(
+        &base,
+        r#"{ user(where: {username: {_in: ["maya", "luis", "ghost"]}}) { username } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["user"].as_array().unwrap().len(), 2);
+
+    // -- _and / _or / _not ------------------------------------------------
+    let resp = gql(
+        &base,
+        r#"{ post(where: {_or: [{caption: {_ilike: "%first%"}}, {caption: {_ilike: "%golden%"}}]}) { caption } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["post"].as_array().unwrap().len(), 2);
+    let resp = gql(
+        &base,
+        r#"{ user(where: {_not: {username: {_eq: "maya"}}}) { username } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    let users = resp["data"]["user"].as_array().unwrap();
+    assert_eq!(users.len(), 1);
+    assert_eq!(users[0]["username"], "luis");
+
+    // -- reference filter by key: fold to the FK column, no EXISTS --------
+    let resp = gql(
+        &base,
+        r#"{ user(where: {username: {_eq: "maya"}}) { id } }"#,
+        Value::Null,
+    )
+    .await;
+    let maya = resp["data"]["user"][0]["id"].as_str().unwrap().to_string();
+    let resp = gql(
+        &base,
+        &format!(r#"{{ post(where: {{author: {{id: {{_eq: "{maya}"}}}}}}) {{ caption }} }}"#),
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    assert_eq!(resp["data"]["post"].as_array().unwrap().len(), 2);
+
+    // -- reverse collection carries its own where + order -----------------
+    let resp = gql(
+        &base,
+        r#"{ user(where: {username: {_eq: "maya"}}) { post_by_author(order_by: {caption: asc}) { caption } } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_no_errors(&resp);
+    let caps: Vec<&str> = resp["data"]["user"][0]["post_by_author"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["caption"].as_str().unwrap())
+        .collect();
+    assert_eq!(caps, vec!["first light", "golden hour"]);
+
+    // -- the NULL law: `_eq: null` is refused, not a silent no-match ------
+    let resp = gql(
+        &base,
+        "{ user(where: {username: {_eq: null}}) { username } }",
+        Value::Null,
+    )
+    .await;
+    assert_eq!(resp["errors"][0]["extensions"]["code"], "bad_request");
+
+    // -- reserved cross-table traversal is refused (§5) -------------------
+    let resp = gql(
+        &base,
+        r#"{ post(where: {author: {username: {_eq: "maya"}}}) { caption } }"#,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(resp["errors"][0]["extensions"]["code"], "bad_request");
+
+    // -- the offset depth ceiling (§7) ------------------------------------
+    let resp = gql(&base, "{ user(offset: 20000) { username } }", Value::Null).await;
+    assert_eq!(resp["errors"][0]["extensions"]["code"], "bad_request");
+}
