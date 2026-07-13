@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "uhura-dev",
+      "runtimeExecutable": "uhura/target/debug/uhura",
+      "runtimeArgs": ["dev", "examples/instagram-uhura", "--port", "8787"],
+      "port": 8787
+    }
+  ]
+}

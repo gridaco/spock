@@ -44,6 +44,17 @@ An example should:
 If an example needs a language feature that does not exist yet, write an RFD
 instead of adding the feature here.
 
+## Shared with Uhura
+
+A domain's `PRD.md` is language-neutral, so the same PRD can be dogfooded from
+both ends. The Instagram PRD is also the canonical spec for the Uhura client
+slice in the sibling folder [`instagram-uhura/`](instagram-uhura/README.md):
+Spock implements the backend here, Uhura the experience there. The two are
+kept as distinct folders until the languages are actually wired, then merged
+into one `instagram/` domain — see
+[RFD 0022](../docs/rfd/0022-uhura-the-client-language.md) for the integration
+direction.
+
 ## Answer Sheets (`pg.sql`, …)
 
 A scenario may also include a reference implementation in a conventional

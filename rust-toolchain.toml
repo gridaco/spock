@@ -1,0 +1,6 @@
+[toolchain]
+# Pinned to match the nested uhura workspace (uhura/rust-toolchain.toml) so the
+# two co-located Cargo workspaces build on one Rust version. Bumping is a
+# deliberate commit; bump both files together.
+channel = "1.92.0"
+components = ["rustfmt", "clippy"]

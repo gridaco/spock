@@ -626,11 +626,24 @@ prints the SDL for offline schema tooling.
 The npm package metadata lives under `npm/` only to reserve the package name.
 It is not the primary implementation target.
 
+## Uhura, the sibling client language
+
+This repository also hosts [Uhura](uhura/README.md) — an incubating
+declarative UI language and deterministic headless experience runtime, the
+client-side sibling of Spock. Spock deliberately borrows its client tooling
+(`docs/rfd/0010`) and never grows a client language of its own; Uhura fills
+that slot as a separate language with its own nested Cargo workspace under
+`uhura/`, with Spock as its canonical backend provider. The integration
+direction — contract projection, adapter obligations, and the determinism
+boundary — is recorded in `docs/rfd/0022-uhura-the-client-language.md`.
+
 ## Repository Layout
 
 - `examples/` contains product requirements and current-valid Spock examples.
 - `docs/rfd/` contains discussion drafts and proposal-only language ideas.
 - `npm/` contains package metadata for npm name reservation.
+- `uhura/` contains the Uhura client language and runtime — a sibling
+  project in its own nested Cargo workspace (RFD 0022).
 
 ## References and prior work
 

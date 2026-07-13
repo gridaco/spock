@@ -2,5 +2,8 @@
 **/*.rs.bk
 .DS_Store
 
+# Uhura corpus build artifacts (nested workspace corpus at repo-root examples/)
+/examples/instagram-uhura/build
+
 # Prebuilt binaries assembled into the npm package at release time (RFD 0020).
 /npm/binaries/
