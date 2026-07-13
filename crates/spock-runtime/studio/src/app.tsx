@@ -182,6 +182,10 @@ export default class App extends Component<Record<string, never>, AppData> {
 function renderView(route: Route): ReactNode {
   switch (route.kind) {
     case "overview":
+    // Records have per-record pages but no dedicated overview view, so any
+    // records-level path (`/~studio/records`, or a nameless `/~studio/record/`)
+    // falls back to the home summary rather than rendering blank.
+    case "records":
       return <Overview />
     case "tables":
       return <TablesOverview />

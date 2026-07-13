@@ -63,7 +63,7 @@ export function pathToRoute(pathname: string): Route {
     case "fn":
       return name ? { kind: "fn", name } : { kind: "fns" }
     case "record":
-      return name ? { kind: "record", name } : { kind: "overview" }
+      return name ? { kind: "record", name } : { kind: "records" }
     default:
       return { kind: "overview" }
   }
