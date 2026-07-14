@@ -660,8 +660,9 @@ button enters the live prototype at `/play` without starting another process.
 `--spock-port` and `--uhura-port` override those defaults; the project's
 provider configuration must address the same Spock port. `Ctrl-C` stops both
 runtimes. Contributor frontend tooling in Spock and Uhura uses the same Node 24
-LTS pin from their respective `.nvmrc` files and pnpm 10.11.0; Node is not
-required by this runtime command.
+LTS pin from their respective `.nvmrc` files and pnpm 10.11.0; the runner uses
+them to build Uhura's web application before launch, but neither running server
+depends on a Node process.
 
 ## Repository Layout
 

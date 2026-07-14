@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Run one Spock authority and one Uhura project through the default Editor.
 # The Editor hosts Play at /play, so both modes share one supervised runtime.
-# Node/pnpm are build-time tools only; this command runs checked-in web assets
-# and the locally built Wasm bundle.
+# Node/pnpm are build-time tools only; this contributor command builds the web
+# application before starting the native hosts. Neither running process needs
+# a Node server.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -52,7 +53,7 @@ if [[ $# -ne 2 ]]; then
   exit 2
 fi
 
-for tool in cargo curl; do
+for tool in cargo curl corepack; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "spock-uhura: required command not found: $tool" >&2
     exit 2
@@ -97,8 +98,15 @@ if ((10#$SPOCK_PORT == 10#$UHURA_PORT)); then
   exit 2
 fi
 
+echo "Building the Uhura web application..."
+if ! (cd "$ROOT/uhura/web" && corepack pnpm build); then
+  echo "spock-uhura: the Uhura web build failed" >&2
+  echo "Run '(cd uhura/web && corepack pnpm install --frozen-lockfile)' once, then retry." >&2
+  exit 2
+fi
+
 required_artifacts=(
-  "$ROOT/uhura/web/dist/play/index.html"
+  "$ROOT/uhura/web/dist/index.html"
   "$ROOT/uhura/crates/uhura-wasm/pkg/web/uhura_wasm.js"
   "$ROOT/uhura/crates/uhura-wasm/pkg/web/uhura_wasm_bg.wasm"
 )
@@ -106,15 +114,14 @@ required_artifacts=(
 for artifact in "${required_artifacts[@]}"; do
   if [[ ! -s "$artifact" ]]; then
     echo "spock-uhura: missing shared build artifact: ${artifact#"$ROOT/"}" >&2
-    echo "Run the Uhura frontend check and uhura/scripts/build-wasm.sh once, then retry." >&2
+    echo "Run uhura/scripts/build-wasm.sh once, then retry." >&2
     exit 2
   fi
 done
 
-if ! compgen -G "$ROOT/uhura/web/dist/play/assets/*.js" >/dev/null \
-  || ! compgen -G "$ROOT/uhura/web/dist/play/assets/*.css" >/dev/null; then
-  echo "spock-uhura: the shared Uhura Play asset bundle is incomplete" >&2
-  echo "Run the Uhura frontend check once, then retry." >&2
+if ! compgen -G "$ROOT/uhura/web/dist/assets/*.js" >/dev/null; then
+  echo "spock-uhura: the unified Uhura application bundle is incomplete" >&2
+  echo "Run the Uhura frontend build once, then retry." >&2
   exit 2
 fi
 
@@ -131,7 +138,6 @@ cargo build --locked --manifest-path uhura/Cargo.toml -p uhura-cli
 
 spock_pid=""
 uhura_pid=""
-canvas_out=""
 cleanup() {
   trap - EXIT INT TERM
   if [[ -n "$uhura_pid" ]] && kill -0 "$uhura_pid" 2>/dev/null; then
@@ -142,15 +148,10 @@ cleanup() {
     kill -TERM "$spock_pid" 2>/dev/null || true
     wait "$spock_pid" 2>/dev/null || true
   fi
-  if [[ -n "$canvas_out" ]]; then
-    rm -rf "$canvas_out"
-  fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-canvas_out="$(mktemp -d "${TMPDIR:-/tmp}/spock-uhura.XXXXXX")"
 
 echo "Starting Spock authority from ${SPOCK_PROGRAM#"$ROOT/"} on port ${SPOCK_PORT}..."
 "$ROOT/target/debug/spock" run "$SPOCK_PROGRAM" --port "$SPOCK_PORT" &
@@ -177,8 +178,7 @@ if [[ "$ready" != true ]]; then
 fi
 
 echo "Starting Uhura Editor for ${UHURA_PROJECT#"$ROOT/"} on port ${UHURA_PORT}..."
-"$ROOT/uhura/target/debug/uhura" editor "$UHURA_PROJECT" \
-  --port "$UHURA_PORT" --out "$canvas_out" &
+"$ROOT/uhura/target/debug/uhura" editor "$UHURA_PROJECT" --port "$UHURA_PORT" &
 uhura_pid=$!
 
 ready=false
