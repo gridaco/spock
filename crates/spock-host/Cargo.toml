@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+uhura-host = { path = "../../uhura/crates/uhura-host" }
 
 [dev-dependencies]
 serde_json.workspace = true

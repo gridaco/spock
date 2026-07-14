@@ -4,10 +4,15 @@
 //! HTTP adapters so its activation laws can be exhaustively tested. Listener,
 //! observer, and subsystem adapters are layered on this crate.
 
+mod client;
 mod generation;
 mod named_state;
 mod routing;
 
+pub use client::{
+    client_source_fingerprint, ActiveClientBinding, ClientHost, ClientHostError, ClientPublication,
+    PreparedClient,
+};
 pub use generation::{
     BackendFreshness, BackendGenerationId, CandidateError, ClientAttempt, ClientAttemptState,
     ClientFreshness, ClientGenerationId, EditorFreshness, Fingerprint, GenerationCoordinator,
