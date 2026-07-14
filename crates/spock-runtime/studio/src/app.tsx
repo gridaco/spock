@@ -17,6 +17,11 @@ import {
 } from "lucide-react"
 
 import { api } from "@/lib/api"
+import {
+  actorFromSelectValue,
+  actorSelectValue,
+  ANONYMOUS_ACTOR_SELECT_VALUE,
+} from "@/lib/actor"
 import { AppContext } from "@/lib/app-context"
 import type { AppState, StatusContent } from "@/lib/app-context"
 import { pathToRoute, routeTitle, routeToPath, samePath } from "@/lib/router"
@@ -43,8 +48,6 @@ import { RecordView } from "@/views/record-view"
 import { StorageView } from "@/views/storage-view"
 import { TableView } from "@/views/table-view"
 import { TablesOverview } from "@/views/tables-overview"
-
-const ANON = "__anon__"
 
 // Prefer classes over hooks for the pages/orchestrator (studio/README.md): the
 // root owns all shared state and exposes it through AppContext. Views are
@@ -86,8 +89,7 @@ export default class App extends Component<Record<string, never>, AppData> {
       return
     }
     this.setState({ contract: c.body as Contract })
-    const p = await api("/~personas", null)
-    this.setState({ personas: (p.body as Persona[]) ?? [] })
+    await this.refreshPersonas()
     void this.refreshWhoami()
   }
 
@@ -104,6 +106,13 @@ export default class App extends Component<Record<string, never>, AppData> {
   private refreshWhoami = async () => {
     const r = await api("/~whoami", this.state.actor)
     this.setState({ whoami: r.body as WhoAmI })
+  }
+
+  private refreshPersonas = async () => {
+    const response = await api("/~personas", null)
+    if (response.status === 200) {
+      this.setState({ personas: normalizePersonas(response.body) })
+    }
   }
 
   // A user clicked something: push the target onto history (skipping a no-op
@@ -138,6 +147,7 @@ export default class App extends Component<Record<string, never>, AppData> {
     const ctx: AppState = {
       contract,
       personas,
+      refreshPersonas: this.refreshPersonas,
       actor,
       setActor: this.setActor,
       route,
@@ -536,25 +546,27 @@ function Topbar({
         <User size={14} className="text-muted-foreground" />
         <span className="text-xs text-muted-foreground">Actor</span>
         <Select
-          value={actor ?? ANON}
-          onValueChange={(v) => setActor(v === ANON ? null : (v as string))}
+          value={actorSelectValue(actor)}
+          onValueChange={(value) => setActor(actorFromSelectValue(value))}
         >
           <SelectTrigger
             size="sm"
             className="border-0 bg-transparent dark:bg-transparent shadow-none font-medium focus-visible:ring-0"
           >
             <SelectValue>
-              {(value: unknown) =>
-                value === ANON || value == null
+              {(value: unknown) => {
+                const selectedActor = actorFromSelectValue(value)
+                return selectedActor === null
                   ? "anonymous"
-                  : (personas.find((p) => p.actor === value)?.label ?? String(value))
-              }
+                  : (personas.find((persona) => persona.actor === selectedActor)?.label ??
+                      selectedActor)
+              }}
             </SelectValue>
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={ANON}>anonymous</SelectItem>
+            <SelectItem value={ANONYMOUS_ACTOR_SELECT_VALUE}>anonymous</SelectItem>
             {personas.map((p) => (
-              <SelectItem key={p.actor} value={p.actor}>
+              <SelectItem key={p.actor} value={actorSelectValue(p.actor)}>
                 {p.label}
               </SelectItem>
             ))}
@@ -577,8 +589,9 @@ function WhoAmIBadge({ whoami, personas }: { whoami: WhoAmI | null; personas: Pe
       </span>
     )
   }
+  const actor = actorHeaderValue(whoami.actor)
   const label =
-    personas.find((p) => p.actor === whoami.actor)?.label ??
+    personas.find((p) => p.actor === actor)?.label ??
     (typeof whoami.actor === "string" ? whoami.actor.slice(0, 8) + "…" : String(whoami.actor))
   return (
     <span className="text-xs font-mono px-2.5 py-1 rounded-full border flex items-center gap-1.5 whitespace-nowrap">
@@ -589,6 +602,26 @@ function WhoAmIBadge({ whoami, personas }: { whoami: WhoAmI | null; personas: Pe
       {whoami.known ? <Check size={12} /> : <span className="text-destructive">unknown</span>}
     </span>
   )
+}
+
+// /~personas exposes the anchor key in its native JSON scalar type. Studio's
+// actor state is the exact textual value sent in X-Spock-Actor, so normalize at
+// the API boundary before feeding values to the string-valued Select controls.
+function normalizePersonas(body: unknown): Persona[] {
+  if (!Array.isArray(body)) return []
+  return body.flatMap((value) => {
+    if (typeof value !== "object" || value === null) return []
+    const { actor, label } = value as { actor?: unknown; label?: unknown }
+    const normalizedActor = actorHeaderValue(actor)
+    if (normalizedActor === null || typeof label !== "string") return []
+    return [{ actor: normalizedActor, label }]
+  })
+}
+
+function actorHeaderValue(actor: unknown): string | null {
+  return typeof actor === "string" || typeof actor === "number" || typeof actor === "boolean"
+    ? String(actor)
+    : null
 }
 
 // --- status bar ------------------------------------------------------------

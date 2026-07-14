@@ -269,6 +269,13 @@ GET /~personas
 Resolves "pick a known identity, don't type a raw UUID" with no persona-name
 mini-grammar — the picker *is* the anchor table's seed rows.
 
+**Write-form feedback (S1).** This endpoint defines a label for actors, but the
+compiled contract defines no equivalent presentation field for generic
+references. Studio currently uses unique-text → text → key as a heuristic.
+Making a generic label authoritative requires an additive contract decision;
+the finding and close condition live in
+`crates/spock-runtime/studio/FEEDBACK.md` S1.
+
 ### 6.2 `GET /~whoami` — the echo
 
 The dev-tier mirror of GoTrue's `GET /user`; a debugging primitive that **never
@@ -422,6 +429,10 @@ heuristic, never as contract truth. The authoritative signals are the anchor, th
 7. **Role / policy / view** ledger columns — arrive with v1 governance.
 8. **Consuming `spock gen types`** inside Studio — allowed, not required for MVP;
    the SPA can hand-type the few shapes it needs first.
+9. **Reference-picker search and paging** — the filter/query layer now supplies
+   `offset`, filtering, and ordering, so basic remote lookup is Studio-owned
+   implementation work (S2). Exact counts and safe keyset cursors remain the
+   protocol findings already recorded in `examples/filter-lab/FEEDBACK.md`.
 
 ## 12. Open questions (for ratification)
 

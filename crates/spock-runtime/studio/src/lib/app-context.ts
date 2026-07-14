@@ -10,6 +10,7 @@ export interface StatusContent {
 export interface AppState {
   contract: Contract
   personas: Persona[]
+  refreshPersonas: () => Promise<void>
   actor: string | null
   setActor: (a: string | null) => void
   route: Route

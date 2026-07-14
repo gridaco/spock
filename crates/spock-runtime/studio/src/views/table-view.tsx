@@ -44,6 +44,7 @@ import {
 import { Doc } from "@/components/doc"
 import { ErrCodes } from "@/components/err-codes"
 import { FileThumb } from "@/components/file-thumb"
+import { InsertRowSheet } from "@/views/insert-row-sheet"
 
 type Row = Record<string, unknown>
 type Mode = "data" | "schema"
@@ -57,6 +58,7 @@ interface State {
   sorts: SortRule[]
   loading: boolean
   err: string | null
+  insertOpen: boolean
 }
 
 // The filter/sort popovers are stateless — every mutation flows back through
@@ -98,10 +100,12 @@ export class TableView extends Component<{ name: string }, State> {
     sorts: [],
     loading: false,
     err: null,
+    insertOpen: false,
   }
   private lastActor: string | null = null
   private lastReload = -1
   private lastQuery: string | null = null
+  private loadGeneration = 0
 
   private table(): Table | undefined {
     return this.context.contract.tables.find((t) => t.name === this.props.name)
@@ -135,9 +139,14 @@ export class TableView extends Component<{ name: string }, State> {
     }
   }
 
+  componentWillUnmount() {
+    this.loadGeneration += 1
+  }
+
   private load = async () => {
     const table = this.table()
     if (!table) return
+    const generation = ++this.loadGeneration
     this.setState({ loading: true, err: null })
     const { filters, sorts, limit, offset } = this.state
     const qs = buildQuery(filters, sorts, limit, offset)
@@ -145,7 +154,7 @@ export class TableView extends Component<{ name: string }, State> {
     const res = await api(`/rest/v1/${encodeURIComponent(table.name)}?${qs}`, this.context.actor)
     // a newer load() may have started (rewriting lastQuery) while this request
     // was in flight — drop the now-stale response so it can't clobber fresh rows
-    if (qs !== this.lastQuery) return
+    if (generation !== this.loadGeneration || qs !== this.lastQuery) return
     if (res.status !== 200) {
       // surface the floor's refusal (unknown_field / type_mismatch / bad_request)
       const msg = isErrorBody(res.body)
@@ -243,7 +252,7 @@ export class TableView extends Component<{ name: string }, State> {
       left: (
         <span>
           rows <b className="text-foreground">{start}</b>–<b className="text-foreground">{end}</b>
-          {rows.length >= limit ? " (more)" : ""} · read-only
+          {rows.length >= limit ? " (more)" : ""} · grid read-only
         </span>
       ),
       right:
@@ -292,7 +301,7 @@ export class TableView extends Component<{ name: string }, State> {
   render() {
     const table = this.table()
     if (!table) return <div className="p-6 text-muted-foreground">table not found</div>
-    const { mode, rows, limit, offset, filters, sorts, loading, err } = this.state
+    const { mode, rows, limit, offset, filters, sorts, loading, err, insertOpen } = this.state
     const meCols = table.fields.filter((f) => f.default?.kind === "actor").map((f) => f.name)
 
     const filterCtl: FilterCtl = {
@@ -344,6 +353,11 @@ export class TableView extends Component<{ name: string }, State> {
               <FilterButton table={table} filters={filters} ctl={filterCtl} />
               <SortButton table={table} sorts={sorts} ctl={sortCtl} />
               <div className="flex-1" />
+              {!table.builtin ? (
+                <Button size="sm" onClick={() => this.setState({ insertOpen: true })}>
+                  <Plus size={14} /> Add row
+                </Button>
+              ) : null}
               <Pager
                 offset={offset}
                 count={rows.length}
@@ -371,9 +385,9 @@ export class TableView extends Component<{ name: string }, State> {
               Table reads aren't affected by the <b className="text-foreground">Actor</b>{" "}
               selector — impersonation changes function results and <code>= me</code> stamps,
               not which rows you can read. <b className="text-foreground">Filter</b> and{" "}
-              <b className="text-foreground">Sort</b> run on the server. File columns upload
-              through storage; inline <b className="text-foreground">editing</b> isn't
-              available yet.
+              <b className="text-foreground">Sort</b> run on the server. <b className="text-foreground">Add row</b>{" "}
+              follows the compiled contract; file columns update through storage. Other inline{" "}
+              <b className="text-foreground">editing</b> isn't available yet.
             </Note>
             <div className="flex-1 min-h-0 border rounded-md overflow-hidden mt-3">
               {err ? (
@@ -396,6 +410,19 @@ export class TableView extends Component<{ name: string }, State> {
         ) : (
           <SchemaMode table={table} meCols={meCols} />
         )}
+        <InsertRowSheet
+          open={insertOpen}
+          contract={this.context.contract}
+          table={table}
+          actor={this.context.actor}
+          personas={this.context.personas}
+          onActorChange={this.context.setActor}
+          onOpenChange={(open) => this.setState({ insertOpen: open })}
+          onInserted={() => {
+            void this.load()
+            if (table.anchor) void this.context.refreshPersonas()
+          }}
+        />
       </div>
     )
   }
@@ -430,7 +457,7 @@ function Tab({
   )
 }
 
-// --- filter popover (Supabase-style) ---------------------------------------
+// --- filter popover ---------------------------------------------------------
 // A funnel button whose badge counts the *applied* filters, opening a panel of
 // [column][operator][value][remove] rows. Each row lowers to one PostgREST
 // clause on the floor (crates/spock-runtime/src/filter.rs).
@@ -593,8 +620,8 @@ function ValueSelect({
 }
 
 // --- sort popover ----------------------------------------------------------
-// Mirrors Supabase's Sort: applied terms as [column][asc/desc][remove] rows,
-// plus a column picker to append one. The floor forces a primary-key tiebreak
+// Applied terms render as [column][asc/desc][remove] rows, with a column picker
+// to append one. The floor forces a primary-key tiebreak
 // in the last term's direction, so the visible order is always a total order.
 function SortButton({ table, sorts, ctl }: { table: Table; sorts: SortRule[]; ctl: SortCtl }) {
   const used = new Set(sorts.map((s) => s.column))

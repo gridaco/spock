@@ -16,7 +16,7 @@ export type Arity = "value" | "pattern" | "list" | "unary"
 export interface OpDef {
   key: string
   label: string
-  // the PostgREST/SQL-ish symbol shown in the operator menu, Supabase-style
+  // the PostgREST/SQL-ish symbol shown in the operator menu
   symbol: string
   arity: Arity
 }
@@ -55,7 +55,7 @@ export interface SortRule {
 // The REST value for one rule, e.g. `eq.7`, `ilike.%foo%`, `in.(a,b)`,
 // `is.null`, `not.is.null`. Returns null for an incomplete rule (no column, or
 // a value-taking op with an empty value) so half-typed filters simply don't
-// apply — mirroring Supabase, which never sends an incomplete filter.
+// apply; incomplete filters are never sent.
 export function restValue(rule: FilterRule): string | null {
   if (!rule.column) return null
   const arity = opDef(rule.op).arity
@@ -97,7 +97,7 @@ export function isActiveRule(rule: FilterRule): boolean {
   return restValue(rule) !== null
 }
 
-// Closed-set columns get a value dropdown (Supabase renders enums as selects);
+// Closed-set columns get a value dropdown;
 // everything else is a free-text value.
 export function setValues(type: TypeRef | undefined): string[] | null {
   return type?.kind === "set" ? (type.values ?? []) : null

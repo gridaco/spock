@@ -94,7 +94,7 @@ export class FnRunner extends Component<{ name: string }, State> {
     if (!fn) return <div className="p-6 text-muted-foreground">function not found</div>
     const { actor, personas } = this.context
     const { args, result, running } = this.state
-    const actorLabel = actor
+    const actorLabel = actor !== null
       ? (personas.find((p) => p.actor === actor)?.label ?? "actor")
       : "anonymous"
 

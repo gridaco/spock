@@ -142,6 +142,15 @@ No `bucket`, `path`, `version`, or `metadata jsonb` — buckets and versioning a
 out of v0, objects are id-addressed, and columns are explicit (no jsonb type in
 v0).
 
+**Implementation gap (Studio feedback S6).** The schema above promises the
+original filename, but the current signed-upload implementation does not carry
+one through mint or persist one from PUT; it records only content type, size,
+and checksum. Studio therefore knows a browser upload's `File.name` only for
+the current form session. The close must define whether the untrusted filename
+travels in the mint body or a signature-bound PUT header, persist it to
+`storage_object.name`, and add a storage test. Tracked in
+`crates/spock-runtime/studio/FEEDBACK.md` S6.
+
 ## 3. The protocol (`/storage/v1`, active only when `storage_object` exists)
 
 | Route | Supabase analogue | Behavior |

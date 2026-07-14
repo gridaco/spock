@@ -71,6 +71,12 @@ The mirroring rule has three clauses:
   `<table>_order_by` (Tier 2).
 - **Scalars** are lowercase, Hasura-style: `uuid`, `timestamp` (plus the
   GraphQL builtins `String`, `Int`, `Boolean`, `Float`, `ID`).
+- **Open integer conformance gap (Studio feedback S5).** Spock `int` is signed
+  64-bit, while GraphQL's built-in `Int` is signed 32-bit and JavaScript
+  numbers are exactly integral only through `2^53 - 1`. The current `Int`
+  mapping is therefore not a truthful full-width wire. A custom scalar/string
+  encoding or a deliberately narrower language type requires a follow-up
+  decision; see `crates/spock-runtime/studio/FEEDBACK.md` S5.
 - **Field names** are the contract's, verbatim.
 - **Reserved table names** (collide with roots or scalars): `query`,
   `mutation`, `subscription`, `uuid`, `timestamp`. A table with one of
@@ -117,7 +123,9 @@ Input types:
   `<t>_<field>_required` error with its code in `extensions` — the error
   surface stays uniform instead of splitting between GraphQL validation
   and the contract. Defaults apply on omission; on insert, `null` is
-  absence (spec v0 §5.1).
+  absence (spec v0 §5.1). Consequently, an optional field with a default cannot
+  receive SQL `NULL` in the same insert: both omission and `null` apply the
+  default. This deliberate v0 limitation is tracked as Studio feedback S4.
 - `<t>_set_input` — every **non-key** field, all nullable, with update
   semantics: **absent = keep, explicit `null` = clear** (or the derived
   `required` error on a required field). Key fields never appear in

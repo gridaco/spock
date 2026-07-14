@@ -75,6 +75,12 @@ whose last segment has a file extension stays a genuine 404, so a broken
 `script`/`link` src still fails loudly). The impersonated **Actor** is a session
 toggle, not part of the URL — a reload restores the view but resets to anonymous.
 
+## Feedback
+
+Write-form gaps found while exercising the compiled contract are tracked in
+[`FEEDBACK.md`](FEEDBACK.md), with each finding assigned to its contract,
+protocol, runtime, or Studio owner.
+
 ## Theme
 
 The design system is the shadcn **Mira** style + **neutral** (monochrome) theme,

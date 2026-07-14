@@ -1,5 +1,5 @@
-// The Storage page (RFD 0018) — a Supabase-Storage-style browser over the
-// `storage_object` table: every uploaded file as a card, with an upload button
+// The Storage page (RFD 0018) browses the `storage_object` table: every uploaded
+// file is a card, with an upload button
 // that drives the same signed-URL gate any client uses. Standalone uploads here
 // are unattached, so the orphan sweep reclaims them unless a row references
 // them — the note says so.
