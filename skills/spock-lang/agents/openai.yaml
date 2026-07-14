@@ -1,0 +1,4 @@
+interface:
+  display_name: "Spock Language"
+  short_description: "Create, validate, and modify Spock v0 projects"
+  default_prompt: "Use $spock-lang to create, inspect, validate, debug, or modify a Spock v0 project from these requirements, then prove the result with the relevant CLI and runtime checks."
