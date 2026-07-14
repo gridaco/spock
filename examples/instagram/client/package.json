@@ -2,6 +2,10 @@
   "name": "spock-instagram-client",
   "private": true,
   "type": "module",
+  "packageManager": "npm@11.16.0",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "generate": "graphql-codegen --config codegen.ts",
     "check": "tsc --noEmit",
@@ -10,7 +14,7 @@
   "devDependencies": {
     "@graphql-codegen/cli": "^7.2.0",
     "@graphql-codegen/client-preset": "^6.1.0",
-    "@types/node": "^26.1.1",
+    "@types/node": "24.13.3",
     "graphql": "^16.14.2",
     "tsx": "^4.23.0",
     "typescript": "^7.0.2"
