@@ -637,19 +637,39 @@ UI-session state and experience behavior, with Spock as its canonical
 provider. No fact may be authoritative in both languages.
 
 Uhura is a subsystem of the Spock project: its canonical source lives in its
-own repository and is included here as a git submodule at `uhura/`. Today this
-is topology only — Spock's workspace, build, and CI do not touch the
-submodule, and `cargo` builds work without it (clone with
-`--recurse-submodules` only if you want the Uhura tree). Once Uhura is
-minimally stable, its tooling ships through the unified `spock` toolchain,
-and the runtime integration lands as contract projection plus a provider
-adapter.
+own repository and is included here as a git submodule at `uhura/`. Spock's
+core workspace, default build, and CI remain independent of the submodule, so
+`cargo` builds work without it; clone with `--recurse-submodules` for the
+explicit composition runner below. Once Uhura is minimally stable, its tooling
+ships through the unified `spock` toolchain, and the runtime integration lands
+as contract projection plus a provider adapter.
+
+From an umbrella checkout, the general composition runner accepts any Spock
+program and Uhura project. For the Instagram example:
+
+```sh
+./scripts/spock-uhura.sh \
+  examples/instagram-poc/app.spock \
+  uhura/examples/instagram-uhura
+```
+
+It builds the two Rust launchers, starts the requested Spock authority on port
+4000, waits for it to become ready, and opens the requested Uhura project
+through its read-only Editor on <http://127.0.0.1:8787/>. The Editor's Play
+button enters the live prototype at `/play` without starting another process.
+`--spock-port` and `--uhura-port` override those defaults; the project's
+provider configuration must address the same Spock port. `Ctrl-C` stops both
+runtimes. Contributor frontend tooling in Spock and Uhura uses the same Node 24
+LTS pin from their respective `.nvmrc` files and pnpm 10.11.0; Node is not
+required by this runtime command.
 
 ## Repository Layout
 
 - `examples/` contains product requirements and current-valid Spock examples.
 - `docs/rfd/` contains discussion drafts and proposal-only language ideas.
 - `npm/` contains package metadata for npm name reservation.
+- `scripts/` contains umbrella composition tooling that keeps Spock and Uhura
+  independently buildable.
 - `uhura/` is the Uhura client language (git submodule of
   [gridaco/uhura](https://github.com/gridaco/uhura); not yet wired into the
   build).

@@ -20,6 +20,7 @@ use rusqlite::types::{Value as SqlValue, ValueRef};
 use rust_embed::RustEmbed;
 use serde_json::{json, Map, Value as JsonValue};
 use spock_lang::ir::{FnArity, Table, Type};
+use tower_http::cors::CorsLayer;
 
 use crate::error::ApiError;
 use crate::filter;
@@ -110,7 +111,16 @@ pub fn router(app: Arc<App>) -> Result<Router, StartupError> {
             );
     }
 
-    Ok(base.fallback(not_found).with_state(app).merge(gql))
+    // Permissive CORS across the whole surface, preflight included: v0 is the
+    // open dev tier on 127.0.0.1 (RFD 0014 — the actor header is deliberately
+    // forgeable), so a browser client on another local origin (e.g. a Uhura
+    // shell) may call `/graphql/v1` and `/rest/v1/rpc/{fn}` with `content-type`
+    // and `x-spock-actor` headers. Unconditional by decision, like the reads.
+    Ok(base
+        .fallback(not_found)
+        .with_state(app)
+        .merge(gql)
+        .layer(CorsLayer::permissive()))
 }
 
 /// Serve the app on an already-bound listener until the task is stopped.

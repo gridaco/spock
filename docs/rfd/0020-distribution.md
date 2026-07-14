@@ -151,7 +151,8 @@ this has a single, simple answer: **every build job runs `pnpm build` before
 `cargo build`, guarded.** Per job:
 
 1. `actions/checkout`
-2. `pnpm/action-setup@v4`; `actions/setup-node@v4` with `node-version: 22`,
+2. `pnpm/action-setup@v4`; `actions/setup-node@v4` with the repository's
+   Node 24 LTS `.nvmrc`,
    `cache: pnpm`,
    `cache-dependency-path: crates/spock-runtime/studio/pnpm-lock.yaml`
 3. `pnpm -C crates/spock-runtime/studio install --frozen-lockfile`

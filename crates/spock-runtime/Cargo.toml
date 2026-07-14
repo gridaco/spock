@@ -26,6 +26,9 @@ hex = "0.4"
 getrandom = "0.2"
 # content-type inference for `file("...")` seed assets (RFD 0018).
 mime_guess = "2"
+# Permissive CORS on the whole surface: v0 is the open dev tier bound to
+# 127.0.0.1, and browser clients on another local origin must reach it.
+tower-http = { version = "0.6", features = ["cors"] }
 # Embeds the compiled studio SPA (studio/dist) into the binary. `debug-embed`
 # forces embedding in debug builds too, so `spock run` serves it from any cwd
 # (matching the old include_str! behavior) — the console stays fully offline.

@@ -18,9 +18,11 @@ Start the server (from the repository root):
 cargo run -p spock-cli -- run examples/instagram/v0.spock
 ```
 
-Then, in this directory:
+Then, in this directory, use the repository's Node 24 LTS pin and install the
+client tooling:
 
 ```sh
+nvm use
 npm install
 npm run generate   # introspects http://127.0.0.1:4000/graphql/v1 → src/gql/
 npm run check      # tsc --noEmit: the queries are statically typed

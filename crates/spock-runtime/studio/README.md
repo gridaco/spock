@@ -21,10 +21,14 @@ editing the console needs Node.
 
 ## Develop
 
+Use the repository's Node 24 LTS `.nvmrc` and the pnpm version declared in
+`package.json`:
+
 ```sh
-pnpm install
+nvm use
+corepack pnpm install --frozen-lockfile
 # in another terminal: spock run <program>.spock --port 4000
-pnpm dev            # Vite dev server on :5173, proxies /~contract, /rest,
+corepack pnpm dev   # Vite dev server on :5173, proxies /~contract, /rest,
                     # /graphql, /~personas, /~whoami to :4000 (HMR)
 ```
 
@@ -33,7 +37,7 @@ pnpm dev            # Vite dev server on :5173, proxies /~contract, /rest,
 After changing anything under `src/` or `index.html`:
 
 ```sh
-pnpm build          # tsc -b && vite build  ->  dist/
+corepack pnpm build # tsc -b && vite build  ->  dist/
 cargo build         # re-embeds dist/ into the binary (run from the repo root)
 ```
 
