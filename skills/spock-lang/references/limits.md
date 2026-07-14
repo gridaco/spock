@@ -26,7 +26,7 @@ State these boundaries plainly. Do not imply production guarantees that v0 does 
 - The database is recreated on every `run`; there are no migrations.
 - The default database is in memory. `--db` selects a recreated local file, not durable migration-managed storage.
 - REST and GraphQL list reads default to 50 rows and cap at 200.
-- REST tables are read-only. Use GraphQL for derived floor writes and REST RPC for declared functions.
+- REST tables are read-only. Use GraphQL for table writes and REST RPC for declared functions.
 - Function list returns are uncapped; function authors must apply their own `LIMIT` when appropriate.
 - Storage bytes live in the local runtime. Signing secrets, signed URLs, and objects do not survive a restart.
 - The in-process storage sweeper reclaims abandoned objects; storage is a prototype byte plane, not a production object store.

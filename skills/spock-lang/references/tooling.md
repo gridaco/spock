@@ -59,14 +59,11 @@ Basic probes:
 ```sh
 curl -sS http://127.0.0.1:4000/~health
 curl -sS http://127.0.0.1:4000/~contract
-curl -sS 'http://127.0.0.1:4000/rest/v1/post?limit=20'
-curl -sS -X POST http://127.0.0.1:4000/rest/v1/rpc/publish_post \
-  -H 'content-type: application/json' \
-  -H 'X-Spock-Actor: 10000000-0000-4000-8000-000000000001' \
-  --data '{"id":"20000000-0000-4000-8000-000000000001"}'
+curl -sS http://127.0.0.1:4000/~personas
+curl -sS http://127.0.0.1:4000/~whoami
 ```
 
-Use `X-Spock-Actor` only to exercise the v0 development identity seam. Test anonymous behavior by omitting it.
+Inspect `/~contract` before constructing table or RPC probes. Use only table names, function names, parameter shapes, and actor ids declared by the target program. Use `X-Spock-Actor` only to exercise the v0 development identity seam, and test anonymous behavior by omitting it.
 
 ## GraphQL
 

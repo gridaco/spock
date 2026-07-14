@@ -132,7 +132,7 @@ Return forms:
 - `t?`: zero or one
 - `[t]`: any number
 
-Every body contains one or more `unchecked sql("...")` escapes. Each escape carries exactly one row statement. Statements execute in order in one transaction; the final statement answers the call. Only `:name` placeholders are accepted, and declared parameters must be used.
+Every body contains one or more `unchecked sql("...")` escapes. Each escape carries exactly one SQL statement. Statements execute in order in one transaction; the final statement answers the call. Only `:name` placeholders are accepted, and declared parameters must be used.
 
 The final result columns must match the declared table or record field names. A scalar return requires one result column. Use `RETURNING` when the answering statement is DML.
 
