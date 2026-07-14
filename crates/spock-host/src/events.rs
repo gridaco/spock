@@ -1,5 +1,6 @@
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError};
-use std::sync::Mutex;
+use std::collections::BTreeMap;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TryRecvError, TrySendError};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -38,12 +39,20 @@ impl ProjectEvent {
 #[derive(Default)]
 struct HubState {
     current_id: u64,
-    clients: Vec<SyncSender<String>>,
+    next_client_id: u64,
+    clients: BTreeMap<u64, SyncSender<String>>,
 }
 
-#[derive(Default)]
 pub struct ProjectEventHub {
-    state: Mutex<HubState>,
+    state: Arc<Mutex<HubState>>,
+}
+
+impl Default for ProjectEventHub {
+    fn default() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(HubState::default())),
+        }
+    }
 }
 
 impl ProjectEventHub {
@@ -62,12 +71,19 @@ impl ProjectEventHub {
     /// be lost.
     pub fn subscribe(&self) -> ProjectEventStream {
         let (sender, receiver) = mpsc::sync_channel(1);
-        {
+        let client_id = {
             let mut state = self.state.lock().expect("project event hub lock");
             let _ = sender.try_send(ProjectEvent::new(state.current_id).sse_frame());
-            state.clients.push(sender);
+            let client_id = state.next_client_id;
+            state.next_client_id += 1;
+            state.clients.insert(client_id, sender);
+            client_id
+        };
+        ProjectEventStream {
+            receiver,
+            client_id,
+            state: Arc::downgrade(&self.state),
         }
-        ProjectEventStream { receiver }
     }
 
     /// Advance the session event ID after status and artifacts are visible.
@@ -81,7 +97,7 @@ impl ProjectEventHub {
         let frame = event.sse_frame();
         state
             .clients
-            .retain(|sender| match sender.try_send(frame.clone()) {
+            .retain(|_, sender| match sender.try_send(frame.clone()) {
                 Ok(()) | Err(TrySendError::Full(_)) => true,
                 Err(TrySendError::Disconnected(_)) => false,
             });
@@ -100,6 +116,8 @@ impl ProjectEventHub {
 
 pub struct ProjectEventStream {
     receiver: Receiver<String>,
+    client_id: u64,
+    state: Weak<Mutex<HubState>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -110,11 +128,32 @@ pub enum ProjectEventStreamPoll {
 }
 
 impl ProjectEventStream {
+    /// Poll once without occupying an executor thread.
+    pub fn try_next_frame(&self) -> ProjectEventStreamPoll {
+        match self.receiver.try_recv() {
+            Ok(frame) => ProjectEventStreamPoll::Frame(frame),
+            Err(TryRecvError::Empty) => ProjectEventStreamPoll::Timeout,
+            Err(TryRecvError::Disconnected) => ProjectEventStreamPoll::Closed,
+        }
+    }
+
     pub fn next_frame_timeout(&self, timeout: Duration) -> ProjectEventStreamPoll {
         match self.receiver.recv_timeout(timeout) {
             Ok(frame) => ProjectEventStreamPoll::Frame(frame),
             Err(RecvTimeoutError::Timeout) => ProjectEventStreamPoll::Timeout,
             Err(RecvTimeoutError::Disconnected) => ProjectEventStreamPoll::Closed,
+        }
+    }
+}
+
+impl Drop for ProjectEventStream {
+    fn drop(&mut self) {
+        if let Some(state) = self.state.upgrade() {
+            state
+                .lock()
+                .expect("project event hub lock")
+                .clients
+                .remove(&self.client_id);
         }
     }
 }
@@ -164,6 +203,7 @@ mod tests {
     fn a_dropped_subscriber_does_not_block_later_publication() {
         let hub = ProjectEventHub::default();
         drop(hub.subscribe());
+        assert_eq!(hub.subscriber_count(), 0);
         assert_eq!(hub.publish().event_id, 1);
         assert_eq!(hub.current_id(), 1);
         assert_eq!(hub.subscriber_count(), 0);

@@ -337,6 +337,7 @@ impl GenerationCoordinator {
         observed_revision: ObservedRevision,
         source_revision: u64,
         artifact_fingerprint: Fingerprint,
+        diagnostics: Vec<String>,
     ) -> Result<ClientGenerationId, CandidateError> {
         self.require_started_newest(observed_revision)?;
         let generation_id = ClientGenerationId(self.next_client_generation_id);
@@ -351,7 +352,7 @@ impl GenerationCoordinator {
         self.latest_attempt = Some(ClientAttempt {
             observed_revision,
             state: ClientAttemptState::Published,
-            diagnostics: Vec::new(),
+            diagnostics,
         });
         self.client_freshness = ClientFreshness::Active;
         self.editor_freshness = EditorFreshness::Current;
@@ -551,7 +552,12 @@ mod tests {
             .begin_client_attempt(ObservedRevision(1))
             .unwrap();
         let client_id = coordinator
-            .publish_client(ObservedRevision(1), 1, fingerprint("artifact-a"))
+            .publish_client(
+                ObservedRevision(1),
+                1,
+                fingerprint("artifact-a"),
+                Vec::new(),
+            )
             .unwrap();
         let status = coordinator.status();
         assert_eq!(status.client.freshness, ClientFreshness::Active);
@@ -573,7 +579,12 @@ mod tests {
             .begin_client_attempt(ObservedRevision(1))
             .unwrap();
         let good = coordinator
-            .publish_client(ObservedRevision(1), 1, fingerprint("artifact-a"))
+            .publish_client(
+                ObservedRevision(1),
+                1,
+                fingerprint("artifact-a"),
+                Vec::new(),
+            )
             .unwrap();
 
         coordinator.observe(observation("backend-a", "topology-a", "client-b"));
@@ -606,7 +617,12 @@ mod tests {
             .unwrap();
         coordinator.observe(observation("backend-a", "topology-a", "client-b"));
         assert_eq!(
-            coordinator.publish_client(ObservedRevision(1), 1, fingerprint("artifact-old")),
+            coordinator.publish_client(
+                ObservedRevision(1),
+                1,
+                fingerprint("artifact-old"),
+                Vec::new(),
+            ),
             Err(CandidateError::Stale {
                 candidate: ObservedRevision(1),
                 observed: ObservedRevision(2),
@@ -623,7 +639,12 @@ mod tests {
             .begin_client_attempt(ObservedRevision(2))
             .unwrap();
         coordinator
-            .publish_client(ObservedRevision(2), 2, fingerprint("artifact-b"))
+            .publish_client(
+                ObservedRevision(2),
+                2,
+                fingerprint("artifact-b"),
+                Vec::new(),
+            )
             .unwrap();
 
         let status = coordinator.status();
@@ -646,5 +667,31 @@ mod tests {
         assert_eq!(value["client"]["freshness"], "building");
         assert_eq!(value["client"]["latest_attempt"]["state"], "building");
         assert_eq!(value["backend"]["generation_id"], 1);
+    }
+
+    #[test]
+    fn successful_client_publication_preserves_warnings() {
+        let mut coordinator = coordinator();
+        coordinator
+            .begin_client_attempt(ObservedRevision(1))
+            .unwrap();
+        coordinator
+            .publish_client(
+                ObservedRevision(1),
+                1,
+                fingerprint("artifact-a"),
+                vec!["UH1000: warning".to_owned()],
+            )
+            .unwrap();
+
+        assert_eq!(
+            coordinator
+                .status()
+                .client
+                .latest_attempt
+                .expect("published attempt")
+                .diagnostics,
+            vec!["UH1000: warning"]
+        );
     }
 }

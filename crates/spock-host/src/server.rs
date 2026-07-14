@@ -16,6 +16,8 @@ use crate::{
     UhuraAssetRoots,
 };
 
+const COHERENT_FRAME_ATTEMPTS: usize = 4;
+
 #[derive(Clone, Debug)]
 pub struct ServeOptions {
     pub bind: SocketAddr,
@@ -30,7 +32,7 @@ impl Default for ServeOptions {
             bind: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4000),
             database_path: None,
             asset_roots: None,
-            poll_interval: Duration::from_millis(150),
+            poll_interval: Duration::from_millis(250),
         }
     }
 }
@@ -267,6 +269,11 @@ fn spawn_observer(
                 Ok(frame) => frame,
                 Err(message) => {
                     notices.emit(HostNotice::ObserverError { message });
+                    // The attempt is already visible as Building. Retry this
+                    // same observed revision even when the next coherent
+                    // frame has the same fingerprint, so capture instability
+                    // cannot strand client status indefinitely.
+                    force_client_build = true;
                     continue;
                 }
             };
@@ -308,6 +315,7 @@ fn spawn_observer(
                                     newest_revision,
                                     client_publication.report.source_revision,
                                     source_fingerprint,
+                                    diagnostics.clone(),
                                 )
                                 .map(|_| client_publication)
                                 .map_err(|error| error.to_string())
@@ -344,7 +352,10 @@ fn spawn_observer(
                     notices.emit(HostNotice::ObserverError {
                         message: error.to_string(),
                     });
-                    force_client_build = true;
+                    // Publication is deterministic and revision-consuming.
+                    // Retrying this same observation can only repeat an
+                    // invariant failure (or violate ClientHost ordering); a
+                    // later filesystem observation supplies a new attempt.
                 }
             }
         }
@@ -358,16 +369,34 @@ struct ObservationFrame {
 }
 
 fn capture_frame(layout: &ProjectLayout) -> Result<ObservationFrame, String> {
-    let client = layout
-        .client
-        .as_ref()
-        .map(|client| capture_stable_client(client.root.absolute()))
-        .transpose()?;
-    Ok(ObservationFrame {
-        topology: topology_fingerprint(&layout.manifest_path),
-        backend: observe_backend(layout),
-        client,
-    })
+    for _ in 0..COHERENT_FRAME_ATTEMPTS {
+        let topology_before = topology_fingerprint(&layout.manifest_path);
+        let backend_before = observe_backend(layout);
+        let client = layout
+            .client
+            .as_ref()
+            .map(|client| capture_stable_client(client.root.absolute()))
+            .transpose()?;
+        let backend_after = observe_backend(layout);
+        let topology_after = topology_fingerprint(&layout.manifest_path);
+
+        // Capture the client between matching topology/backend boundaries.
+        // Returning only this sandwiched state prevents one revision from
+        // combining subsystem snapshots that never coexisted.
+        if topology_before == topology_after
+            && backend_before.fingerprint() == backend_after.fingerprint()
+        {
+            return Ok(ObservationFrame {
+                topology: topology_after,
+                backend: backend_after,
+                client,
+            });
+        }
+    }
+    Err(format!(
+        "project inputs under {} did not remain unchanged across {COHERENT_FRAME_ATTEMPTS} coherent captures",
+        layout.root.display()
+    ))
 }
 
 fn apply_frame(
@@ -438,11 +467,18 @@ fn prepared_client_diagnostics(candidate: &crate::PreparedClient) -> Vec<String>
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::time::Instant;
 
-    use spock_project::{load_project_from, ProjectManifest};
+    use spock_project::{
+        load_project_from, minimal_uhura_client_template, scaffold_plan, ProjectManifest,
+    };
     use tempfile::tempdir;
 
     use super::*;
+    use crate::{ClientFreshness, ProjectStatus};
+
+    const NETWORK_TEST_DEADLINE: Duration = Duration::from_secs(7);
+    const NETWORK_TEST_POLL: Duration = Duration::from_millis(25);
 
     fn backend_project(root: &Path) -> ProjectLayout {
         fs::create_dir(root.join("backend")).unwrap();
@@ -455,6 +491,75 @@ mod tests {
         )
         .unwrap();
         load_project_from(root).unwrap()
+    }
+
+    fn full_stack_project(root: &Path) -> ProjectLayout {
+        let template = minimal_uhura_client_template();
+        let plan = scaffold_plan(root, "demo", Some(&template)).unwrap();
+        for write in plan.writes() {
+            let path = root.join(write.relative_path.as_path());
+            fs::create_dir_all(path.parent().expect("scaffold file parent")).unwrap();
+            fs::write(path, &write.contents).unwrap();
+        }
+        load_project_from(root).unwrap()
+    }
+
+    fn dummy_uhura_assets(root: &Path) -> UhuraAssetRoots {
+        let web = root.join("web");
+        let wasm = root.join("wasm");
+        fs::create_dir_all(web.join("assets")).unwrap();
+        fs::create_dir_all(&wasm).unwrap();
+        fs::write(
+            web.join("index.html"),
+            r#"<!doctype html><script type="module" src="/assets/app.js"></script>"#,
+        )
+        .unwrap();
+        fs::write(web.join("assets/app.js"), "export {};\n").unwrap();
+        fs::write(wasm.join("uhura_wasm.js"), "export {};\n").unwrap();
+        fs::write(wasm.join("uhura_wasm_bg.wasm"), b"wasm").unwrap();
+        UhuraAssetRoots { web, wasm }
+    }
+
+    async fn status_until(
+        client: &reqwest::Client,
+        address: SocketAddr,
+        deadline: Instant,
+        description: &str,
+        predicate: impl Fn(&ProjectStatus) -> bool,
+    ) -> ProjectStatus {
+        let url = format!("http://{address}/~project/status");
+        loop {
+            let last_observation = match client.get(&url).send().await {
+                Ok(response) if response.status() == reqwest::StatusCode::OK => {
+                    match response.json::<ProjectStatus>().await {
+                        Ok(status) => {
+                            if predicate(&status) {
+                                return status;
+                            }
+                            format!("{status:#?}")
+                        }
+                        Err(error) => format!("invalid status JSON: {error}"),
+                    }
+                }
+                Ok(response) => format!("status endpoint returned {}", response.status()),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {description}; last observation: {last_observation}"
+            );
+            tokio::time::sleep(NETWORK_TEST_POLL).await;
+        }
+    }
+
+    async fn ok_bytes(client: &reqwest::Client, address: SocketAddr, path: &str) -> Vec<u8> {
+        let response = client
+            .get(format!("http://{address}{path}"))
+            .send()
+            .await
+            .unwrap_or_else(|error| panic!("GET {path} failed: {error}"));
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "GET {path}");
+        response.bytes().await.unwrap().to_vec()
     }
 
     #[tokio::test]
@@ -492,6 +597,161 @@ mod tests {
 
         shutdown_tx.send(()).unwrap();
         assert_eq!(task.await.unwrap().unwrap().local_address, address);
+        let rebound = tokio::net::TcpListener::bind(address).await.unwrap();
+        drop(rebound);
+    }
+
+    #[tokio::test]
+    async fn dev_server_keeps_one_port_and_last_good_generations_across_source_changes() {
+        let project = tempdir().unwrap();
+        let assets = tempdir().unwrap();
+        let layout = full_stack_project(project.path());
+        let options = ServeOptions {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            asset_roots: Some(dummy_uhura_assets(assets.path())),
+            poll_interval: NETWORK_TEST_POLL,
+            ..ServeOptions::default()
+        };
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let ready_tx = std::sync::Mutex::new(Some(ready_tx));
+        let notices = HostNoticeSink::new(move |notice| {
+            if let HostNotice::Listening { address, .. } = notice {
+                if let Some(sender) = ready_tx.lock().unwrap().take() {
+                    let _ = sender.send(address);
+                }
+            }
+        });
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(serve_project(
+            layout,
+            HostMode::Dev,
+            options,
+            notices,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        ));
+        let address = ready_rx.await.unwrap();
+        let client = reqwest::Client::new();
+        let deadline = Instant::now() + NETWORK_TEST_DEADLINE;
+
+        let initial = status_until(
+            &client,
+            address,
+            deadline,
+            "the initial full-stack generation",
+            |status| {
+                status.backend.freshness == BackendFreshness::Active
+                    && status.client.freshness == ClientFreshness::Active
+            },
+        )
+        .await;
+        let backend_generation = initial.backend.generation_id;
+        let initial_observed_revision = initial.observed.revision;
+
+        for path in [
+            "/",
+            "/play",
+            "/api/editor/state",
+            "/api/play/ir.json",
+            "/~contract",
+            "/~project/status",
+            "/~health",
+        ] {
+            let _ = ok_bytes(&client, address, path).await;
+        }
+        let initial_play = ok_bytes(&client, address, "/api/play/ir.json").await;
+        let initial_contract = ok_bytes(&client, address, "/~contract").await;
+
+        let client_source = project.path().join("client/app/home/page.uhura");
+        let original_client_source = fs::read(&client_source).unwrap();
+        fs::write(&client_source, "this is not valid uhura\n").unwrap();
+        let rejected = status_until(
+            &client,
+            address,
+            deadline,
+            "a rejected client candidate with the last good Play generation",
+            |status| status.client.freshness == ClientFreshness::RejectedLastGood,
+        )
+        .await;
+        assert!(rejected.observed.revision > initial_observed_revision);
+        assert_eq!(rejected.backend.generation_id, backend_generation);
+        assert_eq!(
+            ok_bytes(&client, address, "/api/play/ir.json").await,
+            initial_play,
+            "a rejected edit must not replace the last good Play artifact"
+        );
+
+        fs::write(&client_source, original_client_source).unwrap();
+        let restored = status_until(
+            &client,
+            address,
+            deadline,
+            "a restored active client generation",
+            |status| {
+                status.client.freshness == ClientFreshness::Active
+                    && status.observed.revision > rejected.observed.revision
+            },
+        )
+        .await;
+        assert_eq!(restored.backend.generation_id, backend_generation);
+        assert_eq!(
+            restored
+                .client
+                .active
+                .as_ref()
+                .expect("restored active client")
+                .observed_revision,
+            restored.observed.revision
+        );
+
+        let backend_source = project.path().join("backend/app.spock");
+        let original_backend_source = fs::read(&backend_source).unwrap();
+        let mut changed_backend_source = original_backend_source.clone();
+        changed_backend_source.extend_from_slice(b"// requires a restart\n");
+        fs::write(&backend_source, changed_backend_source).unwrap();
+        let restart_required = status_until(
+            &client,
+            address,
+            deadline,
+            "a backend restart-required observation",
+            |status| status.backend.freshness == BackendFreshness::RestartRequired,
+        )
+        .await;
+        assert_eq!(restart_required.backend.generation_id, backend_generation);
+        assert_eq!(
+            restart_required.active_project.backend_generation_id,
+            backend_generation
+        );
+        assert_eq!(
+            ok_bytes(&client, address, "/~contract").await,
+            initial_contract,
+            "backend observation must not replace the active generation"
+        );
+
+        fs::write(&backend_source, original_backend_source).unwrap();
+        let reverted = status_until(
+            &client,
+            address,
+            deadline,
+            "the exact backend reversion",
+            |status| status.backend.freshness == BackendFreshness::Active,
+        )
+        .await;
+        assert_eq!(reverted.backend.generation_id, backend_generation);
+        assert_eq!(
+            ok_bytes(&client, address, "/~contract").await,
+            initial_contract
+        );
+
+        shutdown_tx.send(()).unwrap();
+        drop(client);
+        let outcome = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("framework host shutdown timed out")
+            .unwrap()
+            .unwrap();
+        assert_eq!(outcome.local_address, address);
         let rebound = tokio::net::TcpListener::bind(address).await.unwrap();
         drop(rebound);
     }

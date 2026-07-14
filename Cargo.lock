@@ -1920,8 +1920,12 @@ dependencies = [
  "clap",
  "predicates",
  "serde_json",
+ "spock-host",
  "spock-lang",
+ "spock-project",
  "spock-runtime",
+ "tempfile",
+ "thiserror",
  "tokio",
 ]
 
@@ -1944,6 +1948,7 @@ dependencies = [
  "tower",
  "tower-http",
  "uhura-host",
+ "uuid",
 ]
 
 [[package]]

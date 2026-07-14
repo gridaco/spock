@@ -633,6 +633,13 @@ Integrated Play receives framework-owned facts from
 }
 ```
 
+`authority.graphql_path` is a capability, not merely a conventional URL. It is
+`null` for an empty/comment-only backend because that active generation has no
+GraphQL operation root. A provider that recognizes this environment must keep
+using its integrated RPC and storage paths and report GraphQL as unavailable;
+it must not reinterpret the deliberate `null` as a reason to contact the
+standalone fallback configured in `uhura.toml`.
+
 Uhura providers may prefer this same-origin environment and fall back to their
 committed absolute configuration in standalone mode. The framework does not
 merge or rewrite arbitrary provider JSON.

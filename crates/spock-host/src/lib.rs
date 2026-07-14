@@ -16,7 +16,7 @@ mod routing;
 mod server;
 
 pub use assets::{
-    locate_uhura_assets, AssetError, UhuraAssetRoots, SPOCK_UHURA_WASM_DIST, SPOCK_UHURA_WEB_DIST,
+    load_uhura_assets, AssetError, UhuraAssetRoots, SPOCK_UHURA_WASM_DIST, SPOCK_UHURA_WEB_DIST,
 };
 pub use backend_capture::{
     capture_backend, observe_backend, BackendDiagnostic, BackendDiagnosticCode, BackendDiagnostics,
@@ -41,6 +41,7 @@ pub use named_state::{named_state_lock_path, NamedStateLock, NamedStateLockError
 pub use project::{
     check_project, topology_fingerprint, BackendCheckSummary, ClientCheckSummary, HostError,
     ProjectCheckDiagnostic, ProjectCheckFailure, ProjectCheckReport, ProjectComponent,
+    ProjectDiagnosticPosition, ProjectDiagnosticSpan,
 };
 pub use routing::{classify_route, RouteOwner};
 pub use server::{

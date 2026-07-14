@@ -6,8 +6,25 @@
 //! the historical standalone server without going through Clap or spawning a
 //! child process.
 
+mod project_commands;
+mod write_plan;
+
+pub use project_commands::{
+    check_target, create_project, init_project, resolve_project_for_serve, CheckTargetError,
+    CheckTargetSummary, NewProjectNameError, ProjectWriteError, ProjectWriteOperation,
+    ProjectWriteSummary, ResolveProjectForServeError,
+};
+
+pub use write_plan::{
+    apply_write_plan, ApplyError, ApplyStage, ApplySummary, CreatedPathKind, RollbackReport,
+    RollbackResidual, RootPolicy,
+};
+
 use std::fmt;
+use std::future::Future;
+use std::io;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use spock_lang::diag::Diagnostic;
@@ -16,7 +33,10 @@ use spock_lang::ir::Contract;
 /// A source file and the checked contract derived from its exact contents.
 #[derive(Debug)]
 pub struct FileProgram {
+    /// The caller's spelling, retained for byte-compatible diagnostics.
     path: PathBuf,
+    /// The path used for I/O and relative `file(...)` seed assets.
+    read_path: PathBuf,
     source: String,
     contract: Contract,
 }
@@ -24,11 +44,33 @@ pub struct FileProgram {
 impl FileProgram {
     /// Read and compile one `.spock` source file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ProgramLoadError> {
-        let path = path.as_ref().to_path_buf();
-        let source = std::fs::read_to_string(&path).map_err(|error| ProgramLoadError::Read {
-            path: path.clone(),
-            error,
-        })?;
+        let path = path.as_ref();
+        Self::load_from(path, path)
+    }
+
+    /// Load a caller-spelled path as though the process were running in `cwd`.
+    ///
+    /// Project target resolution canonicalizes directories, but standalone
+    /// file mode must not canonicalize the final `.spock` component: doing so
+    /// changes both rendered diagnostics and the directory used by seed
+    /// `file(...)` references when the source itself is a symlink.
+    pub(crate) fn load_from_cwd(path: &Path, cwd: &Path) -> Result<Self, ProgramLoadError> {
+        let read_path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cwd.join(path)
+        };
+        Self::load_from(path, &read_path)
+    }
+
+    fn load_from(display_path: &Path, read_path: &Path) -> Result<Self, ProgramLoadError> {
+        let path = display_path.to_path_buf();
+        let read_path = read_path.to_path_buf();
+        let source =
+            std::fs::read_to_string(&read_path).map_err(|error| ProgramLoadError::Read {
+                path: path.clone(),
+                error,
+            })?;
         let contract =
             spock_lang::compile(&source).map_err(|diagnostics| ProgramLoadError::Diagnostics {
                 path: path.clone(),
@@ -37,6 +79,7 @@ impl FileProgram {
             })?;
         Ok(Self {
             path,
+            read_path,
             source,
             contract,
         })
@@ -51,7 +94,7 @@ impl FileProgram {
     }
 
     pub fn source_dir(&self) -> PathBuf {
-        source_dir(&self.path)
+        source_dir(&self.read_path)
     }
 
     pub fn contract(&self) -> &Contract {
@@ -232,6 +275,9 @@ impl fmt::Display for StandaloneRunSummary {
 pub struct StandaloneRun {
     app: Arc<spock_runtime::App>,
     summary: StandaloneRunSummary,
+    // Declared last so the database-backed app is dropped before its
+    // process-lifetime advisory lock is released.
+    _named_state_lock: Option<spock_host::NamedStateLock>,
 }
 
 impl StandaloneRun {
@@ -240,6 +286,13 @@ impl StandaloneRun {
         database_path: Option<&Path>,
         base_dir: impl AsRef<Path>,
     ) -> anyhow::Result<Self> {
+        // `engine::open` deliberately deletes an existing database, WAL, and
+        // SHM before reconstructing from seed. Acquire the shared framework
+        // lock first so a second standalone/framework process can never race
+        // that destructive boundary.
+        let named_state_lock = database_path
+            .map(spock_host::NamedStateLock::acquire)
+            .transpose()?;
         let conn = spock_runtime::engine::open(&contract, database_path, Some(base_dir.as_ref()))?;
         let summary = StandaloneRunSummary {
             tables: contract.tables.len(),
@@ -250,6 +303,7 @@ impl StandaloneRun {
         Ok(Self {
             app: Arc::new(spock_runtime::App::new(contract, conn)),
             summary,
+            _named_state_lock: named_state_lock,
         })
     }
 
@@ -261,21 +315,73 @@ impl StandaloneRun {
         self.summary
     }
 
-    /// Bind the historical loopback listener and serve until Ctrl-C or a
-    /// server failure. `on_listening` runs after a successful bind so the
-    /// binary can retain its exact presentation without coupling it here.
+    /// Bind the historical loopback listener and serve until an interactive
+    /// process-shutdown signal or a server failure. `on_listening` runs after
+    /// a successful bind so the binary can retain its exact presentation
+    /// without coupling it here.
     pub fn serve_until_ctrl_c(self, port: u16, on_listening: impl FnOnce()) -> anyhow::Result<()> {
         let runtime = tokio::runtime::Runtime::new()?;
+        let shutdown = {
+            let _runtime_guard = runtime.enter();
+            install_standalone_shutdown_signal()?
+        };
         runtime.block_on(async move {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
             on_listening();
             tokio::select! {
                 result = spock_runtime::http::serve(self.app, listener) => result?,
-                _ = tokio::signal::ctrl_c() => {}
+                result = shutdown => result?,
             }
             Ok::<(), anyhow::Error>(())
         })
     }
+}
+
+type StandaloneShutdownSignal = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
+
+#[cfg(unix)]
+fn install_standalone_shutdown_signal() -> io::Result<StandaloneShutdownSignal> {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    Ok(Box::pin(async move {
+        tokio::select! {
+            received = interrupt.recv() => require_standalone_signal(received, "SIGINT"),
+            received = terminate.recv() => require_standalone_signal(received, "SIGTERM"),
+        }
+    }))
+}
+
+#[cfg(windows)]
+fn install_standalone_shutdown_signal() -> io::Result<StandaloneShutdownSignal> {
+    use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close};
+
+    let mut interrupt = ctrl_c()?;
+    let mut break_signal = ctrl_break()?;
+    let mut close = ctrl_close()?;
+    Ok(Box::pin(async move {
+        tokio::select! {
+            received = interrupt.recv() => require_standalone_signal(received, "Ctrl-C"),
+            received = break_signal.recv() => require_standalone_signal(received, "Ctrl-Break"),
+            received = close.recv() => require_standalone_signal(received, "console close"),
+        }
+    }))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn install_standalone_shutdown_signal() -> io::Result<StandaloneShutdownSignal> {
+    Ok(Box::pin(tokio::signal::ctrl_c()))
+}
+
+#[cfg(any(unix, windows))]
+fn require_standalone_signal(received: Option<()>, name: &str) -> io::Result<()> {
+    received.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            format!("{name} signal stream closed before delivering a signal"),
+        )
+    })
 }
 
 #[cfg(test)]
@@ -340,5 +446,36 @@ mod tests {
             }
         );
         assert_eq!(run.app().contract.tables[0].name, "user");
+    }
+
+    #[test]
+    fn standalone_named_database_is_locked_before_reset_for_the_run_lifetime() {
+        let temporary = tempfile::tempdir().unwrap();
+        let database = temporary.path().join("shared.sqlite");
+        let sentinel = b"another process owns these bytes";
+        std::fs::write(&database, sentinel).unwrap();
+        let external_lock = spock_host::NamedStateLock::acquire(&database).unwrap();
+        let contract =
+            spock_lang::compile("table user { key id: uuid = auto\n username: text unique }")
+                .unwrap();
+
+        let blocked = StandaloneRun::construct(contract.clone(), Some(&database), "")
+            .err()
+            .expect("a live framework lock must block standalone reset");
+        assert!(blocked.to_string().contains("already owned"), "{blocked}");
+        assert_eq!(std::fs::read(&database).unwrap(), sentinel);
+
+        drop(external_lock);
+        let run = StandaloneRun::construct(contract, Some(&database), "").unwrap();
+        let contended = spock_host::NamedStateLock::acquire(&database)
+            .expect_err("standalone run must retain the lock");
+        assert!(
+            contended.to_string().contains("already owned"),
+            "{contended}"
+        );
+
+        drop(run);
+        let released = spock_host::NamedStateLock::acquire(&database).unwrap();
+        drop(released);
     }
 }

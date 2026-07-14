@@ -14,6 +14,7 @@ pub enum RouteOwner {
 /// Reserved protocol namespaces never reach the client's history fallback.
 #[must_use]
 pub fn classify_route(path: &str, client_configured: bool) -> RouteOwner {
+    let raw_path = path;
     let Some(decoded) = decode_for_ownership(path) else {
         return RouteOwner::ProtocolNotFound;
     };
@@ -27,8 +28,15 @@ pub fn classify_route(path: &str, client_configured: bool) -> RouteOwner {
         return RouteOwner::Authority;
     }
 
-    if client_configured && client_path(path) {
+    if client_configured && client_path(raw_path) {
         return RouteOwner::Client;
+    }
+
+    // The host delegates the original URI to Uhura. If decoding is what made
+    // this look like a canonical client namespace, delegation would disagree
+    // about ownership and could turn a protocol URL into the SPA fallback.
+    if client_configured && client_path(path) {
+        return RouteOwner::ProtocolNotFound;
     }
 
     if reserved_protocol_path(path) {
@@ -180,6 +188,9 @@ mod tests {
     fn encoded_reserved_namespaces_never_reach_the_client_spa() {
         for path in [
             "/%61pi/unknown",
+            "/%61pi/editor/state",
+            "/api%2Feditor/state",
+            "/%70lay",
             "/%7Eunknown",
             "/graphql%2Fv2",
             "/re%73t/v2/users",
@@ -192,6 +203,17 @@ mod tests {
                 RouteOwner::ProtocolNotFound,
                 "{path}"
             );
+        }
+    }
+
+    #[test]
+    fn encoding_inside_an_owned_client_asset_path_remains_client_owned() {
+        for path in [
+            "/assets/app%20shell.js",
+            "/api/play/assets/summer%20album.jpg",
+            "/api/play/assets/folder%2Fcover.jpg",
+        ] {
+            assert_eq!(classify_route(path, true), RouteOwner::Client, "{path}");
         }
     }
 }

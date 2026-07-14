@@ -15,6 +15,7 @@ use serde_json::json;
 use spock_runtime::error::ApiError;
 use spock_runtime::generation::BackendGeneration;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::cors::CorsLayer;
 use uhura_host::{EventStreamPoll, RequestMethod, RouteBody, RouteRequest, RouteResponse};
@@ -25,6 +26,7 @@ use crate::{
 };
 
 pub const HOST_ENVIRONMENT_PROTOCOL: &str = "spock-host-environment/1";
+const STREAM_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// One active backend, optional client publication service, and stable
 /// host-session status/event state.
@@ -92,6 +94,8 @@ impl FrameworkSession {
     /// Build the one-origin router without binding a listener.
     pub fn router(&self) -> Result<Router, spock_runtime::http::StartupError> {
         let authority = self.backend.authority_router()?;
+        let graphql_available =
+            !self.backend.contract().tables.is_empty() || !self.backend.contract().fns.is_empty();
 
         let status_state = self.publication();
         let environment_state = self.publication();
@@ -133,7 +137,7 @@ impl FrameworkSession {
                             .status();
                         (
                             [(CACHE_CONTROL, HeaderValue::from_static("no-store"))],
-                            Json(HostEnvironment::from_status(&status)),
+                            Json(HostEnvironment::from_status(&status, graphql_available)),
                         )
                     }),
                 )
@@ -143,7 +147,8 @@ impl FrameworkSession {
                         let stream = project_events.subscribe();
                         let shutdown = Arc::clone(&event_shutdown);
                         async move { project_event_response(stream, shutdown) }
-                    }),
+                    })
+                    .head(|| async { event_method_error() }),
                 )
                 .route(
                     "/~health",
@@ -192,20 +197,20 @@ struct HostEnvironment {
 
 #[derive(Serialize)]
 struct AuthorityEnvironment {
-    graphql_path: &'static str,
+    graphql_path: Option<&'static str>,
     rpc_path: &'static str,
     storage_path: &'static str,
 }
 
 impl HostEnvironment {
-    fn from_status(status: &ProjectStatus) -> Self {
+    fn from_status(status: &ProjectStatus, graphql_available: bool) -> Self {
         Self {
             protocol: HOST_ENVIRONMENT_PROTOCOL,
             mode: status.mode,
             project_generation_id: status.active_project.generation_id,
             backend_generation_id: status.active_project.backend_generation_id,
             authority: AuthorityEnvironment {
-                graphql_path: "/graphql/v1",
+                graphql_path: graphql_available.then_some("/graphql/v1"),
                 rpc_path: "/rest/v1/rpc",
                 storage_path: "/storage/v1",
             },
@@ -298,19 +303,24 @@ fn uhura_response(response: RouteResponse, stream_shutdown: Arc<AtomicBool>) -> 
     let body = match response.body {
         RouteBody::Bytes(bytes) => Body::from(bytes.into_inner()),
         RouteBody::Events(stream) => {
-            let (sender, receiver) = mpsc::channel::<Result<Bytes, Infallible>>(8);
-            tokio::task::spawn_blocking(move || loop {
-                if sender.is_closed() || stream_shutdown.load(Ordering::Acquire) {
-                    break;
-                }
-                match stream.next_frame_timeout(Duration::from_millis(500)) {
-                    EventStreamPoll::Frame(frame) => {
-                        if sender.blocking_send(Ok(Bytes::from(frame))).is_err() {
-                            break;
-                        }
+            let (sender, receiver) = mpsc::channel::<Result<Bytes, Infallible>>(1);
+            tokio::spawn(async move {
+                loop {
+                    if sender.is_closed() || stream_shutdown.load(Ordering::Acquire) {
+                        break;
                     }
-                    EventStreamPoll::Timeout => {}
-                    EventStreamPoll::Closed => break,
+                    match stream.try_next_frame() {
+                        EventStreamPoll::Frame(frame) => {
+                            match sender.try_send(Ok(Bytes::from(frame))) {
+                                Ok(()) | Err(TrySendError::Full(_)) => {}
+                                Err(TrySendError::Closed(_)) => break,
+                            }
+                        }
+                        EventStreamPoll::Timeout => {
+                            tokio::time::sleep(STREAM_POLL_INTERVAL).await;
+                        }
+                        EventStreamPoll::Closed => break,
+                    }
                 }
             });
             Body::from_stream(ReceiverStream::new(receiver))
@@ -325,19 +335,24 @@ fn project_event_response(
     stream: crate::ProjectEventStream,
     stream_shutdown: Arc<AtomicBool>,
 ) -> Response {
-    let (sender, receiver) = mpsc::channel::<Result<Bytes, Infallible>>(8);
-    tokio::task::spawn_blocking(move || loop {
-        if sender.is_closed() || stream_shutdown.load(Ordering::Acquire) {
-            break;
-        }
-        match stream.next_frame_timeout(Duration::from_millis(500)) {
-            ProjectEventStreamPoll::Frame(frame) => {
-                if sender.blocking_send(Ok(Bytes::from(frame))).is_err() {
-                    break;
-                }
+    let (sender, receiver) = mpsc::channel::<Result<Bytes, Infallible>>(1);
+    tokio::spawn(async move {
+        loop {
+            if sender.is_closed() || stream_shutdown.load(Ordering::Acquire) {
+                break;
             }
-            ProjectEventStreamPoll::Timeout => {}
-            ProjectEventStreamPoll::Closed => break,
+            match stream.try_next_frame() {
+                ProjectEventStreamPoll::Frame(frame) => {
+                    match sender.try_send(Ok(Bytes::from(frame))) {
+                        Ok(()) | Err(TrySendError::Full(_)) => {}
+                        Err(TrySendError::Closed(_)) => break,
+                    }
+                }
+                ProjectEventStreamPoll::Timeout => {
+                    tokio::time::sleep(STREAM_POLL_INTERVAL).await;
+                }
+                ProjectEventStreamPoll::Closed => break,
+            }
         }
     });
 
@@ -347,6 +362,26 @@ fn project_event_response(
         .header(CACHE_CONTROL, "no-store")
         .body(Body::from_stream(ReceiverStream::new(receiver)))
         .unwrap_or_else(|_| internal_transport_error("could not build the project event response"))
+}
+
+fn event_method_error() -> Response {
+    let mut response = (
+        StatusCode::METHOD_NOT_ALLOWED,
+        Json(json!({
+            "error": {
+                "code": "bad_request",
+                "kind": "bad_request",
+                "table": null,
+                "fields": [],
+                "message": "/~project/events requires GET",
+            }
+        })),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert("allow", HeaderValue::from_static("GET"));
+    response
 }
 
 fn internal_transport_error(message: &'static str) -> Response {
@@ -378,9 +413,13 @@ mod tests {
     use crate::{Fingerprint, GenerationCoordinator};
 
     fn backend_only() -> FrameworkSession {
+        session_with_source("")
+    }
+
+    fn session_with_source(source: &str) -> FrameworkSession {
         let backend =
-            BackendGeneration::from_captured(CapturedBackend::new("", BTreeMap::new()), None)
-                .expect("empty backend");
+            BackendGeneration::from_captured(CapturedBackend::new(source, BTreeMap::new()), None)
+                .expect("backend generation");
         let coordinator = GenerationCoordinator::activated(
             HostMode::Start,
             Fingerprint::new("backend"),
@@ -410,6 +449,7 @@ mod tests {
         assert_eq!(root.headers()["location"], "/~studio");
 
         let unknown = router
+            .clone()
             .oneshot(
                 Request::get("/api/not-a-client-route")
                     .body(Body::empty())
@@ -419,6 +459,50 @@ mod tests {
             .unwrap();
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
         assert_eq!(response_json(unknown).await["error"]["code"], "not_found");
+
+        let post_root = router
+            .clone()
+            .oneshot(Request::post("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(post_root.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(post_root.headers()["allow"], "GET, HEAD");
+
+        let event_head = router
+            .oneshot(
+                Request::head("/~project/events")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(event_head.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(event_head.headers()["allow"], "GET");
+    }
+
+    #[tokio::test]
+    async fn encoded_client_protocol_spelling_cannot_fall_through_to_spa_html() {
+        let session = backend_only();
+        let response = combined_fallback(
+            Request::get("/api%2Feditor/state")
+                .body(Body::empty())
+                .unwrap(),
+            session.publication(),
+            true,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(response.headers()[CONTENT_TYPE], "application/json");
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(!bytes
+            .windows(b"<!doctype".len())
+            .any(|window| { window.eq_ignore_ascii_case(b"<!doctype") }));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["error"]["code"],
+            "not_found"
+        );
     }
 
     #[tokio::test]
@@ -436,6 +520,9 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK, "{path}");
+            if path != "/~contract" {
+                assert_eq!(response.headers()[CACHE_CONTROL], "no-store", "{path}");
+            }
         }
 
         let environment = router
@@ -450,7 +537,7 @@ mod tests {
         let environment = response_json(environment).await;
         assert_eq!(environment["protocol"], HOST_ENVIRONMENT_PROTOCOL);
         assert_eq!(environment["mode"], "start");
-        assert_eq!(environment["authority"]["graphql_path"], "/graphql/v1");
+        assert!(environment["authority"]["graphql_path"].is_null());
 
         let graphql = router
             .oneshot(Request::get("/graphql/v1").body(Body::empty()).unwrap())
@@ -458,5 +545,24 @@ mod tests {
             .unwrap();
         assert_eq!(graphql.status(), StatusCode::NOT_FOUND);
         assert_eq!(response_json(graphql).await["error"]["kind"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn a_non_empty_contract_advertises_graphql() {
+        let router = session_with_source("table note { key id: uuid = auto }\n")
+            .router()
+            .expect("router");
+        let environment = router
+            .oneshot(
+                Request::get("/~project/environment")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response_json(environment).await["authority"]["graphql_path"],
+            "/graphql/v1"
+        );
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "spock-cli"
-description = "The spock command: check, build, run"
+description = "The Spock framework, project, and language command"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,11 +14,15 @@ path = "src/main.rs"
 [dependencies]
 spock-lang = { path = "../spock-lang" }
 spock-runtime = { path = "../spock-runtime" }
+spock-project = { path = "../spock-project" }
+spock-host = { path = "../spock-host" }
 serde_json.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
 predicates.workspace = true
+tempfile.workspace = true
