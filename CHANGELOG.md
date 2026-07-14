@@ -3,7 +3,7 @@
 All notable changes to Spock. Spock is a pre-1.0 prototype language; minor
 versions may break.
 
-## 0.2.0 — 2026-07-14
+## 0.4.0 — 2026-07-15
 
 This feature release turns the derived data floor into a practical query and
 write surface, and brings the embedded Studio with it.
