@@ -105,6 +105,7 @@ pub struct Observation {
     pub backend: Fingerprint,
     pub client: Option<Fingerprint>,
     pub changed_backend_inputs: Vec<String>,
+    pub backend_diagnostics: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -133,12 +134,15 @@ pub struct BackendStatus {
     pub active_topology_fingerprint: Fingerprint,
     pub observed_topology_fingerprint: Fingerprint,
     pub changed_inputs: Vec<String>,
+    pub diagnostics: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ActiveClientStatus {
     pub generation_id: ClientGenerationId,
-    pub source_revision: ObservedRevision,
+    pub observed_revision: ObservedRevision,
+    /// Consecutive publication revision owned by the Uhura host.
+    pub source_revision: u64,
     pub artifact_fingerprint: Fingerprint,
     pub backend_generation_id: BackendGenerationId,
 }
@@ -193,7 +197,8 @@ pub enum CandidateError {
 #[derive(Clone, Debug)]
 struct ActiveClient {
     generation_id: ClientGenerationId,
-    source_revision: ObservedRevision,
+    observed_revision: ObservedRevision,
+    source_revision: u64,
     artifact_fingerprint: Fingerprint,
     backend_generation_id: BackendGenerationId,
 }
@@ -215,6 +220,7 @@ pub struct GenerationCoordinator {
     observed_client: Option<Fingerprint>,
     backend_freshness: BackendFreshness,
     changed_backend_inputs: Vec<String>,
+    observed_backend_diagnostics: Vec<String>,
     client_configured: bool,
     client_freshness: ClientFreshness,
     editor_freshness: EditorFreshness,
@@ -246,6 +252,7 @@ impl GenerationCoordinator {
             observed_client: client_fingerprint,
             backend_freshness: BackendFreshness::Active,
             changed_backend_inputs: Vec::new(),
+            observed_backend_diagnostics: Vec::new(),
             client_configured,
             client_freshness: if client_configured {
                 ClientFreshness::Building
@@ -292,6 +299,7 @@ impl GenerationCoordinator {
         self.observed_topology = observation.topology;
         self.observed_backend = observation.backend;
         self.observed_client = observation.client;
+        self.observed_backend_diagnostics = observation.backend_diagnostics;
 
         let backend_matches = self.observed_topology == self.active_topology
             && self.observed_backend == self.active_backend;
@@ -326,20 +334,22 @@ impl GenerationCoordinator {
 
     pub fn publish_client(
         &mut self,
-        revision: ObservedRevision,
+        observed_revision: ObservedRevision,
+        source_revision: u64,
         artifact_fingerprint: Fingerprint,
     ) -> Result<ClientGenerationId, CandidateError> {
-        self.require_started_newest(revision)?;
+        self.require_started_newest(observed_revision)?;
         let generation_id = ClientGenerationId(self.next_client_generation_id);
         self.next_client_generation_id += 1;
         self.active_client = Some(ActiveClient {
             generation_id,
-            source_revision: revision,
+            observed_revision,
+            source_revision,
             artifact_fingerprint,
             backend_generation_id: self.active_backend_id,
         });
         self.latest_attempt = Some(ClientAttempt {
-            observed_revision: revision,
+            observed_revision,
             state: ClientAttemptState::Published,
             diagnostics: Vec::new(),
         });
@@ -376,6 +386,7 @@ impl GenerationCoordinator {
             .as_ref()
             .map(|client| ActiveClientStatus {
                 generation_id: client.generation_id,
+                observed_revision: client.observed_revision,
                 source_revision: client.source_revision,
                 artifact_fingerprint: client.artifact_fingerprint.clone(),
                 backend_generation_id: client.backend_generation_id,
@@ -403,6 +414,7 @@ impl GenerationCoordinator {
                 active_topology_fingerprint: self.active_topology.clone(),
                 observed_topology_fingerprint: self.observed_topology.clone(),
                 changed_inputs: self.changed_backend_inputs.clone(),
+                diagnostics: self.observed_backend_diagnostics.clone(),
             },
             client: ClientStatus {
                 freshness: if self.client_configured {
@@ -471,6 +483,7 @@ mod tests {
             backend: fingerprint(backend),
             client: Some(fingerprint(client)),
             changed_backend_inputs: vec!["backend/app.spock".to_owned()],
+            backend_diagnostics: Vec::new(),
         }
     }
 
@@ -538,7 +551,7 @@ mod tests {
             .begin_client_attempt(ObservedRevision(1))
             .unwrap();
         let client_id = coordinator
-            .publish_client(ObservedRevision(1), fingerprint("artifact-a"))
+            .publish_client(ObservedRevision(1), 1, fingerprint("artifact-a"))
             .unwrap();
         let status = coordinator.status();
         assert_eq!(status.client.freshness, ClientFreshness::Active);
@@ -560,7 +573,7 @@ mod tests {
             .begin_client_attempt(ObservedRevision(1))
             .unwrap();
         let good = coordinator
-            .publish_client(ObservedRevision(1), fingerprint("artifact-a"))
+            .publish_client(ObservedRevision(1), 1, fingerprint("artifact-a"))
             .unwrap();
 
         coordinator.observe(observation("backend-a", "topology-a", "client-b"));
@@ -593,7 +606,7 @@ mod tests {
             .unwrap();
         coordinator.observe(observation("backend-a", "topology-a", "client-b"));
         assert_eq!(
-            coordinator.publish_client(ObservedRevision(1), fingerprint("artifact-old")),
+            coordinator.publish_client(ObservedRevision(1), 1, fingerprint("artifact-old")),
             Err(CandidateError::Stale {
                 candidate: ObservedRevision(1),
                 observed: ObservedRevision(2),
@@ -610,7 +623,7 @@ mod tests {
             .begin_client_attempt(ObservedRevision(2))
             .unwrap();
         coordinator
-            .publish_client(ObservedRevision(2), fingerprint("artifact-b"))
+            .publish_client(ObservedRevision(2), 2, fingerprint("artifact-b"))
             .unwrap();
 
         let status = coordinator.status();

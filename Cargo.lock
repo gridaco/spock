@@ -1929,9 +1929,20 @@ dependencies = [
 name = "spock-host"
 version = "0.4.0"
 dependencies = [
+ "axum",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "spock-lang",
+ "spock-project",
+ "spock-runtime",
+ "tempfile",
  "thiserror",
+ "tokio",
+ "tokio-stream",
+ "tower",
+ "tower-http",
  "uhura-host",
 ]
 
@@ -2197,6 +2208,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
  "rustls",
+ "tokio",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32da49809aab5c3bc678af03902d4ccddea2a87d028d86392a4b1560c6906c70"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
  "tokio",
 ]
 

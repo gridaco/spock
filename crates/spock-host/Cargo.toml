@@ -8,9 +8,20 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+spock-lang = { path = "../spock-lang" }
+spock-project = { path = "../spock-project" }
+spock-runtime = { path = "../spock-runtime" }
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+sha2.workspace = true
 uhura-host = { path = "../../uhura/crates/uhura-host" }
+tower-http = { version = "0.6", features = ["cors"] }
 
 [dev-dependencies]
-serde_json.workspace = true
+tempfile.workspace = true
+reqwest.workspace = true
+tower = { version = "0.5", features = ["util"] }

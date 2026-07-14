@@ -1,7 +1,8 @@
 use thiserror::Error;
 use uhura_host::{
-    build_candidate, CandidateSummary, ClientCandidate as UhuraCandidate, Host as UhuraHost,
-    ProjectSourceSnapshot, PublicationReport, RouteRequest, RouteResponse, WebAssets,
+    build_candidate, CandidateDiagnostics, CandidateSummary, ClientCandidate as UhuraCandidate,
+    Host as UhuraHost, ProjectSourceSnapshot, PublicationReport, RouteRequest, RouteResponse,
+    WebAssets,
 };
 
 use crate::{Fingerprint, ObservedRevision};
@@ -66,6 +67,11 @@ impl PreparedClient {
     #[must_use]
     pub const fn summary(&self) -> CandidateSummary {
         self.summary
+    }
+
+    #[must_use]
+    pub fn diagnostics(&self) -> CandidateDiagnostics<'_> {
+        self.candidate.diagnostics()
     }
 }
 
@@ -323,6 +329,7 @@ mod tests {
             backend: Fingerprint::new(name),
             client: Some(Fingerprint::new("client-a")),
             changed_backend_inputs: vec!["backend/app.spock".to_owned()],
+            backend_diagnostics: Vec::new(),
         });
     }
 
@@ -397,6 +404,7 @@ mod tests {
             backend: Fingerprint::new("backend-a"),
             client: Some(client_source_fingerprint(&invalid)),
             changed_backend_inputs: Vec::new(),
+            backend_diagnostics: Vec::new(),
         });
         let invalid_revision = coordinator.observed_revision();
         let candidate = host.prepare(&invalid, invalid_revision);

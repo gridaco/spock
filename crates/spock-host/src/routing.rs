@@ -14,6 +14,11 @@ pub enum RouteOwner {
 /// Reserved protocol namespaces never reach the client's history fallback.
 #[must_use]
 pub fn classify_route(path: &str, client_configured: bool) -> RouteOwner {
+    let Some(decoded) = decode_for_ownership(path) else {
+        return RouteOwner::ProtocolNotFound;
+    };
+    let path = decoded.as_str();
+
     if path == "/~health" || path == "/~project" || path.starts_with("/~project/") {
         return RouteOwner::Framework;
     }
@@ -36,6 +41,42 @@ pub fn classify_route(path: &str, client_configured: bool) -> RouteOwner {
         RouteOwner::Framework
     } else {
         RouteOwner::NotFound
+    }
+}
+
+/// Decode exactly one percent-encoding layer for namespace ownership only.
+///
+/// The original URI is still passed to the owning subsystem. This prevents an
+/// encoded spelling of a reserved protocol namespace from reaching the client
+/// history fallback without changing asset identity or decoding twice.
+fn decode_for_ownership(path: &str) -> Option<String> {
+    if !path.as_bytes().contains(&b'%') {
+        return (!path.contains('\\') && !path.contains('\0')).then(|| path.to_string());
+    }
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            decoded.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        let high = *bytes.get(index + 1)?;
+        let low = *bytes.get(index + 2)?;
+        decoded.push(hex_value(high)? << 4 | hex_value(low)?);
+        index += 3;
+    }
+    let decoded = String::from_utf8(decoded).ok()?;
+    (!decoded.contains('\\') && !decoded.contains('\0')).then_some(decoded)
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -132,6 +173,25 @@ mod tests {
     fn similarly_prefixed_non_protocol_names_can_be_client_routes() {
         for path in ["/apiary", "/restroom", "/graphical", "/storage-unit"] {
             assert_eq!(classify_route(path, true), RouteOwner::Client, "{path}");
+        }
+    }
+
+    #[test]
+    fn encoded_reserved_namespaces_never_reach_the_client_spa() {
+        for path in [
+            "/%61pi/unknown",
+            "/%7Eunknown",
+            "/graphql%2Fv2",
+            "/re%73t/v2/users",
+            "/storage%2fv2/object",
+            "/api/%00bad",
+            "/api/%GG",
+        ] {
+            assert_eq!(
+                classify_route(path, true),
+                RouteOwner::ProtocolNotFound,
+                "{path}"
+            );
         }
     }
 }
