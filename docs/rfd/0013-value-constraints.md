@@ -284,6 +284,14 @@ check now compensates). The message names the validator and the contract's
 `Field.check` lets a client find it; distinguishing *which conjunct* failed is
 what refusals are still for.
 
+**Studio consequence (S3).** Name-only validator metadata is enough to route
+and explain an error, but not enough for a generated form to derive honest
+`min`, `max`, `pattern`, or compound-rule controls. Studio must keep the server
+authoritative and may only add those controls if a future additive contract
+explicitly carries structured hints; parsing validator SQL would violate this
+RFD's opacity boundary. Tracked in
+`crates/spock-runtime/studio/FEEDBACK.md` S3.
+
 ## 6. What this deliberately does not do
 
 - **Curated named formats (`email`, `url`, `slug`).** They stay out until a

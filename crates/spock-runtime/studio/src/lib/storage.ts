@@ -1,6 +1,6 @@
 // The storage gate (RFD 0018), from the console's side. Studio drives the same
-// Supabase-shaped `/storage/v1` endpoints any client would: mint a signed
-// upload URL, PUT the bytes, then (for the in-row case) attach the object id to
+// `/storage/v1` endpoints any client would: mint a signed upload URL, PUT the
+// bytes, then (for the in-row case) attach the object id to
 // a row through the GraphQL floor. Every call carries the impersonation header,
 // so `owner = me` is stamped from the selected persona.
 
@@ -31,14 +31,19 @@ export function isFileField(field: Field): boolean {
 }
 
 /** Mint a pending object and upload the bytes. Returns the new object id. */
-export async function uploadFile(file: File, actor: string | null): Promise<string> {
-  const mint = await api("/storage/v1/object/upload/sign", actor, { method: "POST" })
+export async function uploadFile(
+  file: File,
+  actor: string | null,
+  signal?: AbortSignal,
+): Promise<string> {
+  const mint = await api("/storage/v1/object/upload/sign", actor, { method: "POST", signal })
   if (mint.status !== 200) throw new Error(envelopeError(mint, "mint"))
   const { id, url } = mint.body as { id: string; url: string }
   const put = await api(url, actor, {
     method: "PUT",
     headers: { "Content-Type": file.type || "application/octet-stream" },
     body: file,
+    signal,
   })
   if (put.status !== 204 && put.status !== 200) throw new Error(envelopeError(put, "upload"))
   return id

@@ -13,7 +13,7 @@ export async function api(
   opts: RequestInit = {},
 ): Promise<ApiResult> {
   const headers = new Headers(opts.headers)
-  if (actor) headers.set("X-Spock-Actor", actor)
+  if (actor !== null) headers.set("X-Spock-Actor", actor)
   let res: Response
   let text = ""
   try {
