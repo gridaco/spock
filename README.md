@@ -2,8 +2,10 @@
 
 > It's only logical.
 
-Spock is an early programming language for prototyping application backends as
-a small, inspectable source of truth.
+Spock is an early meta-framework for prototyping an application as one small,
+inspectable source of truth: a Spock authority backend plus an optional Uhura
+client, checked and served by one `spock` command on one origin. The Spock
+language remains independently usable for backend-only experiments.
 
 Most application backends spread the same intent across too many layers:
 database schema, API serializers, mutation handlers, validation, authorization,
@@ -19,22 +21,59 @@ the spec.
 
 ## Install
 
-Spock ships as a single npm package with a prebuilt binary for macOS, Linux,
-and Windows — no build step, no toolchain:
+Spock ships as a single npm package with prebuilt binaries for macOS arm64/x64,
+GNU-libc Linux x64, and Windows x64 — no build step, no toolchain. Alpine and
+other musl-based Linux distributions are not supported yet:
 
 ```sh
-# run without installing
-npx spock run app.spock
+# create and run a full-stack project without a checkout
+npx spock new demo
+cd demo
+npx spock dev
 
 # or install globally
 npm i -g spock
 ```
 
 ```sh
-spock check app.spock            # parse + check a program
-spock run app.spock              # materialize + serve (GraphQL, REST, /~studio)
+spock new demo                   # create backend + Uhura client + spock.toml
+spock check                      # check the whole nearest project
+spock dev                        # watch client; observe backend as restart-required
+spock start                      # serve one fixed combined generation
+
+# standalone language escape hatches stay available
+spock check app.spock            # parse + fully load-check one program
+spock run app.spock              # materialize + serve GraphQL, REST, and Studio
 spock gen types app.spock        # emit TypeScript types
 ```
+
+## Framework projects
+
+`spock new NAME` creates this canonical topology; `--backend-only` omits the
+client. `spock init [PATH]` adopts unambiguous existing sources without moving
+or overwriting them.
+
+```text
+demo/
+├── spock.toml
+├── backend/
+│   └── app.spock
+└── client/
+    ├── uhura.toml
+    └── ...
+```
+
+The manifest is required, as is its configured `.spock` entry. A project whose
+authority is not designed yet should keep that file empty; the client, health,
+status, contract metadata, Editor, and Play can still run.
+
+`spock dev` deliberately has asymmetric reload semantics today. Valid Uhura
+client saves publish live and invalid saves retain the last good Play
+generation. Backend or `spock.toml` saves are detected and reported as
+`restart_required`, but they never reopen, reseed, migrate, or replace the
+active database. Restarting reconstructs backend state from seed. This keeps
+the current behavior honest while the development-state model in
+[RFD 0023](docs/rfd/0023-development-state-reload.md) remains open.
 
 ## The picture
 
@@ -623,8 +662,10 @@ types` turns the contract into TypeScript — row and write shapes plus the
 derived error codes as literal unions — and `spock gen graphql-schema`
 prints the SDL for offline schema tooling.
 
-The npm package metadata lives under `npm/` only to reserve the package name.
-It is not the primary implementation target.
+The distributed npm package under `npm/` is the primary no-checkout entry
+point. It carries all four native binaries plus one platform-independent Uhura
+Editor/Play and WebAssembly sidecar; the small Node shim only selects and owns
+the matching native process.
 
 ## Uhura, the client language
 
@@ -637,43 +678,49 @@ UI-session state and experience behavior, with Spock as its canonical
 provider. No fact may be authoritative in both languages.
 
 Uhura is a subsystem of the Spock project: its canonical source lives in its
-own repository and is included here as a git submodule at `uhura/`. Spock's
-core workspace, default build, and CI remain independent of the submodule, so
-`cargo` builds work without it; clone with `--recurse-submodules` for the
-explicit composition runner below. Once Uhura is minimally stable, its tooling
-ships through the unified `spock` toolchain, and the runtime integration lands
-as contract projection plus a provider adapter.
+own repository and is included here as a git submodule at `uhura/`. The root
+Cargo workspace deliberately excludes Uhura's own workspace, while
+`spock-host` consumes `uhura-host` through a path dependency. Consequently a
+source build of the framework requires an initialized recursive submodule;
+the published npm package already contains the resulting runtime and assets.
 
-From an umbrella checkout, the general composition runner accepts any Spock
-program and Uhura project. For the Instagram example:
+For a source checkout, build the Uhura web and WebAssembly assets, then provide
+both roots together when running the framework host:
 
 ```sh
-./scripts/spock-uhura.sh \
-  examples/instagram-poc/app.spock \
-  uhura/examples/instagram-uhura
+git submodule update --init --recursive
+corepack pnpm@10.11.0 -C uhura/web install --frozen-lockfile
+corepack pnpm@10.11.0 -C uhura/web check
+bash uhura/scripts/build-wasm.sh
+
+SPOCK_UHURA_WEB_DIST="$PWD/uhura/web/dist" \
+SPOCK_UHURA_WASM_DIST="$PWD/uhura/crates/uhura-wasm/pkg/web" \
+cargo run --locked -p spock-cli -- dev demo
 ```
 
-It builds the two Rust launchers, starts the requested Spock authority on port
-4000, waits for it to become ready, and opens the requested Uhura project
-through its read-only Editor on <http://127.0.0.1:8787/>. The Editor's Play
-button enters the live prototype at `/play` without starting another process.
-`--spock-port` and `--uhura-port` override those defaults; the project's
-provider configuration must address the same Spock port. `Ctrl-C` stops both
-runtimes. Contributor frontend tooling in Spock and Uhura uses the same Node 24
-LTS pin from their respective `.nvmrc` files and pnpm 10.11.0; the runner uses
-them to build Uhura's web application before launch, but neither running server
-depends on a Node process.
+`build-wasm.sh` reports the lockfile-exact `wasm-bindgen-cli` install command
+when that tool is missing. The two asset overrides are a pair: setting only one
+is rejected, so a source host cannot accidentally combine incompatible web and
+Wasm generations. A distributed `spock` finds the verified sidecar beside its
+installed executable and needs neither override nor a Node process at runtime.
+
+The historical `scripts/spock-uhura.sh` two-process runner remains a transition
+and comparison oracle for examples whose backend and client still live in
+separate roots. It is not the canonical framework topology; `spock start` and
+`spock dev` own one project, listener, origin, and lifecycle.
 
 ## Repository Layout
 
-- `examples/` contains product requirements and current-valid Spock examples.
-- `docs/rfd/` contains discussion drafts and proposal-only language ideas.
-- `npm/` contains package metadata for npm name reservation.
-- `scripts/` contains umbrella composition tooling that keeps Spock and Uhura
-  independently buildable.
-- `uhura/` is the Uhura client language (git submodule of
-  [gridaco/uhura](https://github.com/gridaco/uhura); not yet wired into the
-  build).
+- `crates/spock-lang/` parses and checks the Spock language and contract IR.
+- `crates/spock-runtime/` materializes and serves one authority backend.
+- `crates/spock-project/` owns `spock.toml`, discovery, and project validation.
+- `crates/spock-host/` coordinates combined generations, routes, and assets.
+- `crates/spock-cli/` exposes framework, project, and language commands as the
+  single `spock` binary.
+- `npm/` is the real four-platform distribution package and shared sidecar.
+- `uhura/` is the wired Uhura client-language submodule with its own workspace.
+- `scripts/` retains transition and comparison tooling, not a second canonical
+  runtime topology.
 
 ## References and prior work
 
@@ -698,8 +745,9 @@ complete mediation, information hiding, and the rule of least power.
 
 ## Status
 
-Spock is currently a design-stage proposal. There is no compiler, runtime, or
-stable specification yet.
+Spock is an early prototype with a working compiler, embedded runtime,
+standalone language server, and combined framework host. Its language and host
+protocols remain pre-1.0 and may change; it is for prototyping, not production.
 
 The older, more ambitious draft has been moved to
 `docs/rfd/0000-vision.spock`. It is a sketch of possible direction, not the v0

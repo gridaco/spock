@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: dtolnay/rust-toolchain@1.92.0
         with:
           components: rustfmt, clippy
@@ -20,8 +22,48 @@ jobs:
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: test
-        run: cargo test --workspace
+        run: cargo test --locked --workspace
       - name: check the example
-        run: cargo run -p spock-cli -- check examples/instagram/v0.spock
+        run: cargo run --locked -p spock-cli -- check examples/instagram/v0.spock
+
+  uhura:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: uhura
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: uhura
+          workspaces: uhura -> target
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: uhura/web/pnpm-lock.yaml
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: test
+        run: cargo test --locked --workspace --all-targets
+      - name: check the canonical Uhura project
+        run: |
+          cargo run --locked -p uhura-cli -- fmt --check examples/instagram-uhura
+          cargo run --locked -p uhura-cli -- check examples/instagram-uhura --deny-warnings
+          cargo run --locked -p uhura-cli -- trace examples/instagram-uhura --script=demo >/dev/null
+      - name: check the Uhura browser and provider
+        run: |
+          pnpm -C web install --frozen-lockfile
+          pnpm -C web check
