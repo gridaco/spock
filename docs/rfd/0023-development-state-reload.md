@@ -1,14 +1,44 @@
 # RFD 0023 — Development reload, state continuity, and the auto-migration boundary
 
-Status: **problem study; direction under evaluation.** This document records
-the constraints, vocabulary, candidate models, and decisions required before
-Spock and Uhura share a development host. It does not amend the v0 contract,
-promise state-preserving reload, or introduce production migrations.
+Status: **problem study; long-term direction under evaluation.** This document
+does not amend the v0 contract, promise state-preserving reload, or introduce
+production migrations. A deliberately smaller interim host policy was accepted
+on 2026-07-15 so framework composition can proceed without selecting a world,
+rebase, or migration model.
 
 The working candidate is **non-destructive development worlds with an optional
 three-way state rebase**. Worlds are the safety and rollback primitive. Rebase
 is only a convenience for initializing a new world when compatibility can be
 proved. Both parts remain subject to experiments and review.
+
+## Interim implementation policy — client live, backend pinned
+
+During the first combined `spock dev`, one valid Spock backend generation is
+constructed and activated exactly once. Uhura client changes continue to use
+coherent capture, current diagnostics, immutable candidates, newest-result
+ordering, and last-known-good publication against that active generation.
+
+Backend source, referenced seed assets, and backend/topology manifest changes
+are observed and fingerprinted but receive the terminal disposition
+`restart_required`. They never call `engine::open`, delete or reopen a
+database, replay seed, construct a shadow backend, or swap any backend-owned
+contract, connection, signer, blob store, route, or background task. Reverting
+all changed backend inputs and topology to the active fingerprints clears the
+warning without touching state. Client publication may continue during the
+warning and must name the active backend generation, not the changed source.
+
+An explicit process restart is the only way this first implementation adopts
+a backend edit, and the CLI warns that current v0 startup reconstructs the
+database from seed. This policy is not a candidate answer to auto-migration;
+it is the safe no-activation baseline against which every later proposal must
+improve. The implementation has exactly one future marker at the disposition
+seam and no migration logic elsewhere:
+
+```text
+TODO(RFD-0023): replace restart-required with off-path backend candidate
+construction and an explicit activation policy after development-world
+semantics are accepted. Never reopen or mutate the active world here.
+```
 
 ## 0. Why this must be decided before runtime composition
 

@@ -1,12 +1,10 @@
 # RFD 0022 — Spock as a framework: one project, one command, two languages
 
-Status: **study draft and discussion record.** This RFD records the current
-working direction for a unified Spock project and toolchain. It proposes no
-implementation and does not merge Spock and Uhura semantics. Exact manifest
-syntax, route allocation, packaging, and development-state behavior remain
-open. The state problem is studied separately in
-[RFD 0023](0023-development-state-reload.md) and must be decided before the
-combined development host is implemented.
+Status: **accepted for an initial framework implementation** (2026-07-15).
+Spock and Uhura semantics remain separate. The unresolved long-term state
+problem stays in [RFD 0023](0023-development-state-reload.md); the safe
+client-live/backend-pinned policy in Section 12.1 is sufficient to implement
+the combined host without choosing automatic migration.
 
 ## 0. The question
 
@@ -109,8 +107,9 @@ The name “Spock” now appears at several layers. Use these terms precisely:
 - **Project generation** — one coherent checked backend artifact, host routing
   table, binding to backend development state, and, when a client is
   configured, the matching integrated Uhura Play artifact. Uhura Editor may
-  publish a newer static read model with explicit freshness independently;
-  RFD 0023 defines the backend-state and activation parts of this term.
+  publish a newer static read model with explicit freshness independently. In
+  the first implementation, its backend generation is pinned for the process
+  lifetime; RFD 0023 studies later activation models.
 
 This vocabulary prevents two opposite mistakes: shrinking Spock back to only
 the language when discussing the installed product, and growing
@@ -162,8 +161,8 @@ entry = "app.spock"
 root = "client"
 ```
 
-This exact spelling is provisional. The responsibilities are the important
-part:
+This spelling is the version-1 schema. Unknown keys are errors so a misspelled
+root cannot silently select a different project. The responsibilities are:
 
 1. `spock.toml` is required for project/framework commands.
 2. Exactly one Spock backend entry is required in the first version.
@@ -197,8 +196,8 @@ The user guidance can be simple:
 Do not scaffold a fake table merely to satisfy GraphQL. An empty authority
 means “no authoritative capabilities,” not “invent a placeholder data model.”
 The host should still be able to serve project health and the configured
-client; authority routes may be absent or expose a deliberately empty
-contract according to a later route decision.
+client. Contract metadata remains present, while GraphQL is absent with a
+structured 404 because an empty authority advertises no GraphQL capability.
 
 This is not current behavior end to end. An empty source can compile and the
 SQLite engine can materialize zero contract tables, but the eager GraphQL
@@ -214,7 +213,7 @@ The recommended public surface is:
 | `spock new <name>` | new project | Create the selected canonical project template, always including the manifest and required backend. |
 | `spock init [path]` | existing directory | Adopt existing sources without moving or overwriting them. |
 | `spock check [path]` | project | Check backend, client, manifest, and every currently provable provider/link contract as one result. |
-| `spock dev [path]` | project | Observe saved source and serve coherent last-good project generations. Exact backend state behavior is RFD 0023. |
+| `spock dev [path]` | project | Rebuild client source live; observe backend changes as restart-required while keeping the active backend pinned. |
 | `spock start [path]` | project | Check once and serve one fixed combined generation with no source watcher. |
 | `spock run <file.spock>` | Spock program | Preserve the standalone authority/file escape hatch. |
 | `spock build`, `spock gen` | artifact | Preserve existing language artifacts; project-aware variants are a separate design. |
@@ -240,8 +239,8 @@ remains intact.
 
 `spock dev` means saved-source observation, current diagnostics, coherent
 candidate ordering, last-good retention, and browser generation events. It
-must not promise that authoritative state survives a structural edit until
-RFD 0023 defines when and how that is true.
+keeps the active backend and its state pinned after startup. A structural
+backend edit is reported but never applied until an explicit restart.
 
 `spock start` means a fixed generation: resolve, check, construct, bind, and
 serve without watching or automatic replacement. The name does not imply that
@@ -254,9 +253,12 @@ the current `spock gen` forms remain valuable for language development, CI
 fixtures, backend-only experiments, and compatibility with the published
 command.
 
-Directory or omitted targets should select project mode; an explicit
-`.spock` target should retain file mode. Whether project discovery walks up
-through parents or only accepts the current/explicit root remains open.
+Directory or omitted targets select project mode; an explicit `.spock` target
+retains file mode. Project discovery starts at the explicit directory or the
+current directory and walks upward to the nearest `spock.toml`. It never walks
+past a discovered nested project. Every manifest path is relative, rejects
+absolute paths, prefixes, and `..`, and must resolve inside the canonical
+project root; a symlink that resolves outside the root is an error.
 
 Uhura-only expert operations such as formatting and deterministic traces need
 a later namespace decision. `spock client fmt` and `spock client trace` are
@@ -341,28 +343,26 @@ Should be extracted inside the submodule from the current
 routes without binding its own mandatory listener or returning CLI-specific
 exit codes. `uhura-cli` then remains a thin standalone entrypoint over it.
 
-The logical dependency is settled more easily than the physical Cargo and
-release linkage. A root crate path-depending directly on an uninitialized
-submodule would end the current “core checkout builds without Uhura” property,
-even if the dependency were feature-gated: Cargo still resolves path
-manifests. Preserving that property requires a real package/manifest boundary,
-such as a published internal Uhura crate, a vendored/generated artifact, or a
-separate full-framework manifest/build that is used only when the submodule is
-present. Requiring the submodule for the distributed binary is another
-explicit option. This choice remains open; it must not be hidden inside the
-crate diagram.
+The root consumes `uhura-host` through a direct path dependency into the
+initialized submodule. This deliberately ends the “complete public binary
+builds from a core-only checkout” property: framework source builds and npm CI
+must initialize submodules. Uhura keeps its separate workspace and lockfile.
 
 ## 7. One host and one origin
 
-One public listener and one browser origin are the preferred direction. An
-illustrative, non-final route allocation is:
+One public listener and one browser origin are required. The allocation is:
 
 ```text
-/                         Uhura Play, Editor, or project landing (open)
-/~editor                  Uhura Editor
-/play                     Uhura Play (current convention; final route open)
+/                         Uhura Editor, or redirect to Studio without a client
+/play                     Uhura Play
+/assets/*                 explicit Uhura browser assets
+/api/editor/*             Editor model and events
+/api/play/*               Play artifacts, events, assets, and Wasm
 /~studio                  Spock Studio
-/~project/*               status, diagnostics, and generation events
+/~project/environment     typed same-origin provider environment
+/~project/status          authoritative status snapshot
+/~project/events          project status invalidations
+/~health                  combined readiness
 /~contract                Spock contract
 /graphql/v1
 /rest/v1/*
@@ -377,10 +377,6 @@ One origin gives the product:
 - one place to detect route collisions; and
 - a possible atomic project-generation switch rather than two independently
   advancing servers.
-
-The final route map remains open. In particular: `/` may be Play, Editor, or a
-project landing page; `dev` and `start` may choose different primary surfaces;
-and a backend-only project needs a useful root.
 
 Current Spock uses Axum while Uhura's native host owns a `tiny_http` listener.
 A real single listener therefore requires a service/router boundary from
@@ -468,11 +464,10 @@ synchronized.
 6. Publish current diagnostics and active-generation freshness separately.
 
 When a client is configured, Uhura Editor may still publish the latest static
-render and diagnostics while integrated Play remains paired to an older
-backend. If the first project revision is invalid, `spock dev` may bind a
-diagnostics/control shell without an active project generation; fixed `spock
-start` may instead fail before binding. The exact cold-invalid route behavior
-remains open.
+render and diagnostics while Play remains bound to the active backend. Both
+modes fail before binding when the initial backend is invalid. `start` also
+fails for an invalid configured client. `dev` may bind with current Editor
+diagnostics and no Play generation, then activate the first valid client save.
 
 The lifecycle stops there in this document. Whether a backend candidate
 retains a database, creates a new world, rebases state, or requires a reset is
@@ -520,9 +515,9 @@ Rejected. It duplicates semantic authority, harms standalone checking, and
 turns the composition manifest into a grab bag. Point to the client root;
 leave the client contract there.
 
-## 12. Working conclusions and open decisions
+## 12. Accepted first implementation
 
-The recommendations this study asks the project to discuss are:
+The accepted framework shape is:
 
 1. One installed/public command: `spock`.
 2. `spock-cli` remains its crate and binary owner.
@@ -533,43 +528,170 @@ The recommendations this study asks the project to discuss are:
 7. Add `spock-project` and `spock-host` responsibility crates.
 8. Extract a reusable `uhura-host` inside the submodule.
 9. Preserve Studio, Editor, Play, and GraphiQL as separate surfaces.
-10. Prefer one listener and one origin.
+10. One listener and one origin.
 
-The following remain open:
+### 12.1 Client-live, backend-pinned `dev`
 
-1. Exact `spock.toml` keys, versioning, and diagnostics.
-2. Parent-directory project discovery behavior.
-3. The default `new` template, whether it has `--backend-only`, and whether a
-   client-focused form is useful (it would still contain the required empty
-   backend).
-4. Exact empty-authority HTTP and GraphQL behavior.
-5. Final route allocation and root-page behavior.
-6. The shared HTTP service abstraction between Axum and Uhura.
-7. Public names for Uhura-specific `fmt`, `trace`, and Editor-only commands.
-8. Whether multiple client/backend roots ever earn syntax.
-9. Missing-submodule and language-only source-build behavior.
-10. Release embedding versus a packaged internal helper/runtime.
-11. The provider overlay and future linker format.
-12. What operational guarantees the name `start` implies, including whether
-    it always materializes fresh seed, may open a named state/world, accepts a
-    database path, and exposes development-only browser tools.
-13. Every backend state/reload decision delegated to RFD 0023.
+The first `spock dev` activates exactly one valid backend generation. Client
+changes may build and publish immutable last-known-good Uhura generations
+against that active backend. A `.spock` change, referenced seed-asset change,
+or backend/topology change in `spock.toml` is observed and reported as
+`restart_required`, but never constructs, opens, reseeds, or swaps a backend
+inside that process. Returning all backend inputs and topology bytes to their
+active fingerprints clears the warning without touching the database.
 
-## 13. Sequence before implementation
+Client publication continues while a restart is required and explicitly
+names the active backend generation. A rejected client attempt retains the
+previous Play generation. Applying a backend edit requires an explicit process
+restart; while v0 load remains destructive, the CLI must say that restart
+reconstructs state from seed. The one future activation marker belongs at this
+disposition seam:
 
-1. Land this framework record and
-   [RFD 0023](0023-development-state-reload.md) as studies.
-2. Decide the development-state model in
-   [RFD 0023](0023-development-state-reload.md).
-3. Add `spock-project` with manifest, discovery, scaffold, and adoption tests.
-4. Refactor current file commands behind reusable library entrypoints.
-5. Extract `uhura-host` without changing direct Uhura behavior.
-6. Implement project-wide `check`, currently provable provider diagnostics,
-   and an explicit unchecked-adapter report.
-7. Compose one listener and both asset families.
-8. Implement fixed-generation `start`.
-9. Implement `dev` only against the chosen RFD 0023 semantics.
-10. Expand RFD 0020's npm build and verification pipeline.
+```text
+TODO(RFD-0023): replace restart-required with off-path backend candidate
+construction and an explicit activation policy after development-world
+semantics are accepted. Never reopen or mutate the active world here.
+```
+
+`spock start` has no watcher and serves one fixed generation. Both modes
+require a valid backend before binding. A configured invalid client also makes
+`start` fail before binding; `dev` may bind backend tools plus current Editor
+diagnostics with Play unavailable, and the first valid client save activates
+Play.
+
+### 12.2 Routes and empty authority
+
+The stable route ownership is:
+
+```text
+/                         Uhura Editor when configured; otherwise redirect to /~studio
+/play                     Uhura Play
+/assets/*                 explicit Uhura browser bundle assets
+/api/editor/*             Editor state and events
+/api/play/*               Play artifacts, events, assets, and Wasm
+/~studio                  Spock Studio
+/~contract                active Spock contract
+/~personas, /~whoami      Spock development identity
+/graphql/v1               GraphQL when the authority derives fields
+/rest/v1/*                REST and RPC
+/storage/v1/*             storage
+/~project/environment     integrated provider host environment
+/~project/status          authoritative project status snapshot
+/~project/events          project status invalidation events
+/~health                  aggregate host readiness
+```
+
+The framework owns final fallback, CORS, body limits, and collision checks.
+Unknown protocol paths return protocol 404/method responses, never SPA HTML.
+An empty or comment-only backend is valid. It serves contract metadata and the
+configured client, but `/graphql/v1` is absent with a structured 404 because
+there is no GraphQL capability to advertise.
+
+### 12.3 State and process ownership
+
+The first framework release defaults to an in-memory database. `--db PATH`
+selects an explicitly disposable named database that is still reconstructed
+from seed on each process start. Before touching a named database, its WAL,
+SHM, or mutable framework state, the host holds an exclusive OS advisory lock
+for the process lifetime. The lock is released by closing its handle, including
+after abnormal process termination; correctness never depends on deleting a
+sentinel file or guessing whether a PID is stale.
+
+`.spock/dev/` is reserved for ignored framework development state. In-memory
+hosts do not serialize unrelated processes through a project-wide lock because
+they share no mutable database.
+
+### 12.4 Build, assets, and provider environment
+
+The root workspace consumes `uhura-host` by direct path from the initialized
+Uhura submodule. A full source build therefore requires recursive submodules;
+Uhura remains a separate workspace with its own lockfile. The tested framework
+toolchain is exactly Rust 1.92.0 with Cargo resolver 3. This is an exact build
+pin, not a lower MSRV promise.
+
+The npm package carries one shared, platform-independent Uhura web/Wasm sidecar
+tree plus a versioned manifest of protocol versions, commits, hashes, and
+sizes. It is resolved relative to the installed executable, with an explicit
+test/source override; `uhura-host` never searches a source tree at runtime.
+Spock Studio stays embedded initially. Canonical scaffold bytes are embedded
+in `spock-project`, so `spock new` does not need a checkout.
+
+Integrated Play receives framework-owned facts from
+`/~project/environment` using protocol `spock-host-environment/1`:
+
+```json
+{
+  "protocol": "spock-host-environment/1",
+  "mode": "dev",
+  "project_generation_id": 1,
+  "backend_generation_id": 1,
+  "authority": {
+    "graphql_path": "/graphql/v1",
+    "rpc_path": "/rest/v1/rpc",
+    "storage_path": "/storage/v1"
+  }
+}
+```
+
+Uhura providers may prefer this same-origin environment and fall back to their
+committed absolute configuration in standalone mode. The framework does not
+merge or rewrite arbitrary provider JSON.
+
+### 12.5 Status, events, and readiness
+
+`/~project/status` uses protocol `spock-project-status/1`. Its snapshot names
+the mode and observed revision/fingerprint; active project, backend, and client
+generation IDs; active and observed backend fingerprints; backend freshness
+(`active` or `restart_required`); client state (`absent`, `building`, `active`,
+or `rejected_last_good`); the latest client attempt separately from the
+generation serving bytes; Editor freshness; changed input paths; diagnostics;
+and aggregate readiness/degradation. IDs are monotonic within one host session
+and are not presented as durable identities across restart.
+
+`/~project/events` uses SSE event protocol `spock-project-event/1`. Events are
+monotonic invalidations containing the session event ID and authoritative
+status URL; publication updates artifacts and status before broadcasting. The
+host does not promise unbounded event replay. On initial connection, reconnect,
+an unknown `Last-Event-ID`, or a detected gap, the client fetches the current
+status snapshot. Project, Editor, and Play event hubs belong to the host
+session and survive client-generation swaps.
+
+`/~health` returns 200 once the listener and backend generation are active.
+Restart-required and retained-last-good client failures are reported as
+degraded but ready; they do not make working APIs unready. Before backend
+activation it returns 503. Fixed `start` never binds with an invalid configured
+component.
+
+### 12.6 Scaffolding and budgets
+
+`spock new NAME` defaults to a minimal full-stack project: the exact v1
+manifest, an empty `backend/app.spock`, and a self-contained Uhura starter
+with no required remote provider. `--backend-only` omits `[client]` and the
+client tree. `spock init` adopts existing roots without moving or overwriting
+them; ambiguity is an error with choices.
+
+Initial release budgets on the recorded reference machine are: source
+`start`/`dev` readiness within 5 seconds and no more than twice the pre-framework
+backend startup baseline; valid client publication p95 within 1.5 seconds;
+idle observer CPU at or below 2%; a 250-revision soak with RSS growth at most
+25 MiB and file-descriptor/thread growth at most three; shutdown and port
+rebind within 2 seconds; and a packed all-platform npm artifact at most 25 MiB.
+
+Still deferred are backend world reuse/rebase/migration, Play state-preserving
+HMR, automatic provider TypeScript build supervision, multiple backends or
+clients, a published `uhura-host` crate, and the native-event versus polling
+observer optimization.
+
+## 13. Implementation sequence
+
+1. Extract `uhura-host`, add `spock-project`, and establish an owned backend
+   generation seam independently.
+2. Integrate the pinned submodule and direct Cargo dependency atomically.
+3. Compose one fixed listener and implement `start`.
+4. Implement client-live/backend-pinned `dev` with the single RFD 0023 TODO.
+5. Add project-wide `check`, `new`, and `init`.
+6. Expand RFD 0020's npm build and verification pipeline, then run the soak and
+   clean-package gates.
 
 The ordering is deliberate: combining two live runtimes before deciding what
 a backend save means would make the hardest product behavior an accidental
