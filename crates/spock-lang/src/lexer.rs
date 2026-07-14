@@ -93,42 +93,51 @@ impl TokenKind {
     }
 }
 
+/// Canonical active-keyword vocabulary shared with editor tooling.
+///
+/// Keeping the spelling and token together makes the lexer, diagnostics and
+/// syntax-highlighting parity tests consume one list instead of maintaining
+/// three independent copies.
+pub const ACTIVE_KEYWORDS: &[(&str, TokenKind)] = &[
+    ("table", TokenKind::KwTable),
+    ("auth", TokenKind::KwAuth),
+    ("record", TokenKind::KwRecord),
+    ("fn", TokenKind::KwFn),
+    ("mut", TokenKind::KwMut),
+    ("key", TokenKind::KwKey),
+    ("unique", TokenKind::KwUnique),
+    ("check", TokenKind::KwCheck),
+    ("seed", TokenKind::KwSeed),
+    ("on", TokenKind::KwOn),
+    ("delete", TokenKind::KwDelete),
+    ("restrict", TokenKind::KwRestrict),
+    ("cascade", TokenKind::KwCascade),
+    ("set", TokenKind::KwSet),
+    ("null", TokenKind::KwNull),
+    ("text", TokenKind::KwText),
+    ("int", TokenKind::KwInt),
+    ("float", TokenKind::KwFloat),
+    ("bool", TokenKind::KwBool),
+    ("timestamp", TokenKind::KwTimestamp),
+    ("uuid", TokenKind::KwUuid),
+    ("auto", TokenKind::KwAuto),
+    ("now", TokenKind::KwNow),
+    ("me", TokenKind::KwMe),
+    ("true", TokenKind::KwTrue),
+    ("false", TokenKind::KwFalse),
+];
+
 fn keyword_text(kind: &TokenKind) -> &'static str {
-    match kind {
-        TokenKind::KwTable => "table",
-        TokenKind::KwAuth => "auth",
-        TokenKind::KwRecord => "record",
-        TokenKind::KwFn => "fn",
-        TokenKind::KwMut => "mut",
-        TokenKind::KwKey => "key",
-        TokenKind::KwUnique => "unique",
-        TokenKind::KwCheck => "check",
-        TokenKind::KwSeed => "seed",
-        TokenKind::KwOn => "on",
-        TokenKind::KwDelete => "delete",
-        TokenKind::KwRestrict => "restrict",
-        TokenKind::KwCascade => "cascade",
-        TokenKind::KwSet => "set",
-        TokenKind::KwNull => "null",
-        TokenKind::KwText => "text",
-        TokenKind::KwInt => "int",
-        TokenKind::KwFloat => "float",
-        TokenKind::KwBool => "bool",
-        TokenKind::KwTimestamp => "timestamp",
-        TokenKind::KwUuid => "uuid",
-        TokenKind::KwAuto => "auto",
-        TokenKind::KwNow => "now",
-        TokenKind::KwMe => "me",
-        TokenKind::KwTrue => "true",
-        TokenKind::KwFalse => "false",
-        _ => unreachable!("not a keyword"),
-    }
+    ACTIVE_KEYWORDS
+        .iter()
+        .find_map(|(word, token)| (token == kind).then_some(*word))
+        .unwrap_or_else(|| unreachable!("not a keyword"))
 }
 
 /// Keywords reserved for future versions (§2.3): using one is L005.
 /// `unsafe` is reserved for the runtime-integrity tier (RFD 0011 §3) —
 /// the verification-gap tier is the contextual `unchecked`.
-const RESERVED: &[&str] = &[
+pub const RESERVED_KEYWORDS: &[&str] = &[
     "view",
     "role",
     "policy",
@@ -147,36 +156,13 @@ const RESERVED: &[&str] = &[
     "with",
 ];
 
+/// Identifiers that acquire special meaning only in their parser context.
+pub const CONTEXTUAL_KEYWORDS: &[&str] = &["unchecked", "sql", "file"];
+
 fn keyword(word: &str) -> Option<TokenKind> {
-    Some(match word {
-        "table" => TokenKind::KwTable,
-        "auth" => TokenKind::KwAuth,
-        "record" => TokenKind::KwRecord,
-        "fn" => TokenKind::KwFn,
-        "mut" => TokenKind::KwMut,
-        "key" => TokenKind::KwKey,
-        "unique" => TokenKind::KwUnique,
-        "check" => TokenKind::KwCheck,
-        "seed" => TokenKind::KwSeed,
-        "on" => TokenKind::KwOn,
-        "delete" => TokenKind::KwDelete,
-        "restrict" => TokenKind::KwRestrict,
-        "cascade" => TokenKind::KwCascade,
-        "set" => TokenKind::KwSet,
-        "null" => TokenKind::KwNull,
-        "text" => TokenKind::KwText,
-        "int" => TokenKind::KwInt,
-        "float" => TokenKind::KwFloat,
-        "bool" => TokenKind::KwBool,
-        "timestamp" => TokenKind::KwTimestamp,
-        "uuid" => TokenKind::KwUuid,
-        "auto" => TokenKind::KwAuto,
-        "now" => TokenKind::KwNow,
-        "me" => TokenKind::KwMe,
-        "true" => TokenKind::KwTrue,
-        "false" => TokenKind::KwFalse,
-        _ => return None,
-    })
+    ACTIVE_KEYWORDS
+        .iter()
+        .find_map(|(spelling, token)| (*spelling == word).then(|| token.clone()))
 }
 
 #[derive(Clone, Debug)]
@@ -412,7 +398,7 @@ pub fn lex(source: &str) -> Result<Vec<Token>, Diagnostic> {
                     Span::new(start, i),
                 ));
             }
-            if RESERVED.contains(&word) {
+            if RESERVED_KEYWORDS.contains(&word) {
                 return Err(Diagnostic::new(
                     "L005",
                     format!("`{word}` is reserved for a future version of spock"),

@@ -104,6 +104,11 @@ Studio and its client routes return structured 404 responses.
 `/~health` remains ready-but-degraded when a client candidate is rejected or a
 backend restart is required.
 
+VS Code language support for `*.spock` files lives in
+[`editors/vscode-spock`](editors/vscode-spock). It provides TextMate syntax
+highlighting and basic editing behavior while the compiler remains the source
+of diagnostics and validation.
+
 ## The picture
 
 Today, one product rule — say, *"a member may publish a draft post"* — is

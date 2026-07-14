@@ -1,0 +1,41 @@
+{
+  "name": "spock-language",
+  "displayName": "Spock Language",
+  "description": "Language support for current Spock v0 backend prototype files.",
+  "version": "0.0.1",
+  "publisher": "gridaco",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gridaco/spock"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "spock",
+        "aliases": [
+          "Spock",
+          "spock"
+        ],
+        "extensions": [
+          ".spock"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "spock",
+        "scopeName": "source.spock",
+        "path": "./syntaxes/spock.tmLanguage.json"
+      }
+    ]
+  }
+}
