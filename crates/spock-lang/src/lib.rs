@@ -17,6 +17,9 @@ pub mod parser;
 pub mod span;
 pub mod typescript;
 
+#[cfg(test)]
+mod editor_tests;
+
 use diag::Diagnostic;
 use ir::Contract;
 

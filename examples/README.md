@@ -6,12 +6,13 @@ Each domain may start with a `PRD.md` that describes the product requirements
 without caring about Spock. The Spock language should fit the requirements, not
 the other way around.
 
-Spock files in this directory should reflect the language surface that Spock is
-actively trying to build now:
+Accepted Spock files in this directory should use the language surface the
+current toolchain implements:
 
-- `table` for persistent data
-- `view` for public projections
-- `fn` for RPC-style backend operations
+- `table` and `auth table` for persistent data
+- `record` for named return shapes
+- `fn` and `mut fn` for read and mutation operations
+- `seed` for representative development data
 
 Do not use proposal-only concepts in `.spock` examples. Future-facing language
 ideas belong in `docs/rfd/`.
@@ -29,7 +30,7 @@ Good example tracks include:
 - `cms` - authors, articles, drafts, publishing, public content views
 
 Each scenario should stay small enough to read quickly, but real enough to show
-why `table`, `view`, and `fn` belong together.
+why persistent data, named shapes, and deliberate functions belong together.
 
 ## Example Rules
 
@@ -37,8 +38,8 @@ An example should:
 
 - model a concrete application scenario
 - use only accepted Spock syntax in `.spock` files
-- include public views for the data that leaves the backend
-- include functions for operations that would be called over RPC
+- use records for named return shapes where they clarify the contract
+- include functions for deliberate operations that would be called over RPC
 - avoid speculative authorization, effects, traits, decorators, or test syntax
 
 If an example needs a language feature that does not exist yet, write an RFD

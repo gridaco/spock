@@ -1,10 +1,8 @@
 {
-  "name": "spock-language",
-  "displayName": "Spock Language",
-  "description": "Language support for current Spock v0 backend prototype files.",
+  "name": "spock-textmate-loader",
+  "displayName": "Spock TextMate Grammar (Local)",
+  "description": "Minimal local VS Code loader for the canonical Spock v0 TextMate grammar.",
   "version": "0.0.1",
-  "publisher": "gridaco",
-  "private": true,
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -13,9 +11,6 @@
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": [
-    "Programming Languages"
-  ],
   "contributes": {
     "languages": [
       {

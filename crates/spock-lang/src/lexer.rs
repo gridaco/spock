@@ -98,7 +98,7 @@ impl TokenKind {
 /// Keeping the spelling and token together makes the lexer, diagnostics and
 /// syntax-highlighting parity tests consume one list instead of maintaining
 /// three independent copies.
-pub const ACTIVE_KEYWORDS: &[(&str, TokenKind)] = &[
+pub(crate) const ACTIVE_KEYWORDS: &[(&str, TokenKind)] = &[
     ("table", TokenKind::KwTable),
     ("auth", TokenKind::KwAuth),
     ("record", TokenKind::KwRecord),
@@ -137,7 +137,7 @@ fn keyword_text(kind: &TokenKind) -> &'static str {
 /// Keywords reserved for future versions (§2.3): using one is L005.
 /// `unsafe` is reserved for the runtime-integrity tier (RFD 0011 §3) —
 /// the verification-gap tier is the contextual `unchecked`.
-pub const RESERVED_KEYWORDS: &[&str] = &[
+pub(crate) const RESERVED_KEYWORDS: &[&str] = &[
     "view",
     "role",
     "policy",
@@ -156,8 +156,11 @@ pub const RESERVED_KEYWORDS: &[&str] = &[
     "with",
 ];
 
-/// Identifiers that acquire special meaning only in their parser context.
-pub const CONTEXTUAL_KEYWORDS: &[&str] = &["unchecked", "sql", "file"];
+/// Identifiers that acquire keyword meaning only in a parser context.
+pub(crate) const CONTEXTUAL_KEYWORDS: &[&str] = &["unchecked", "sql"];
+
+/// Identifiers that become builtin forms only with the required lookahead.
+pub(crate) const SOFT_KEYWORDS: &[&str] = &["file"];
 
 fn keyword(word: &str) -> Option<TokenKind> {
     ACTIVE_KEYWORDS

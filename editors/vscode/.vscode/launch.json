@@ -2,12 +2,12 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Run Spock Language Extension",
+      "name": "Run Spock TextMate Loader",
       "type": "extensionHost",
       "request": "launch",
       "args": [
         "--extensionDevelopmentPath=${workspaceFolder}",
-        "${workspaceFolder}/../../examples/instagram/v0.spock"
+        "${workspaceFolder}/test/corpus.spock"
       ]
     }
   ]

@@ -3,7 +3,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
-use spock_lang::lexer::{lex, ACTIVE_KEYWORDS, CONTEXTUAL_KEYWORDS, RESERVED_KEYWORDS};
+
+use crate::lexer::{
+    lex, TokenKind, ACTIVE_KEYWORDS, CONTEXTUAL_KEYWORDS, RESERVED_KEYWORDS, SOFT_KEYWORDS,
+};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -28,7 +31,7 @@ fn words_in_match(pattern: &str) -> BTreeSet<String> {
 
 #[test]
 fn vscode_manifest_registers_spock_files_and_grammar() {
-    let root = repo_root().join("editors/vscode-spock");
+    let root = repo_root().join("editors/vscode");
     let manifest = read_json(root.join("package.json"));
     let language = &manifest["contributes"]["languages"][0];
     let grammar = &manifest["contributes"]["grammars"][0];
@@ -43,8 +46,7 @@ fn vscode_manifest_registers_spock_files_and_grammar() {
 
 #[test]
 fn textmate_keyword_sets_match_the_lexer_vocabulary() {
-    let grammar =
-        read_json(repo_root().join("editors/vscode-spock/syntaxes/spock.tmLanguage.json"));
+    let grammar = read_json(repo_root().join("editors/vscode/syntaxes/spock.tmLanguage.json"));
     let repository = grammar["repository"].as_object().expect("repository");
 
     let active = repository["active-keywords"]["patterns"]
@@ -82,11 +84,11 @@ fn canonical_vocabulary_has_the_expected_lexical_behavior() {
         assert_eq!(error.code, "L005", "reserved keyword {word}");
     }
 
-    for word in CONTEXTUAL_KEYWORDS {
+    for word in CONTEXTUAL_KEYWORDS.iter().chain(SOFT_KEYWORDS) {
         let tokens = lex(word).unwrap_or_else(|error| panic!("{word}: {error:?}"));
         assert!(
-            matches!(&tokens[0].kind, spock_lang::lexer::TokenKind::Ident(name) if name == word),
-            "contextual keyword {word} must remain an identifier to the lexer"
+            matches!(&tokens[0].kind, TokenKind::Ident(name) if name == word),
+            "contextual or soft keyword {word} must remain an identifier to the lexer"
         );
     }
 }
@@ -94,13 +96,14 @@ fn canonical_vocabulary_has_the_expected_lexical_behavior() {
 #[test]
 fn textmate_grammar_covers_contextual_forms_and_lexical_edges() {
     let grammar =
-        fs::read_to_string(repo_root().join("editors/vscode-spock/syntaxes/spock.tmLanguage.json"))
+        fs::read_to_string(repo_root().join("editors/vscode/syntaxes/spock.tmLanguage.json"))
             .expect("read grammar");
 
+    for word in CONTEXTUAL_KEYWORDS.iter().chain(SOFT_KEYWORDS) {
+        assert!(grammar.contains(word), "grammar must cover {word}");
+    }
+
     for required in [
-        "unchecked",
-        "sql",
-        "file",
         "comment.line.documentation.inner.spock",
         "comment.line.documentation.outer.spock",
         "string.quoted.triple.spock",
@@ -109,4 +112,12 @@ fn textmate_grammar_covers_contextual_forms_and_lexical_edges() {
     ] {
         assert!(grammar.contains(required), "grammar must cover {required}");
     }
+}
+
+#[test]
+fn vscode_corpus_is_an_accepted_spock_program() {
+    let path = repo_root().join("editors/vscode/test/corpus.spock");
+    let source = fs::read_to_string(&path).expect("read VS Code corpus");
+    crate::compile(&source)
+        .unwrap_or_else(|diagnostics| panic!("{} must compile: {diagnostics:#?}", path.display()));
 }

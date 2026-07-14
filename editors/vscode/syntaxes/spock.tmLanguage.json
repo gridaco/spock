@@ -11,9 +11,9 @@
     { "include": "#declarations" },
     { "include": "#contextual-forms" },
     { "include": "#reserved-keywords" },
+    { "include": "#members" },
     { "include": "#active-keywords" },
     { "include": "#numbers" },
-    { "include": "#members" },
     { "include": "#invalid-identifiers" },
     { "include": "#operators" }
   ],
@@ -87,19 +87,38 @@
           }
         },
         {
-          "match": "\\b(mut)(\\s+)(fn)(\\s+)([a-z_][a-z0-9_]*)",
-          "captures": {
+          "name": "meta.function.signature.spock",
+          "begin": "\\b(?:(mut)(\\s+))?(fn)(\\s+)([a-z_][a-z0-9_]*)(?=\\s*\\()",
+          "beginCaptures": {
             "1": { "name": "storage.modifier.spock" },
             "3": { "name": "keyword.declaration.function.spock" },
             "5": { "name": "entity.name.function.spock" }
-          }
-        },
-        {
-          "match": "\\b(fn)(\\s+)([a-z_][a-z0-9_]*)",
-          "captures": {
-            "1": { "name": "keyword.declaration.function.spock" },
-            "3": { "name": "entity.name.function.spock" }
-          }
+          },
+          "end": "(?=\\{)",
+          "patterns": [
+            { "include": "#comments" },
+            {
+              "match": "\\b([a-z_][a-z0-9_]*)(\\s*)(:)",
+              "captures": {
+                "1": { "name": "variable.parameter.spock" },
+                "3": { "name": "punctuation.separator.type.spock" }
+              }
+            },
+            {
+              "match": "([!|])(\\s*)([a-z_][a-z0-9_]*)",
+              "captures": {
+                "1": { "name": "keyword.operator.error.spock" },
+                "3": { "name": "constant.other.error.spock" }
+              }
+            },
+            { "include": "#reserved-keywords" },
+            { "include": "#active-keywords" },
+            { "include": "#operators" },
+            {
+              "name": "entity.name.type.spock",
+              "match": "\\b[a-z_][a-z0-9_]*\\b"
+            }
+          ]
         }
       ]
     },
@@ -150,16 +169,37 @@
       "patterns": [
         {
           "name": "constant.numeric.float.spock",
-          "match": "(?<![a-zA-Z0-9_])-?[0-9]+\\.[0-9]+(?![a-zA-Z0-9_])"
+          "match": "(?<![a-zA-Z0-9_.])-?[0-9]+\\.[0-9]+(?![a-zA-Z0-9_.])"
         },
         {
           "name": "constant.numeric.integer.spock",
-          "match": "(?<![a-zA-Z0-9_])-?[0-9]+(?![a-zA-Z0-9_])"
+          "match": "(?<![a-zA-Z0-9_.])-?[0-9]+(?![a-zA-Z0-9_.])"
         }
       ]
     },
     "members": {
       "patterns": [
+        {
+          "match": "(:)(\\s*)((?!(?:text|int|float|bool|timestamp|uuid)\\b|file(?=\\s*\\())[a-z_][a-z0-9_]*)",
+          "captures": {
+            "1": { "name": "punctuation.separator.type.spock" },
+            "3": { "name": "entity.name.type.spock" }
+          }
+        },
+        {
+          "match": "\\b(check)(\\s+)([a-z_][a-z0-9_]*)(?!\\s*\\()",
+          "captures": {
+            "1": { "name": "keyword.other.constraint.spock" },
+            "3": { "name": "entity.name.function.validator.spock" }
+          }
+        },
+        {
+          "match": "(\\))(\\s+)([a-z_][a-z0-9_]*)(?=\\s*(?:[a-z_}]|$))",
+          "captures": {
+            "1": { "name": "punctuation.section.parens.end.spock" },
+            "3": { "name": "entity.name.function.validator.spock" }
+          }
+        },
         {
           "name": "variable.other.member.spock",
           "match": "\\b[a-z_][a-z0-9_]*(?=\\s*:)"
@@ -167,6 +207,10 @@
         {
           "name": "variable.other.binding.spock",
           "match": "\\b[a-z_][a-z0-9_]*(?=\\s*=\\s*[a-z_][a-z0-9_]*\\s*\\{)"
+        },
+        {
+          "name": "entity.name.type.seed.spock",
+          "match": "\\b(?!seed\\b)[a-z_][a-z0-9_]*(?=\\s*\\{)"
         }
       ]
     },
@@ -174,7 +218,7 @@
       "patterns": [
         {
           "name": "invalid.illegal.identifier.spock",
-          "match": "\\b(?:[A-Za-z_][A-Za-z0-9_]*[A-Z][A-Za-z0-9_]*|[A-Z][A-Za-z0-9_]*)\\b"
+          "match": "\\b(?=[A-Za-z0-9_]*[A-Z])[A-Za-z_][A-Za-z0-9_]*\\b"
         }
       ]
     },
