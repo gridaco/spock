@@ -1919,6 +1919,7 @@ dependencies = [
  "assert_cmd",
  "clap",
  "predicates",
+ "rustix",
  "serde_json",
  "spock-host",
  "spock-lang",

@@ -63,6 +63,9 @@ jobs:
           cache: pnpm
           cache-dependency-path: uhura/web/pnpm-lock.yaml
 
+      - name: self-test sidecar tooling
+        run: node npm/scripts/sidecar.mjs self-test
+
       - uses: dtolnay/rust-toolchain@1.92.0
         with:
           targets: wasm32-unknown-unknown
@@ -210,6 +213,7 @@ jobs:
       id-token: write # required for OIDC trusted publishing
     outputs:
       version: ${{ steps.resolve.outputs.version }}
+      cargo_version: ${{ steps.resolve.outputs.cargo_version }}
       dist_tag: ${{ steps.resolve.outputs.dist_tag }}
       dry_run: ${{ steps.resolve.outputs.dry_run }}
     steps:
@@ -242,19 +246,30 @@ jobs:
           test -n "$cargo_version"
           if [ "$EVENT_NAME" = "push" ]; then
             v="${GITHUB_REF_NAME#v}"; dry="false"
-            if [[ "$v" == *-* ]]; then tag="next"; else tag="latest"; fi
           else
             v="${INPUT_VERSION:-$cargo_version}"; tag="$INPUT_DIST_TAG"; dry="$INPUT_DRY_RUN"
           fi
-          if [[ ! "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
-            echo "::error::invalid package version: $v"
+          # Every successful matrix build has already made Cargo parse this
+          # workspace version. Keep Cargo authoritative instead of maintaining
+          # a second, inevitably incomplete SemVer grammar in bash.
+          if [ "$v" != "$cargo_version" ]; then
+            echo "::error::release version $v does not match Cargo workspace version $cargo_version"
             exit 1
+          fi
+          package_version="${cargo_version%%+*}"
+          if [[ "$package_version" == *-* ]]; then
+            prerelease="true"
+          else
+            prerelease="false"
+          fi
+          if [ "$EVENT_NAME" = "push" ]; then
+            if [ "$prerelease" = "true" ]; then tag="next"; else tag="latest"; fi
           fi
           if [[ ! "$tag" =~ ^[A-Za-z][A-Za-z0-9._-]*$ ]]; then
             echo "::error::invalid npm dist-tag: $tag"
             exit 1
           fi
-          if [[ "$v" == *-* && "$tag" = "latest" ]]; then
+          if [ "$prerelease" = "true" ] && [ "$tag" = "latest" ]; then
             echo "::error::prerelease version $v may not publish to the latest dist-tag"
             exit 1
           fi
@@ -262,14 +277,11 @@ jobs:
             echo "::error::dry_run must be true or false"
             exit 1
           fi
-          if [ "$v" != "$cargo_version" ]; then
-            echo "::error::release version $v does not match Cargo workspace version $cargo_version"
-            exit 1
-          fi
-          printf 'version=%s\n'  "$v"   >> "$GITHUB_OUTPUT"
-          printf 'dist_tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
-          printf 'dry_run=%s\n'  "$dry" >> "$GITHUB_OUTPUT"
-          echo "resolved: version=$v dist_tag=$tag dry_run=$dry"
+          printf 'version=%s\n'       "$package_version" >> "$GITHUB_OUTPUT"
+          printf 'cargo_version=%s\n' "$cargo_version"   >> "$GITHUB_OUTPUT"
+          printf 'dist_tag=%s\n'      "$tag"             >> "$GITHUB_OUTPUT"
+          printf 'dry_run=%s\n'       "$dry"             >> "$GITHUB_OUTPUT"
+          echo "resolved: cargo_version=$cargo_version package_version=$package_version dist_tag=$tag dry_run=$dry"
 
       - uses: actions/download-artifact@v4
         with:
@@ -311,15 +323,28 @@ jobs:
         run: cd npm && npm version "$PACKAGE_VERSION" --no-git-tag-version --allow-same-version
 
       - name: guard — packed package is complete and within 25 MiB
+        env:
+          PACKAGE_VERSION: ${{ steps.resolve.outputs.version }}
         run: |
           mkdir -p "$RUNNER_TEMP/npm-pack"
           (cd npm && npm pack --json --pack-destination "$RUNNER_TEMP/npm-pack") \
             > "$RUNNER_TEMP/npm-pack.json"
+          shopt -s nullglob
+          packages=("$RUNNER_TEMP/npm-pack/"*.tgz)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one guarded npm tarball; found ${#packages[@]}"
+            exit 1
+          fi
           node - "$RUNNER_TEMP/npm-pack.json" <<'NODE'
           const fs = require("node:fs");
           const [entry] = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
           if (!entry || !Number.isSafeInteger(entry.size)) {
             throw new Error("npm pack did not report a package size");
+          }
+          if (entry.version !== process.env.PACKAGE_VERSION) {
+            throw new Error(
+              `packed npm version ${entry.version} does not match ${process.env.PACKAGE_VERSION}`,
+            );
           }
           const manifest = JSON.parse(
             fs.readFileSync("npm/share/spock/uhura/manifest.json", "utf8"),
@@ -362,11 +387,26 @@ jobs:
           console.log(`packed package: ${entry.size} bytes (${entry.unpackedSize} unpacked)`);
           NODE
 
+      - name: upload guarded npm tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/npm-pack/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
       - name: npm publish (dry run)
         if: steps.resolve.outputs.dry_run == 'true'
         env:
           DIST_TAG: ${{ steps.resolve.outputs.dist_tag }}
-        run: cd npm && npm publish --dry-run --tag "$DIST_TAG"
+        run: |
+          shopt -s nullglob
+          packages=("$RUNNER_TEMP/npm-pack/"*.tgz)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one guarded npm tarball; found ${#packages[@]}"
+            exit 1
+          fi
+          npm publish "${packages[0]}" --dry-run --tag "$DIST_TAG"
 
       - name: npm publish
         if: steps.resolve.outputs.dry_run != 'true'
@@ -376,12 +416,18 @@ jobs:
         # independent of provenance and still applies.
         env:
           DIST_TAG: ${{ steps.resolve.outputs.dist_tag }}
-        run: cd npm && npm publish --tag "$DIST_TAG" --no-provenance
+        run: |
+          shopt -s nullglob
+          packages=("$RUNNER_TEMP/npm-pack/"*.tgz)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one guarded npm tarball; found ${#packages[@]}"
+            exit 1
+          fi
+          npm publish "${packages[0]}" --tag "$DIST_TAG" --no-provenance
 
   verify:
     name: verify ${{ matrix.key }}
     needs: publish
-    if: needs.publish.outputs.dry_run != 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -398,7 +444,27 @@ jobs:
         with:
           node-version-file: .nvmrc
 
-      - name: install spock from npm
+      - name: download guarded npm tarball
+        if: needs.publish.outputs.dry_run == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+          path: packed-npm
+
+      - name: install spock from guarded tarball
+        if: needs.publish.outputs.dry_run == 'true'
+        run: |
+          shopt -s nullglob
+          packages=(packed-npm/*.tgz)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one guarded npm tarball; found ${#packages[@]}"
+            exit 1
+          fi
+          npm install -g "${packages[0]}"
+          echo "installed ${packages[0]}"
+
+      - name: install spock from npm registry
+        if: needs.publish.outputs.dry_run != 'true'
         env:
           PACKAGE_VERSION: ${{ needs.publish.outputs.version }}
         run: |
@@ -408,7 +474,20 @@ jobs:
             echo "attempt $i: spock@$PACKAGE_VERSION not visible yet; waiting"; sleep 6
           done
           test -n "$installed" || { echo "::error::spock@$PACKAGE_VERSION was not installable"; exit 1; }
-          test "$(spock --version)" = "spock $PACKAGE_VERSION"
+
+      - name: verify installed npm and Cargo versions
+        env:
+          PACKAGE_VERSION: ${{ needs.publish.outputs.version }}
+          CARGO_VERSION: ${{ needs.publish.outputs.cargo_version }}
+        run: |
+          package_root="$(npm root -g)"
+          installed_version="$(node -e '
+            const path = require("node:path");
+            const manifest = require(path.join(process.argv[1], "spock", "package.json"));
+            process.stdout.write(manifest.version);
+          ' "$package_root")"
+          test "$installed_version" = "$PACKAGE_VERSION"
+          test "$(spock --version)" = "spock $CARGO_VERSION"
 
       - name: verify installed framework sidecar
         run: node npm/scripts/sidecar.mjs verify --root "$(npm root -g)/spock/share/spock/uhura"

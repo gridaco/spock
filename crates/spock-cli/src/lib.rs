@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Reusable implementation of Spock's file-oriented commands.
 //!
 //! This crate deliberately keeps argument parsing and terminal presentation in
@@ -293,7 +295,14 @@ impl StandaloneRun {
         let named_state_lock = database_path
             .map(spock_host::NamedStateLock::acquire)
             .transpose()?;
-        let conn = spock_runtime::engine::open(&contract, database_path, Some(base_dir.as_ref()))?;
+        let resolved_database_path = named_state_lock
+            .as_ref()
+            .map(spock_host::NamedStateLock::resolved_database_path);
+        let conn = spock_runtime::engine::open(
+            &contract,
+            resolved_database_path,
+            Some(base_dir.as_ref()),
+        )?;
         let summary = StandaloneRunSummary {
             tables: contract.tables.len(),
             functions: contract.fns.len(),

@@ -18,11 +18,14 @@ studio parks its role dropdown. The console evolved through three realizations;
 the **current** one is a **Vite + React + TypeScript SPA** styled with
 **Tailwind v4 + shadcn/ui** (the Mira / neutral preset `b1D0dv72`, Inter
 vendored, lucide icons) and **react-data-grid** for the table view
-(`crates/spock-runtime/studio/`). `pnpm build` compiles it to a committed
-`dist/` that is embedded via **`rust-embed`** and served same-origin at
-`/~studio` (+ hashed assets under `/~studio/{*path}`) — the console stays fully
-offline (no CDN). This **reverses the "no bundler / cargo-only CI" call in
-Q1/Q6/§7**: studio is now a real front-end app with an authoring-time Node build
+(`crates/spock-runtime/studio/`). `pnpm build` compiles it to a gitignored
+`dist/` that release CI guards and embeds via **`rust-embed`**. Only
+`dist/.gitkeep` is committed so a clean checkout still compiles; a useful
+source-built Studio requires the SPA build before `cargo build`. It is served
+same-origin at `/~studio` (+ hashed assets under `/~studio/{*path}`) — the
+console stays fully offline (no CDN). This **reverses the "no bundler /
+cargo-only CI" call in Q1/Q6/§7**: studio is now a real front-end app with an
+authoring-time Node build
 (`pnpm build` → `cargo build`); the single-`spock`-binary + offline guarantees
 are preserved (the bundle and font embed into the binary). The MVP surface
 (§5.1) is complete; edit and filter stay deferred (§5.2).

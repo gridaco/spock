@@ -1,10 +1,11 @@
-use std::future::{Future, IntoFuture};
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
 use spock_project::ProjectLayout;
 use tokio::task::JoinHandle;
 use uhura_host::ProjectSourceSnapshot;
@@ -161,13 +162,18 @@ where
         None
     };
 
-    let server = axum::serve(listener, router).into_future();
-    tokio::pin!(server);
-    tokio::pin!(shutdown);
-    let server_result = tokio::select! {
-        result = &mut server => result.map_err(ServeError::Serve),
-        () = &mut shutdown => Ok(()),
-    };
+    let shutdown_session = Arc::clone(&prepared.session);
+    let shutdown_observer = Arc::clone(&observer_stop);
+    let server_result = serve_router_until_shutdown(listener, router, shutdown, move || {
+        // Stop producing new observations and close host-owned streaming
+        // bodies as soon as the listener begins graceful shutdown. Axum can
+        // then drain every accepted connection instead of waiting forever on
+        // SSE, while the backend generation and named-state lock stay alive.
+        shutdown_observer.store(true, Ordering::Release);
+        shutdown_session.shutdown_streams();
+    })
+    .await
+    .map_err(ServeError::Serve);
 
     observer_stop.store(true, Ordering::Release);
     prepared.session.shutdown_streams();
@@ -182,6 +188,36 @@ where
     // which is released only after the session/database handles are dropped.
     drop(prepared);
     Ok(ServeOutcome { local_address })
+}
+
+async fn serve_router_until_shutdown<F, C>(
+    listener: tokio::net::TcpListener,
+    router: axum::Router,
+    shutdown: F,
+    on_shutdown: C,
+) -> std::io::Result<()>
+where
+    F: Future<Output = ()> + Send,
+    C: FnOnce(),
+{
+    let (graceful_tx, graceful_rx) = tokio::sync::oneshot::channel();
+    let server = async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(async move {
+                let _ = graceful_rx.await;
+            })
+            .await
+    };
+    tokio::pin!(server);
+    tokio::pin!(shutdown);
+    tokio::select! {
+        result = &mut server => result,
+        () = &mut shutdown => {
+            on_shutdown();
+            let _ = graceful_tx.send(());
+            server.await
+        }
+    }
 }
 
 fn spawn_observer(
@@ -227,10 +263,23 @@ fn spawn_observer(
             if !client_changed && !force_client_build {
                 continue;
             }
-            let Some(snapshot) = frame.client.as_ref() else {
+            let Some(client_observation) = frame.client.as_ref() else {
                 force_client_build = false;
                 continue;
             };
+            let client_host_configured = session
+                .publication()
+                .read()
+                .expect("project publication lock")
+                .client
+                .is_some();
+            if !client_host_configured {
+                // A valid topology edit may add a client to a backend-only
+                // active session. That requires process reconstruction; never
+                // leave the absent client state stuck in `building`.
+                force_client_build = false;
+                continue;
+            }
             force_client_build = false;
 
             let observed_revision = {
@@ -249,6 +298,33 @@ fn spawn_observer(
             notices.emit(HostNotice::ClientBuilding {
                 observed_revision: observed_revision.get(),
             });
+
+            if let Some(diagnostics) = client_observation.diagnostics() {
+                let diagnostics = diagnostics.to_vec();
+                let rejection = session
+                    .publication()
+                    .write()
+                    .expect("project publication lock")
+                    .coordinator
+                    .reject_client(observed_revision, diagnostics.clone());
+                match rejection {
+                    Ok(()) => {
+                        session.events().publish();
+                        notices.emit(HostNotice::ClientRejected {
+                            observed_revision: observed_revision.get(),
+                            diagnostics,
+                            serving_last_good: session.status().client.active.is_some(),
+                        });
+                    }
+                    Err(error) => notices.emit(HostNotice::ObserverError {
+                        message: error.to_string(),
+                    }),
+                }
+                continue;
+            }
+            let snapshot = client_observation
+                .snapshot()
+                .expect("a client observation without diagnostics has a captured snapshot");
 
             let candidate = {
                 let publication_state = session.publication();
@@ -362,34 +438,78 @@ fn spawn_observer(
     })
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ObservedLayout {
+    layout: ProjectLayout,
+    diagnostics: Vec<String>,
+}
+
+enum ClientObservation {
+    Captured(ProjectSourceSnapshot),
+    Invalid {
+        fingerprint: Fingerprint,
+        diagnostics: Vec<String>,
+    },
+}
+
+impl ClientObservation {
+    fn fingerprint(&self) -> Fingerprint {
+        match self {
+            Self::Captured(snapshot) => client_source_fingerprint(snapshot),
+            Self::Invalid { fingerprint, .. } => fingerprint.clone(),
+        }
+    }
+
+    fn snapshot(&self) -> Option<&ProjectSourceSnapshot> {
+        match self {
+            Self::Captured(snapshot) => Some(snapshot),
+            Self::Invalid { .. } => None,
+        }
+    }
+
+    fn diagnostics(&self) -> Option<&[String]> {
+        match self {
+            Self::Captured(_) => None,
+            Self::Invalid { diagnostics, .. } => Some(diagnostics),
+        }
+    }
+}
+
 struct ObservationFrame {
     topology: Fingerprint,
     backend: BackendObservation,
-    client: Option<ProjectSourceSnapshot>,
+    client: Option<ClientObservation>,
+    topology_diagnostics: Vec<String>,
 }
 
 fn capture_frame(layout: &ProjectLayout) -> Result<ObservationFrame, String> {
     for _ in 0..COHERENT_FRAME_ATTEMPTS {
         let topology_before = topology_fingerprint(&layout.manifest_path);
-        let backend_before = observe_backend(layout);
-        let client = layout
+        let observed_layout_before = resolve_observed_layout(layout);
+        let backend_before = observe_backend(&observed_layout_before.layout);
+        let client = observed_layout_before
+            .layout
             .client
             .as_ref()
-            .map(|client| capture_stable_client(client.root.absolute()))
+            .map(|client| capture_observed_client(&observed_layout_before.layout, client))
             .transpose()?;
-        let backend_after = observe_backend(layout);
+        let observed_layout_after = resolve_observed_layout(layout);
+        let backend_after = observe_backend(&observed_layout_after.layout);
         let topology_after = topology_fingerprint(&layout.manifest_path);
 
-        // Capture the client between matching topology/backend boundaries.
-        // Returning only this sandwiched state prevents one revision from
-        // combining subsystem snapshots that never coexisted.
+        // Re-parse and re-resolve the logical project on both sides of the
+        // subsystem captures. This observes safe in-project symlink retargets,
+        // prevents a cached canonical target from becoming a permanent watch
+        // root, and rejects a frame assembled across a topology transition.
         if topology_before == topology_after
+            && observed_layout_before == observed_layout_after
             && backend_before.fingerprint() == backend_after.fingerprint()
         {
             return Ok(ObservationFrame {
                 topology: topology_after,
                 backend: backend_after,
                 client,
+                topology_diagnostics: observed_layout_after.diagnostics,
             });
         }
     }
@@ -397,6 +517,49 @@ fn capture_frame(layout: &ProjectLayout) -> Result<ObservationFrame, String> {
         "project inputs under {} did not remain unchanged across {COHERENT_FRAME_ATTEMPTS} coherent captures",
         layout.root.display()
     ))
+}
+
+fn resolve_observed_layout(active: &ProjectLayout) -> ObservedLayout {
+    match spock_project::load_project_from(&active.root) {
+        Ok(layout) => ObservedLayout {
+            layout,
+            diagnostics: Vec::new(),
+        },
+        Err(diagnostics) => ObservedLayout {
+            layout: active.clone(),
+            diagnostics: diagnostics.iter().map(ToString::to_string).collect(),
+        },
+    }
+}
+
+fn capture_observed_client(
+    layout: &ProjectLayout,
+    client: &spock_project::ClientLayout,
+) -> Result<ClientObservation, String> {
+    match spock_project::resolve_contained(&layout.root, client.root.relative()) {
+        Ok(root) => capture_stable_client(root.absolute()).map(ClientObservation::Captured),
+        Err(diagnostics) => {
+            let diagnostics = diagnostics
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
+            Ok(ClientObservation::Invalid {
+                fingerprint: invalid_client_fingerprint(&diagnostics),
+                diagnostics,
+            })
+        }
+    }
+}
+
+fn invalid_client_fingerprint(diagnostics: &[String]) -> Fingerprint {
+    let mut hasher = Sha256::new();
+    hasher.update(b"spock-invalid-client-observation/1\0");
+    hasher.update((diagnostics.len() as u64).to_be_bytes());
+    for diagnostic in diagnostics {
+        hasher.update((diagnostic.len() as u64).to_be_bytes());
+        hasher.update(diagnostic.as_bytes());
+    }
+    Fingerprint::new(format!("{:x}", hasher.finalize()))
 }
 
 fn apply_frame(
@@ -412,13 +575,31 @@ fn apply_frame(
         changed_inputs.sort();
         changed_inputs.dedup();
     }
-    let backend_diagnostics = frame
+    let mut backend_diagnostics = frame
         .backend
         .diagnostics()
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>();
-    let client = frame.client.as_ref().map(client_source_fingerprint);
+    let client_diagnostics = frame
+        .client
+        .as_ref()
+        .and_then(ClientObservation::diagnostics)
+        .unwrap_or_default();
+    backend_diagnostics.extend(
+        frame
+            .topology_diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                !client_diagnostics
+                    .iter()
+                    .any(|client_diagnostic| client_diagnostic == *diagnostic)
+            })
+            .cloned(),
+    );
+    backend_diagnostics.sort();
+    backend_diagnostics.dedup();
+    let client = frame.client.as_ref().map(ClientObservation::fingerprint);
 
     let (before, disposition, after) = {
         let publication_state = session.publication();
@@ -467,8 +648,11 @@ fn prepared_client_diagnostics(candidate: &crate::PreparedClient) -> Vec<String>
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::sync::Arc;
     use std::time::Instant;
 
+    use axum::routing::get;
+    use axum::Router;
     use spock_project::{
         load_project_from, minimal_uhura_client_template, scaffold_plan, ProjectManifest,
     };
@@ -502,6 +686,24 @@ mod tests {
             fs::write(path, &write.contents).unwrap();
         }
         load_project_from(root).unwrap()
+    }
+
+    fn write_client_template(root: &Path) {
+        for file in minimal_uhura_client_template().files() {
+            let path = root.join(file.path().as_path());
+            fs::create_dir_all(path.parent().expect("client file parent")).unwrap();
+            fs::write(path, file.contents()).unwrap();
+        }
+    }
+
+    #[cfg(unix)]
+    fn replace_symlink(link: &Path, target: &Path) {
+        use std::os::unix::fs::symlink;
+
+        let replacement = link.with_extension("next-link");
+        let _ = fs::remove_file(&replacement);
+        symlink(target, &replacement).unwrap();
+        fs::rename(replacement, link).unwrap();
     }
 
     fn dummy_uhura_assets(root: &Path) -> UhuraAssetRoots {
@@ -563,6 +765,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn graceful_shutdown_waits_for_an_accepted_request_to_finish() {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let handler_entered = Arc::clone(&entered);
+        let handler_release = Arc::clone(&release);
+        let router = Router::new().route(
+            "/slow",
+            get(move || {
+                let entered = Arc::clone(&handler_entered);
+                let release = Arc::clone(&handler_release);
+                async move {
+                    entered.notify_one();
+                    release.notified().await;
+                    "finished"
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let (shutdown_started_tx, shutdown_started_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(serve_router_until_shutdown(
+            listener,
+            router,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            move || {
+                let _ = shutdown_started_tx.send(());
+            },
+        ));
+        let request = tokio::spawn(async move {
+            reqwest::get(format!("http://{address}/slow"))
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap()
+        });
+
+        tokio::time::timeout(Duration::from_secs(2), entered.notified())
+            .await
+            .expect("slow request entered its handler");
+        shutdown_tx.send(()).unwrap();
+        shutdown_started_rx
+            .await
+            .expect("graceful-shutdown callback ran");
+        assert!(
+            !server.is_finished(),
+            "server returned while an accepted request was still active"
+        );
+
+        release.notify_one();
+        assert_eq!(request.await.unwrap(), "finished");
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server drained the completed request")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn fixed_server_binds_ephemeral_port_and_releases_it_on_shutdown() {
         let temp = tempdir().unwrap();
         let layout = backend_project(temp.path());
@@ -590,13 +854,31 @@ mod tests {
             },
         ));
         let address = ready_rx.await.unwrap();
-        let health = reqwest::get(format!("http://{address}/~health"))
+        let client = reqwest::Client::new();
+        let health = client
+            .get(format!("http://{address}/~health"))
+            .send()
             .await
             .unwrap();
         assert_eq!(health.status(), reqwest::StatusCode::OK);
+        let events = client
+            .get(format!("http://{address}/~project/events"))
+            .send()
+            .await
+            .expect("open project event stream");
+        assert_eq!(events.status(), reqwest::StatusCode::OK);
 
         shutdown_tx.send(()).unwrap();
-        assert_eq!(task.await.unwrap().unwrap().local_address, address);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), task)
+                .await
+                .expect("open SSE stream did not prevent graceful shutdown")
+                .unwrap()
+                .unwrap()
+                .local_address,
+            address
+        );
+        drop(events);
         let rebound = tokio::net::TcpListener::bind(address).await.unwrap();
         drop(rebound);
     }
@@ -754,6 +1036,278 @@ mod tests {
         assert_eq!(outcome.local_address, address);
         let rebound = tokio::net::TcpListener::bind(address).await.unwrap();
         drop(rebound);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dev_observes_client_root_retargets_and_rejects_escapes_without_backend_swap() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempdir().unwrap();
+        let assets = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        fs::create_dir(project.path().join("backend")).unwrap();
+        fs::write(project.path().join("backend/app.spock"), "").unwrap();
+        write_client_template(&project.path().join("client-a"));
+        write_client_template(&project.path().join("client-b"));
+        let retargeted_page = project.path().join("client-b/app/home/page.uhura");
+        let retargeted_source = fs::read_to_string(&retargeted_page)
+            .unwrap()
+            .replace("Your app is running.", "The retargeted app is running.");
+        fs::write(&retargeted_page, retargeted_source).unwrap();
+        write_client_template(outside.path());
+        symlink("client-a", project.path().join("client")).unwrap();
+        fs::write(
+            project.path().join("spock.toml"),
+            ProjectManifest::new("demo", "backend", "app.spock", Some("client"))
+                .unwrap()
+                .to_toml_string(),
+        )
+        .unwrap();
+        let layout = load_project_from(project.path()).unwrap();
+        let options = ServeOptions {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            asset_roots: Some(dummy_uhura_assets(assets.path())),
+            poll_interval: NETWORK_TEST_POLL,
+            ..ServeOptions::default()
+        };
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let ready_tx = std::sync::Mutex::new(Some(ready_tx));
+        let notices = HostNoticeSink::new(move |notice| {
+            if let HostNotice::Listening { address, .. } = notice {
+                if let Some(sender) = ready_tx.lock().unwrap().take() {
+                    let _ = sender.send(address);
+                }
+            }
+        });
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(serve_project(
+            layout,
+            HostMode::Dev,
+            options,
+            notices,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        ));
+        let address = ready_rx.await.unwrap();
+        let client = reqwest::Client::new();
+        let initial = status_until(
+            &client,
+            address,
+            Instant::now() + NETWORK_TEST_DEADLINE,
+            "initial symlinked client generation",
+            |status| status.client.freshness == ClientFreshness::Active,
+        )
+        .await;
+        let backend_generation = initial.backend.generation_id;
+        let initial_play = ok_bytes(&client, address, "/api/play/ir.json").await;
+
+        replace_symlink(&project.path().join("client"), outside.path());
+        let rejected = status_until(
+            &client,
+            address,
+            Instant::now() + NETWORK_TEST_DEADLINE,
+            "escaping client-root observation",
+            |status| {
+                status.backend.generation_id == backend_generation
+                    && status.backend.freshness == BackendFreshness::Active
+                    && status.backend.diagnostics.is_empty()
+                    && status.client.freshness == ClientFreshness::RejectedLastGood
+                    && status
+                        .client
+                        .latest_attempt
+                        .as_ref()
+                        .is_some_and(|attempt| {
+                            attempt
+                                .diagnostics
+                                .iter()
+                                .any(|diagnostic| diagnostic.contains("SPP011"))
+                        })
+            },
+        )
+        .await;
+        assert_eq!(
+            ok_bytes(&client, address, "/api/play/ir.json").await,
+            initial_play,
+            "an escaping retarget must retain the last-good client"
+        );
+
+        replace_symlink(&project.path().join("client"), Path::new("client-b"));
+        let recovered = status_until(
+            &client,
+            address,
+            Instant::now() + NETWORK_TEST_DEADLINE,
+            "safe client-root retarget publication",
+            |status| {
+                status.backend.generation_id == backend_generation
+                    && status.backend.freshness == BackendFreshness::Active
+                    && status.client.freshness == ClientFreshness::Active
+                    && status.observed.revision > rejected.observed.revision
+            },
+        )
+        .await;
+        assert_eq!(recovered.backend.generation_id, backend_generation);
+        assert_ne!(
+            ok_bytes(&client, address, "/api/play/ir.json").await,
+            initial_play,
+            "safe retarget must publish the newly resolved client tree"
+        );
+
+        shutdown_tx.send(()).unwrap();
+        drop(client);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("symlinked dev host shutdown timed out")
+            .unwrap()
+            .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn coherent_frames_re_resolve_backend_root_and_entry_symlinks_and_reject_escapes() {
+        use std::os::unix::fs::symlink;
+
+        let project = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        for directory in ["backend-a", "backend-b"] {
+            fs::create_dir(project.path().join(directory)).unwrap();
+        }
+        fs::write(
+            project.path().join("backend-a/source-a.spock"),
+            "// active backend\n",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("backend-b/source-b.spock"),
+            "table beta { key id: uuid = auto }\n",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("backend-b/source-c.spock"),
+            "table gamma { key id: uuid = auto }\n",
+        )
+        .unwrap();
+        symlink("source-a.spock", project.path().join("backend-a/app.spock")).unwrap();
+        symlink("source-b.spock", project.path().join("backend-b/app.spock")).unwrap();
+        symlink("backend-a", project.path().join("backend")).unwrap();
+        fs::write(
+            project.path().join("spock.toml"),
+            ProjectManifest::new("demo", "backend", "app.spock", None)
+                .unwrap()
+                .to_toml_string(),
+        )
+        .unwrap();
+        let layout = load_project_from(project.path()).unwrap();
+        let prepared = prepare_project(layout, HostMode::Dev, None, None).unwrap();
+        let backend_generation = prepared.session.status().backend.generation_id;
+        assert!(prepared.session.backend().contract().tables.is_empty());
+
+        replace_symlink(&project.path().join("backend"), Path::new("backend-b"));
+        let root_retarget = capture_frame(&prepared.layout).unwrap();
+        assert_eq!(
+            root_retarget
+                .backend
+                .captured_backend()
+                .expect("safe backend-root retarget")
+                .source(),
+            b"table beta { key id: uuid = auto }\n"
+        );
+        let first_observed = root_retarget.backend.fingerprint().clone();
+        apply_frame(
+            &prepared.session,
+            &prepared.active_backend,
+            &prepared.active_topology,
+            &root_retarget,
+            &HostNoticeSink::default(),
+        );
+        assert_eq!(
+            prepared.session.status().backend.freshness,
+            BackendFreshness::RestartRequired
+        );
+        assert_eq!(
+            prepared.session.status().backend.generation_id,
+            backend_generation
+        );
+        assert!(prepared.session.backend().contract().tables.is_empty());
+
+        replace_symlink(
+            &project.path().join("backend-b/app.spock"),
+            Path::new("source-c.spock"),
+        );
+        let entry_retarget = capture_frame(&prepared.layout).unwrap();
+        assert_eq!(
+            entry_retarget
+                .backend
+                .captured_backend()
+                .expect("safe backend-entry retarget")
+                .source(),
+            b"table gamma { key id: uuid = auto }\n"
+        );
+        assert_ne!(entry_retarget.backend.fingerprint(), &first_observed);
+        apply_frame(
+            &prepared.session,
+            &prepared.active_backend,
+            &prepared.active_topology,
+            &entry_retarget,
+            &HostNoticeSink::default(),
+        );
+        assert_eq!(
+            prepared.session.status().backend.generation_id,
+            backend_generation
+        );
+        assert!(prepared.session.backend().contract().tables.is_empty());
+
+        fs::write(outside.path().join("app.spock"), "table escaped {}\n").unwrap();
+        replace_symlink(&project.path().join("backend"), outside.path());
+        let escaped = capture_frame(&prepared.layout).unwrap();
+        assert!(!escaped.backend.is_valid());
+        apply_frame(
+            &prepared.session,
+            &prepared.active_backend,
+            &prepared.active_topology,
+            &escaped,
+            &HostNoticeSink::default(),
+        );
+        let status = prepared.session.status();
+        assert_eq!(status.backend.generation_id, backend_generation);
+        assert_eq!(status.backend.freshness, BackendFreshness::RestartRequired);
+        assert!(status
+            .backend
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.contains("SPH004") || diagnostic.contains("SPP011") }));
+        assert!(prepared.session.backend().contract().tables.is_empty());
+
+        fs::write(
+            project.path().join("spock.toml"),
+            ProjectManifest::new("demo", "backend-b", "app.spock", None)
+                .unwrap()
+                .to_toml_string(),
+        )
+        .unwrap();
+        let manifest_retarget = capture_frame(&prepared.layout).unwrap();
+        assert_eq!(
+            manifest_retarget
+                .backend
+                .captured_backend()
+                .expect("valid manifest path retarget")
+                .source(),
+            b"table gamma { key id: uuid = auto }\n"
+        );
+        assert_ne!(manifest_retarget.topology, prepared.active_topology);
+        apply_frame(
+            &prepared.session,
+            &prepared.active_backend,
+            &prepared.active_topology,
+            &manifest_retarget,
+            &HostNoticeSink::default(),
+        );
+        let status = prepared.session.status();
+        assert_eq!(status.backend.generation_id, backend_generation);
+        assert_eq!(status.backend.freshness, BackendFreshness::RestartRequired);
+        assert!(status.backend.diagnostics.is_empty());
+        assert!(prepared.session.backend().contract().tables.is_empty());
     }
 
     #[test]

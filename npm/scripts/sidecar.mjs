@@ -56,11 +56,16 @@ function usage() {
     "    --out-dir npm/share/spock/uhura \\",
     "    --spock-commit <40-hex-sha> --uhura-commit <40-hex-sha>",
     "  node npm/scripts/sidecar.mjs verify --root npm/share/spock/uhura",
+    "  node npm/scripts/sidecar.mjs self-test",
   ].join("\n");
 }
 
 function parseArgs(argv) {
   const [command, ...rest] = argv;
+  if (command === "self-test") {
+    if (rest.length !== 0) fail(usage());
+    return { command, values: new Map() };
+  }
   if (command !== "assemble" && command !== "verify") fail(usage());
   const values = new Map();
   for (let index = 0; index < rest.length; index += 2) {
@@ -91,6 +96,42 @@ function portablePath(...parts) {
 
 function comparePath(left, right) {
   return Buffer.compare(Buffer.from(left.path, "utf8"), Buffer.from(right.path, "utf8"));
+}
+
+function assertOutputDirectory(outDir) {
+  const spockDir = dirname(outDir);
+  const shareDir = dirname(spockDir);
+  if (
+    basename(outDir) !== "uhura" ||
+    basename(spockDir) !== "spock" ||
+    basename(shareDir) !== "share"
+  ) {
+    fail("--out-dir must end in share/spock/uhura");
+  }
+}
+
+function selfTest() {
+  const root = resolve("sidecar-output-suffix-self-test");
+  assertOutputDirectory(join(root, "share", "spock", "uhura"));
+
+  for (const invalid of [
+    // Regression: checking only the last two segments accepted this spelling.
+    join(root, "spock", "uhura"),
+    join(root, "shared", "spock", "uhura"),
+    join(root, "share", "other", "uhura"),
+    join(root, "share", "spock", "other"),
+    join(root, "share", "spock", "uhura", "extra"),
+  ]) {
+    let rejected = false;
+    try {
+      assertOutputDirectory(invalid);
+    } catch (error) {
+      rejected = error?.message === "sidecar: --out-dir must end in share/spock/uhura";
+    }
+    if (!rejected) fail(`self-test accepted invalid --out-dir: ${invalid}`);
+  }
+
+  process.stdout.write("verified sidecar output suffix self-test\n");
 }
 
 async function regularFiles(root, prefix = "") {
@@ -309,9 +350,7 @@ async function assemble(values) {
   const uhuraCommit = values.get("--uhura-commit");
   if (!COMMIT_PATTERN.test(spockCommit)) fail("--spock-commit must be a 40-character hex SHA");
   if (!COMMIT_PATTERN.test(uhuraCommit)) fail("--uhura-commit must be a 40-character hex SHA");
-  if (basename(outDir) !== "uhura" || basename(dirname(outDir)) !== "spock") {
-    fail("--out-dir must end in share/spock/uhura");
-  }
+  assertOutputDirectory(outDir);
   for (const source of [webDir, wasmDir]) {
     const fromOutput = relative(outDir, source);
     if (fromOutput === "" || (!fromOutput.startsWith(`..${sep}`) && fromOutput !== "..")) {
@@ -360,8 +399,10 @@ async function main() {
   const { command, values } = parseArgs(process.argv.slice(2));
   if (command === "assemble") {
     await assemble(values);
-  } else {
+  } else if (command === "verify") {
     await verify(values.get("--root"));
+  } else {
+    selfTest();
   }
 }
 

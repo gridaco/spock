@@ -417,7 +417,8 @@ pub(crate) fn prepare_project(
     let (named_state_lock, backend) = match database_path {
         Some(path) => {
             let lock = NamedStateLock::acquire(path)?;
-            let backend = BackendGeneration::from_captured(captured, Some(path))?;
+            let backend =
+                BackendGeneration::from_captured(captured, Some(lock.resolved_database_path()))?;
             (Some(lock), backend)
         }
         None => (None, validation_backend),

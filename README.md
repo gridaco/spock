@@ -69,11 +69,27 @@ status, contract metadata, Editor, and Play can still run.
 
 `spock dev` deliberately has asymmetric reload semantics today. Valid Uhura
 client saves publish live and invalid saves retain the last good Play
-generation. Backend or `spock.toml` saves are detected and reported as
+generation. Backend inputs—including the `.spock` source and referenced seed
+assets—and topology-affecting `spock.toml` saves are detected and reported as
 `restart_required`, but they never reopen, reseed, migrate, or replace the
 active database. Restarting reconstructs backend state from seed. This keeps
 the current behavior honest while the development-state model in
 [RFD 0023](docs/rfd/0023-development-state-reload.md) remains open.
+
+Framework composition changes the operational envelope, not the doctrine.
+Spock still owns durable product truth, policy, and guarded mutations; Uhura
+owns presentation, experience transitions, and non-authoritative UI-session
+state. `spock.toml` only composes their roots and lifecycle—it does not merge
+their languages or move authority into the client. No fact may become
+authoritative in both systems just because one command serves them together.
+
+For a project with a configured client, both framework commands serve Uhura
+Editor at `/` and Play at `/play`. Both modes serve Spock Studio at `/~studio`
+and the authority protocols on the same origin. A backend-only project's `/`
+redirects to Studio and its client routes return structured 404 responses.
+`/~project/status` makes the active and merely observed generations explicit;
+`/~health` remains ready-but-degraded when a client candidate is rejected or a
+backend restart is required.
 
 ## The picture
 
@@ -685,13 +701,19 @@ source build of the framework requires an initialized recursive submodule;
 the published npm package already contains the resulting runtime and assets.
 
 For a source checkout, build the Uhura web and WebAssembly assets, then provide
-both roots together when running the framework host:
+both roots together when running the framework host. Build Studio first too:
+its `dist/` directory exists in a clean checkout but is intentionally empty
+until the SPA build runs.
 
 ```sh
 git submodule update --init --recursive
+corepack pnpm@10.11.0 -C crates/spock-runtime/studio install --frozen-lockfile
+corepack pnpm@10.11.0 -C crates/spock-runtime/studio build
 corepack pnpm@10.11.0 -C uhura/web install --frozen-lockfile
 corepack pnpm@10.11.0 -C uhura/web check
 bash uhura/scripts/build-wasm.sh
+
+cargo run --locked -p spock-cli -- new demo
 
 SPOCK_UHURA_WEB_DIST="$PWD/uhura/web/dist" \
 SPOCK_UHURA_WASM_DIST="$PWD/uhura/crates/uhura-wasm/pkg/web" \

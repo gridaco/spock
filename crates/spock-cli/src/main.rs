@@ -326,7 +326,7 @@ fn require_signal(received: Option<()>, name: &str) -> io::Result<()> {
 fn print_framework_notice(notice: HostNotice) {
     match notice {
         HostNotice::DevelopmentPolicy => eprintln!(
-            "warning: backend and spock.toml changes are observed but not applied; restart `spock dev` to reconstruct backend state from seed"
+            "warning: backend inputs (including referenced seed assets) and spock.toml topology changes are observed but not applied; restart `spock dev` to reconstruct backend state from seed"
         ),
         HostNotice::Listening {
             address,

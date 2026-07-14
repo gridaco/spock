@@ -205,9 +205,10 @@ async fn health() -> Json<JsonValue> {
 }
 
 // GET /~studio — the human-developer console (RFD 0015). A Vite/React SPA
-// (crates/spock-runtime/studio) built to studio/dist, committed and embedded in
-// the binary via rust-embed, served same-origin so the console is fully offline
-// (no CDN): every request it makes to /~contract, /rest, /rpc, /~personas,
+// (crates/spock-runtime/studio) built to studio/dist before compilation and
+// embedded in the binary via rust-embed. It is served same-origin so the
+// console is fully offline (no CDN): every request it makes to /~contract,
+// /rest, /rpc, /~personas,
 // /~whoami rides `X-Spock-Actor` with no CORS. A pure consumer of the contract —
 // it never defines or edits schema.
 #[derive(RustEmbed)]

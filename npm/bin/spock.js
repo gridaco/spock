@@ -50,6 +50,7 @@ let spawnError;
 let forwardingError;
 let spawned = false;
 let pendingSignal;
+let windowsConsoleFallback;
 
 // `start`, `dev`, and `run` are long-lived. A signal sent specifically to the
 // npm shim (as opposed to the whole terminal process group) must still reach
@@ -61,6 +62,23 @@ for (const signal of forwardedSignals) {
     if (child.exitCode !== null || child.signalCode !== null) return;
     try {
       pendingSignal = signal;
+      if (process.platform === "win32" && signal === "SIGINT") {
+        // A terminal Ctrl+C is broadcast to every process sharing the Windows
+        // console, including the already-spawned Rust child. Calling
+        // child.kill("SIGINT") here would instead terminate it abruptly. Keep
+        // the shim alive while the child drains, with a bounded fallback for a
+        // programmatic signal that was delivered only to this Node process.
+        if (windowsConsoleFallback !== undefined) {
+          child.kill("SIGKILL");
+        } else {
+          windowsConsoleFallback = setTimeout(() => {
+            if (child.exitCode === null && child.signalCode === null) {
+              child.kill("SIGKILL");
+            }
+          }, 5_000);
+        }
+        return;
+      }
       child.kill(signal);
     } catch (error) {
       // The child may have exited between the state check and kill(2).
@@ -90,6 +108,9 @@ child.on("error", (error) => {
 });
 
 child.once("close", (code, signal) => {
+  if (windowsConsoleFallback !== undefined) {
+    clearTimeout(windowsConsoleFallback);
+  }
   for (const [name, handler] of handlers) process.removeListener(name, handler);
   if (spawnError) {
     process.stderr.write(`spock: failed to run binary: ${spawnError.message}\n`);

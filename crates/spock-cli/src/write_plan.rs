@@ -5,12 +5,18 @@
 //! file with `create_new`, treats `spock.toml` as the final commit marker, and
 //! rolls back only paths created by the current invocation.
 
+use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs;
+#[cfg(not(unix))]
+use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use spock_project::{PlanKind, WritePlan, MANIFEST_FILE};
+
+static NEXT_QUARANTINE: AtomicU64 = AtomicU64::new(0);
 
 /// Filesystem policy for the root of a write plan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -227,6 +233,12 @@ where
     if let Err(failure) = root_result {
         return Err(failed(failure.stage, failure.path, failure.error, journal));
     }
+    let root = match PinnedRoot::open(&plan.root) {
+        Ok(root) => root,
+        Err(error) => {
+            return Err(failed(ApplyStage::ValidateRoot, &plan.root, error, journal));
+        }
+    };
 
     let mut writes = plan.writes().iter().collect::<Vec<_>>();
     writes.sort_by(|left, right| {
@@ -243,18 +255,21 @@ where
             .as_path()
             .parent()
             .expect("a planned file always has a parent");
-        if let Err(failure) = ensure_relative_directories(&plan.root, relative_parent, &mut journal)
-        {
-            return Err(failed(failure.stage, failure.path, failure.error, journal));
-        }
+        let parent = match ensure_relative_directories(&root, relative_parent, &mut journal) {
+            Ok(parent) => parent,
+            Err(failure) => {
+                return Err(failed(failure.stage, failure.path, failure.error, journal));
+            }
+        };
 
         let destination = plan.root.join(write.relative_path.as_path());
-        let mut file = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&destination)
-        {
-            Ok(file) => file,
+        let file_name = write
+            .relative_path
+            .as_path()
+            .file_name()
+            .expect("a planned file has a file name");
+        let (mut file, anchor) = match parent.create_new_file(file_name) {
+            Ok(created) => created,
             Err(error) => {
                 return Err(failed(ApplyStage::CreateFile, destination, error, journal));
             }
@@ -267,7 +282,7 @@ where
             Err(error) => {
                 journal
                     .files
-                    .push(JournalEntry::file(destination.clone(), file, None));
+                    .push(JournalEntry::file(destination.clone(), file, None, anchor));
                 return Err(failed(
                     ApplyStage::RecordOwnership,
                     destination,
@@ -278,15 +293,25 @@ where
         };
 
         if let Err(error) = file.write_all(&write.contents) {
-            journal
-                .files
-                .push(JournalEntry::file(destination.clone(), file, identity));
+            journal.files.push(JournalEntry::file(
+                destination.clone(),
+                file,
+                identity,
+                anchor,
+            ));
             return Err(failed(ApplyStage::WriteFile, destination, error, journal));
         }
-        journal
-            .files
-            .push(JournalEntry::file(destination.clone(), file, identity));
+        journal.files.push(JournalEntry::file(
+            destination.clone(),
+            file,
+            identity,
+            anchor,
+        ));
         after_write(&destination);
+    }
+
+    if let Err(error) = root.validate() {
+        return Err(failed(ApplyStage::ValidateRoot, &plan.root, error, journal));
     }
 
     let CreationJournal { files, directories } = journal;
@@ -387,39 +412,292 @@ fn ensure_directory_tree(
     create_directory_if_missing(directory, journal)
 }
 
+#[cfg(unix)]
+#[derive(Debug)]
+struct PinnedRoot {
+    directory: fs::File,
+    identity: EntryIdentity,
+    path: PathBuf,
+}
+
+#[cfg(unix)]
+impl PinnedRoot {
+    fn open(path: &Path) -> io::Result<Self> {
+        let directory = open_directory_path(path)?;
+        let identity = entry_identity(&directory.metadata()?).expect("Unix directory identity");
+        let root = Self {
+            directory,
+            identity,
+            path: path.to_path_buf(),
+        };
+        root.validate()?;
+        Ok(root)
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        let metadata = fs::symlink_metadata(&self.path)?;
+        if !metadata.file_type().is_dir()
+            || entry_identity(&metadata) != Some(self.identity)
+            || entry_identity(&self.directory.metadata()?) != Some(self.identity)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "project root identity changed while applying the write plan",
+            ));
+        }
+        Ok(())
+    }
+
+    fn cursor(&self) -> io::Result<DirectoryCursor> {
+        self.validate()?;
+        Ok(DirectoryCursor {
+            directory: self.directory.try_clone()?,
+            path: self.path.clone(),
+        })
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct DirectoryCursor {
+    directory: fs::File,
+    path: PathBuf,
+}
+
+#[cfg(unix)]
+impl DirectoryCursor {
+    fn create_new_file(&self, name: &OsStr) -> io::Result<(fs::File, Option<PathAnchor>)> {
+        let descriptor = rustix::fs::openat(
+            &self.directory,
+            name,
+            rustix::fs::OFlags::WRONLY
+                | rustix::fs::OFlags::CREATE
+                | rustix::fs::OFlags::EXCL
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::from_raw_mode(0o666),
+        )?;
+        let file = fs::File::from(descriptor);
+        let anchor = PathAnchor {
+            parent: self.directory.try_clone()?,
+            name: name.to_os_string(),
+        };
+        Ok((file, Some(anchor)))
+    }
+}
+
+#[cfg(not(unix))]
+#[derive(Debug)]
+struct PinnedRoot {
+    directory: fs::File,
+    identity: Option<EntryIdentity>,
+    path: PathBuf,
+}
+
+#[cfg(not(unix))]
+impl PinnedRoot {
+    fn open(path: &Path) -> io::Result<Self> {
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "project root is not a real directory",
+            ));
+        }
+        let directory = open_directory_path(path)?;
+        let identity = entry_identity(&directory.metadata()?);
+        let root = Self {
+            directory,
+            identity,
+            path: path.to_path_buf(),
+        };
+        root.validate()?;
+        Ok(root)
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        let metadata = fs::symlink_metadata(&self.path)?;
+        if !metadata.file_type().is_dir()
+            || self.identity.is_none()
+            || entry_identity(&metadata) != self.identity
+            || entry_identity(&self.directory.metadata()?) != self.identity
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "project root identity changed while applying the write plan",
+            ));
+        }
+        Ok(())
+    }
+
+    fn cursor(&self) -> io::Result<DirectoryCursor> {
+        self.validate()?;
+        Ok(DirectoryCursor {
+            root: self.directory.try_clone()?,
+            root_identity: self.identity,
+            root_path: self.path.clone(),
+            path: self.path.clone(),
+        })
+    }
+}
+
+#[cfg(not(unix))]
+#[derive(Debug)]
+struct DirectoryCursor {
+    root: fs::File,
+    root_identity: Option<EntryIdentity>,
+    root_path: PathBuf,
+    path: PathBuf,
+}
+
+#[cfg(not(unix))]
+impl DirectoryCursor {
+    fn validate_root(&self) -> io::Result<()> {
+        let metadata = fs::symlink_metadata(&self.root_path)?;
+        if !metadata.file_type().is_dir()
+            || self.root_identity.is_none()
+            || entry_identity(&metadata) != self.root_identity
+            || entry_identity(&self.root.metadata()?) != self.root_identity
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "project root identity changed while applying the write plan",
+            ));
+        }
+        Ok(())
+    }
+
+    fn create_new_file(&self, name: &OsStr) -> io::Result<(fs::File, Option<PathAnchor>)> {
+        self.validate_root()?;
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(self.path.join(name))?;
+        self.validate_root()?;
+        Ok((file, None))
+    }
+}
+
+#[cfg(unix)]
 fn ensure_relative_directories(
-    root: &Path,
+    root: &PinnedRoot,
     relative: &Path,
     journal: &mut CreationJournal,
-) -> Result<(), OperationFailure> {
-    let mut current = root.to_path_buf();
+) -> Result<DirectoryCursor, OperationFailure> {
+    let mut current = root.cursor().map_err(|error| OperationFailure {
+        stage: ApplyStage::ValidateRoot,
+        path: root.path.clone(),
+        error,
+    })?;
     for component in relative.components() {
         let std::path::Component::Normal(segment) = component else {
-            return Err(OperationFailure {
-                stage: ApplyStage::CreateDirectory,
-                path: root.join(relative),
-                error: io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "planned parent is not a normalized relative path",
-                ),
-            });
+            return Err(invalid_planned_parent(&root.path, relative));
         };
-        current.push(segment);
-        match fs::symlink_metadata(&current) {
-            Ok(metadata) => require_real_directory(&current, &metadata)?,
+        let path = current.path.join(segment);
+        match open_directory_at(&current.directory, segment) {
+            Ok(directory) => current = DirectoryCursor { directory, path },
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                create_directory_if_missing(&current, journal)?;
+                let created = match create_directory_at(&current.directory, segment) {
+                    Ok(()) => true,
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
+                    Err(error) => {
+                        return Err(OperationFailure {
+                            stage: ApplyStage::CreateDirectory,
+                            path,
+                            error,
+                        });
+                    }
+                };
+                let directory =
+                    open_directory_at(&current.directory, segment).map_err(|error| {
+                        OperationFailure {
+                            stage: ApplyStage::CreateDirectory,
+                            path: path.clone(),
+                            error,
+                        }
+                    })?;
+                if created {
+                    let metadata = directory.metadata().map_err(|error| OperationFailure {
+                        stage: ApplyStage::RecordOwnership,
+                        path: path.clone(),
+                        error,
+                    })?;
+                    journal.directories.push(JournalEntry::directory(
+                        path.clone(),
+                        &metadata,
+                        Some(PathAnchor {
+                            parent: current.directory.try_clone().map_err(|error| {
+                                OperationFailure {
+                                    stage: ApplyStage::RecordOwnership,
+                                    path: path.clone(),
+                                    error,
+                                }
+                            })?,
+                            name: segment.to_os_string(),
+                        }),
+                    ));
+                }
+                current = DirectoryCursor { directory, path };
             }
             Err(error) => {
                 return Err(OperationFailure {
                     stage: ApplyStage::CreateDirectory,
-                    path: current,
+                    path,
                     error,
                 });
             }
         }
     }
-    Ok(())
+    Ok(current)
+}
+
+#[cfg(not(unix))]
+fn ensure_relative_directories(
+    root: &PinnedRoot,
+    relative: &Path,
+    journal: &mut CreationJournal,
+) -> Result<DirectoryCursor, OperationFailure> {
+    let mut current = root.cursor().map_err(|error| OperationFailure {
+        stage: ApplyStage::ValidateRoot,
+        path: root.path.clone(),
+        error,
+    })?;
+    for component in relative.components() {
+        let std::path::Component::Normal(segment) = component else {
+            return Err(invalid_planned_parent(&root.path, relative));
+        };
+        current.validate_root().map_err(|error| OperationFailure {
+            stage: ApplyStage::ValidateRoot,
+            path: root.path.clone(),
+            error,
+        })?;
+        current.path.push(segment);
+        match fs::symlink_metadata(&current.path) {
+            Ok(metadata) => require_real_directory(&current.path, &metadata)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                create_directory_if_missing(&current.path, journal)?;
+            }
+            Err(error) => {
+                return Err(OperationFailure {
+                    stage: ApplyStage::CreateDirectory,
+                    path: current.path,
+                    error,
+                });
+            }
+        }
+    }
+    Ok(current)
+}
+
+fn invalid_planned_parent(root: &Path, relative: &Path) -> OperationFailure {
+    OperationFailure {
+        stage: ApplyStage::CreateDirectory,
+        path: root.join(relative),
+        error: io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "planned parent is not a normalized relative path",
+        ),
+    }
 }
 
 fn create_directory_if_missing(
@@ -464,6 +742,181 @@ fn require_real_directory(
     }
 }
 
+#[cfg(unix)]
+fn open_directory_path(path: &Path) -> io::Result<fs::File> {
+    let descriptor = rustix::fs::openat(
+        rustix::fs::CWD,
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?;
+    Ok(fs::File::from(descriptor))
+}
+
+#[cfg(windows)]
+fn open_directory_path(path: &Path) -> io::Result<fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_directory_path(path: &Path) -> io::Result<fs::File> {
+    fs::File::open(path)
+}
+
+#[cfg(unix)]
+fn open_directory_at(parent: &fs::File, name: &OsStr) -> io::Result<fs::File> {
+    let descriptor = rustix::fs::openat(
+        parent,
+        name,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?;
+    Ok(fs::File::from(descriptor))
+}
+
+#[cfg(unix)]
+fn create_directory_at(parent: &fs::File, name: &OsStr) -> io::Result<()> {
+    Ok(rustix::fs::mkdirat(
+        parent,
+        name,
+        rustix::fs::Mode::from_raw_mode(0o777),
+    )?)
+}
+
+#[cfg(unix)]
+fn create_quarantine_at(parent: &fs::File) -> io::Result<(OsString, fs::File)> {
+    loop {
+        let name = quarantine_name();
+        match rustix::fs::mkdirat(parent, &name, rustix::fs::Mode::from_raw_mode(0o700)) {
+            Ok(()) => {
+                return open_directory_at(parent, &name).map(|directory| (name, directory));
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+#[cfg(unix)]
+fn rename_at(
+    from_parent: &fs::File,
+    from: &OsStr,
+    to_parent: &fs::File,
+    to: &OsStr,
+) -> io::Result<()> {
+    Ok(rustix::fs::renameat(from_parent, from, to_parent, to)?)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
+fn rename_noreplace_at(
+    from_parent: &fs::File,
+    from: &OsStr,
+    to_parent: &fs::File,
+    to: &OsStr,
+) -> io::Result<()> {
+    Ok(rustix::fs::renameat_with(
+        from_parent,
+        from,
+        to_parent,
+        to,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )?)
+}
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_os = "macos"))
+))]
+fn rename_noreplace_at(
+    _from_parent: &fs::File,
+    _from: &OsStr,
+    _to_parent: &fs::File,
+    _to: &OsStr,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic no-replace restore is unavailable on this Unix platform",
+    ))
+}
+
+#[cfg(unix)]
+fn identity_at(parent: &fs::File, name: &OsStr) -> io::Result<EntryIdentity> {
+    let metadata = rustix::fs::statat(parent, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)?;
+    Ok(EntryIdentity {
+        volume: stat_identity_part(metadata.st_dev)?,
+        file: stat_identity_part(metadata.st_ino)?,
+    })
+}
+
+#[cfg(unix)]
+fn stat_identity_part<T>(value: T) -> io::Result<u64>
+where
+    T: TryInto<u64>,
+    T::Error: fmt::Display,
+{
+    value.try_into().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("filesystem identity does not fit u64: {error}"),
+        )
+    })
+}
+
+#[cfg(unix)]
+fn unlink_at(parent: &fs::File, name: &OsStr, kind: CreatedPathKind) -> io::Result<()> {
+    let flags = match kind {
+        CreatedPathKind::File => rustix::fs::AtFlags::empty(),
+        CreatedPathKind::Directory => rustix::fs::AtFlags::REMOVEDIR,
+    };
+    Ok(rustix::fs::unlinkat(parent, name, flags)?)
+}
+
+#[cfg(unix)]
+fn remove_quarantine_at(parent: &fs::File, name: &OsStr) {
+    let _ = unlink_at(parent, name, CreatedPathKind::Directory);
+}
+
+#[derive(Debug)]
+struct PathAnchor {
+    #[cfg(unix)]
+    parent: fs::File,
+    #[cfg(unix)]
+    name: OsString,
+}
+
+#[cfg(unix)]
+fn path_anchor(path: &Path) -> io::Result<PathAnchor> {
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "created path has no parent"))?;
+    let name = path.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "created path has no file name")
+    })?;
+    Ok(PathAnchor {
+        parent: open_directory_path(parent)?,
+        name: name.to_os_string(),
+    })
+}
+
+#[cfg(not(unix))]
+fn path_anchor(_path: &Path) -> io::Result<PathAnchor> {
+    Ok(PathAnchor {})
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EntryIdentity {
     volume: u64,
@@ -500,30 +953,39 @@ struct JournalEntry {
     path: PathBuf,
     identity: Option<EntryIdentity>,
     file: Option<fs::File>,
+    anchor: Option<PathAnchor>,
 }
 
 impl JournalEntry {
-    fn directory(path: PathBuf, metadata: &fs::Metadata) -> Self {
+    fn directory(path: PathBuf, metadata: &fs::Metadata, anchor: Option<PathAnchor>) -> Self {
         Self {
             path,
             identity: entry_identity(metadata),
             file: None,
+            anchor,
         }
     }
 
-    fn file(path: PathBuf, file: fs::File, identity: Option<EntryIdentity>) -> Self {
+    fn file(
+        path: PathBuf,
+        file: fs::File,
+        identity: Option<EntryIdentity>,
+        anchor: Option<PathAnchor>,
+    ) -> Self {
         Self {
             path,
             identity,
             file: Some(file),
+            anchor,
         }
     }
 
-    fn directory_without_identity(path: PathBuf) -> Self {
+    fn directory_without_identity(path: PathBuf, anchor: Option<PathAnchor>) -> Self {
         Self {
             path,
             identity: None,
             file: None,
+            anchor,
         }
     }
 
@@ -539,11 +1001,26 @@ fn record_created_directory(
     directory: &Path,
     journal: &mut CreationJournal,
 ) -> Result<(), OperationFailure> {
+    let anchor = path_anchor(directory).map_err(|error| {
+        journal
+            .directories
+            .push(JournalEntry::directory_without_identity(
+                directory.to_path_buf(),
+                None,
+            ));
+        OperationFailure {
+            stage: ApplyStage::RecordOwnership,
+            path: directory.to_path_buf(),
+            error,
+        }
+    })?;
     match fs::symlink_metadata(directory) {
         Ok(metadata) => {
-            journal
-                .directories
-                .push(JournalEntry::directory(directory.to_path_buf(), &metadata));
+            journal.directories.push(JournalEntry::directory(
+                directory.to_path_buf(),
+                &metadata,
+                Some(anchor),
+            ));
             Ok(())
         }
         Err(error) => {
@@ -551,6 +1028,7 @@ fn record_created_directory(
                 .directories
                 .push(JournalEntry::directory_without_identity(
                     directory.to_path_buf(),
+                    Some(anchor),
                 ));
             Err(OperationFailure {
                 stage: ApplyStage::RecordOwnership,
@@ -601,19 +1079,6 @@ fn rollback_entry(
     kind: CreatedPathKind,
     residuals: &mut Vec<RollbackResidual>,
 ) {
-    let metadata = match fs::symlink_metadata(&entry.path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
-        Err(error) => {
-            residuals.push(RollbackResidual {
-                path: entry.path,
-                kind,
-                error,
-            });
-            return;
-        }
-    };
-
     let expected_identity = match entry.expected_identity() {
         Ok(identity) => identity,
         Err(error) => {
@@ -625,24 +1090,64 @@ fn rollback_entry(
             return;
         }
     };
-    let current_identity = entry_identity(&metadata);
-    if expected_identity.is_none() || current_identity != expected_identity {
+    if expected_identity.is_none() {
         residuals.push(RollbackResidual {
             path: entry.path,
             kind,
             error: io::Error::new(
                 io::ErrorKind::AlreadyExists,
-                "path identity changed after creation; preserved concurrent replacement",
+                "created path has no stable identity; preserved it during rollback",
             ),
         });
         return;
     }
 
-    let removal = match kind {
-        CreatedPathKind::File => fs::remove_file(&entry.path),
-        CreatedPathKind::Directory => fs::remove_dir(&entry.path),
+    #[cfg(unix)]
+    if entry.anchor.is_some() {
+        rollback_anchored_unix(entry, kind, expected_identity, residuals);
+        return;
+    }
+
+    rollback_quarantined_path(entry, kind, expected_identity, residuals);
+}
+
+fn quarantine_name() -> OsString {
+    OsString::from(format!(
+        ".spock-rollback-{}-{}",
+        std::process::id(),
+        NEXT_QUARANTINE.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+#[cfg(unix)]
+fn rollback_anchored_unix(
+    entry: JournalEntry,
+    kind: CreatedPathKind,
+    expected_identity: Option<EntryIdentity>,
+    residuals: &mut Vec<RollbackResidual>,
+) {
+    let anchor = entry.anchor.as_ref().expect("checked anchored entry");
+    let (quarantine_name, quarantine) = match create_quarantine_at(&anchor.parent) {
+        Ok(quarantine) => quarantine,
+        Err(error) => {
+            residuals.push(RollbackResidual {
+                path: entry.path,
+                kind,
+                error,
+            });
+            return;
+        }
     };
-    if let Err(error) = removal {
+    let quarantine_entry = OsStr::new("entry");
+    let quarantine_path = entry
+        .path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(&quarantine_name)
+        .join(quarantine_entry);
+
+    if let Err(error) = rename_at(&anchor.parent, &anchor.name, &quarantine, quarantine_entry) {
+        remove_quarantine_at(&anchor.parent, &quarantine_name);
         if error.kind() != io::ErrorKind::NotFound {
             residuals.push(RollbackResidual {
                 path: entry.path,
@@ -650,7 +1155,167 @@ fn rollback_entry(
                 error,
             });
         }
+        return;
     }
+
+    let current_identity = identity_at(&quarantine, quarantine_entry);
+    if current_identity
+        .as_ref()
+        .is_ok_and(|identity| Some(*identity) == expected_identity)
+    {
+        let removal = unlink_at(&quarantine, quarantine_entry, kind);
+        if let Err(error) = removal {
+            match rename_noreplace_at(
+                &quarantine,
+                quarantine_entry,
+                &anchor.parent,
+                &anchor.name,
+            ) {
+                Ok(()) => {
+                    remove_quarantine_at(&anchor.parent, &quarantine_name);
+                    residuals.push(RollbackResidual {
+                        path: entry.path,
+                        kind,
+                        error,
+                    });
+                }
+                Err(restore_error) => residuals.push(RollbackResidual {
+                    path: quarantine_path,
+                    kind,
+                    error: io::Error::new(
+                        restore_error.kind(),
+                        format!(
+                            "could not remove invocation-owned path or restore it from rollback quarantine ({error}; {restore_error})"
+                        ),
+                    ),
+                }),
+            }
+            return;
+        }
+        remove_quarantine_at(&anchor.parent, &quarantine_name);
+        return;
+    }
+
+    let identity_error = current_identity.err();
+    match rename_noreplace_at(&quarantine, quarantine_entry, &anchor.parent, &anchor.name) {
+        Ok(()) => {
+            remove_quarantine_at(&anchor.parent, &quarantine_name);
+            residuals.push(RollbackResidual {
+                path: entry.path,
+                kind,
+                error: identity_error.unwrap_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "path identity changed after creation; restored concurrent replacement",
+                    )
+                }),
+            });
+        }
+        Err(restore_error) => {
+            residuals.push(RollbackResidual {
+                path: quarantine_path,
+                kind,
+                error: io::Error::new(
+                    restore_error.kind(),
+                    format!(
+                        "path identity changed; preserved replacement in rollback quarantine ({restore_error})"
+                    ),
+                ),
+            });
+        }
+    }
+}
+
+fn rollback_quarantined_path(
+    entry: JournalEntry,
+    kind: CreatedPathKind,
+    expected_identity: Option<EntryIdentity>,
+    residuals: &mut Vec<RollbackResidual>,
+) {
+    let parent = entry.path.parent().unwrap_or_else(|| Path::new("."));
+    let (quarantine_path, quarantined_entry) = loop {
+        let quarantine_path = parent.join(quarantine_name());
+        match fs::create_dir(&quarantine_path) {
+            Ok(()) => break (quarantine_path.clone(), quarantine_path.join("entry")),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                residuals.push(RollbackResidual {
+                    path: entry.path,
+                    kind,
+                    error,
+                });
+                return;
+            }
+        }
+    };
+
+    if let Err(error) = fs::rename(&entry.path, &quarantined_entry) {
+        let _ = fs::remove_dir(&quarantine_path);
+        if error.kind() != io::ErrorKind::NotFound {
+            residuals.push(RollbackResidual {
+                path: entry.path,
+                kind,
+                error,
+            });
+        }
+        return;
+    }
+
+    let current_identity = fs::symlink_metadata(&quarantined_entry)
+        .ok()
+        .and_then(|metadata| entry_identity(&metadata));
+    if current_identity == expected_identity {
+        let removal = match kind {
+            CreatedPathKind::File => fs::remove_file(&quarantined_entry),
+            CreatedPathKind::Directory => fs::remove_dir(&quarantined_entry),
+        };
+        if let Err(error) = removal {
+            #[cfg(windows)]
+            if fs::rename(&quarantined_entry, &entry.path).is_ok() {
+                let _ = fs::remove_dir(&quarantine_path);
+                residuals.push(RollbackResidual {
+                    path: entry.path,
+                    kind,
+                    error,
+                });
+                return;
+            }
+            residuals.push(RollbackResidual {
+                path: quarantined_entry,
+                kind,
+                error,
+            });
+            return;
+        }
+        let _ = fs::remove_dir(quarantine_path);
+        return;
+    }
+
+    // `rename` does not replace a destination on Windows. Other non-Unix
+    // targets are intentionally conservative: if restoration cannot be proven
+    // exclusive, leave the replacement in quarantine and report its location.
+    #[cfg(windows)]
+    if fs::rename(&quarantined_entry, &entry.path).is_ok() {
+        let _ = fs::remove_dir(&quarantine_path);
+        residuals.push(RollbackResidual {
+            path: entry.path,
+            kind,
+            error: io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "path identity changed after creation; restored concurrent replacement",
+            ),
+        });
+        return;
+    }
+
+    residuals.push(RollbackResidual {
+        path: quarantined_entry,
+        kind,
+        error: io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "path identity changed; preserved replacement in rollback quarantine",
+        ),
+    });
 }
 
 #[cfg(test)]
@@ -815,6 +1480,36 @@ mod tests {
         assert_eq!(residual.path(), plan.root.join("backend"));
         assert_eq!(fs::read_to_string(concurrent_file).unwrap(), "keep");
         assert!(!plan.root.join("backend/app.spock").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_remain_confined_to_the_pinned_root_after_path_replacement() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = TestDirectory::new();
+        let temporary_root = fs::canonicalize(temporary.path()).unwrap();
+        let project = temporary_root.join("project");
+        let moved_project = temporary_root.join("moved-project");
+        let replacement_target = temporary_root.join("replacement-target");
+        fs::create_dir(&project).unwrap();
+        fs::create_dir(&replacement_target).unwrap();
+        let inventory = ProjectInventory::scan(&project).unwrap();
+        let plan = adoption_plan(&inventory, Some("demo")).unwrap();
+        let error = apply_write_plan_inner(&plan, RootPolicy::ExistingAdoptionRoot, |written| {
+            if written.ends_with(MANIFEST_FILE) {
+                fs::rename(&project, &moved_project).unwrap();
+                symlink(&replacement_target, &project).unwrap();
+            }
+        })
+        .unwrap_err();
+
+        assert_eq!(error.stage(), ApplyStage::ValidateRoot);
+        assert!(error.rollback().is_complete());
+        assert!(!moved_project.join("backend/app.spock").exists());
+        assert!(!moved_project.join(MANIFEST_FILE).exists());
+        assert!(!moved_project.join("backend").exists());
+        assert!(fs::read_dir(&replacement_target).unwrap().next().is_none());
     }
 
     #[test]
