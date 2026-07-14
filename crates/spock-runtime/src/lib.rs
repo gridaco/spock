@@ -9,6 +9,7 @@ pub mod engine;
 pub mod error;
 pub mod filter;
 pub mod func;
+pub mod generation;
 pub mod graphql;
 pub mod http;
 pub mod storage;

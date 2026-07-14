@@ -1,0 +1,2 @@
+# Intentionally empty. Add deterministic named slices here as the client
+# begins consuming backend projections.

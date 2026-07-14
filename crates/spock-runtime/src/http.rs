@@ -49,7 +49,12 @@ pub enum StartupError {
     ReservedFilterColumn { table: String, column: String },
 }
 
-pub fn router(app: Arc<App>) -> Result<Router, StartupError> {
+/// Build only the authority-owned routes.
+///
+/// This composition boundary deliberately installs neither a global fallback
+/// nor CORS. An embedding framework owns those application-wide policies and
+/// can merge this router without letting Spock swallow sibling routes.
+pub fn authority_router(app: Arc<App>) -> Result<Router, StartupError> {
     // `/rest/v1/rpc/{fn}` shadows `GET /rest/v1/rpc/{id}` for a table
     // literally named `rpc` — collisions fail startup, never requests
     if app.contract.table("rpc").is_some() {
@@ -68,16 +73,8 @@ pub fn router(app: Arc<App>) -> Result<Router, StartupError> {
             }
         }
     }
-    let schema = graphql::schema(app.clone())?;
-    let gql = Router::new()
-        .route("/graphql/v1", get(graphiql).post(graphql_post))
-        .with_state(GqlState {
-            schema,
-            app: app.clone(),
-        });
     let mut base = Router::new()
         .route("/~contract", get(contract))
-        .route("/~health", get(health))
         .route("/~studio", get(studio_index))
         .route("/~studio/", get(studio_index))
         .route("/~studio/{*path}", get(studio_asset))
@@ -111,30 +108,54 @@ pub fn router(app: Arc<App>) -> Result<Router, StartupError> {
             );
     }
 
+    // GraphQL requires at least one operation-root field. Tables derive Query
+    // fields and functions derive a Query or Mutation field; records alone
+    // are only supporting output types. An empty/comment-only backend is a
+    // valid authority generation, so do not try to derive an invalid empty
+    // schema or advertise GraphiQL for it. The embedding host owns any
+    // structured fallback for this deliberately unclaimed path.
+    if app.contract.tables.is_empty() && app.contract.fns.is_empty() {
+        return Ok(base.with_state(app));
+    }
+
+    let schema = graphql::schema(app.clone())?;
+    let gql = Router::new()
+        .route("/graphql/v1", get(graphiql).post(graphql_post))
+        .with_state(GqlState {
+            schema,
+            app: app.clone(),
+        });
+
+    Ok(base.with_state(app).merge(gql))
+}
+
+/// Standalone v0 router, preserving the historical global JSON 404 and
+/// permissive local-development CORS behavior.
+pub fn router(app: Arc<App>) -> Result<Router, StartupError> {
     // Permissive CORS across the whole surface, preflight included: v0 is the
     // open dev tier on 127.0.0.1 (RFD 0014 — the actor header is deliberately
     // forgeable), so a browser client on another local origin (e.g. a Uhura
     // shell) may call `/graphql/v1` and `/rest/v1/rpc/{fn}` with `content-type`
     // and `x-spock-actor` headers. Unconditional by decision, like the reads.
-    Ok(base
+    Ok(authority_router(app)?
+        .route("/~health", get(health))
         .fallback(not_found)
-        .with_state(app)
-        .merge(gql)
         .layer(CorsLayer::permissive()))
 }
 
 /// Serve the app on an already-bound listener until the task is stopped.
 /// A GraphQL schema-derivation failure (§8.2 naming laws) aborts startup.
 pub async fn serve(app: Arc<App>, listener: tokio::net::TcpListener) -> std::io::Result<()> {
-    // The runtime owns background reconciliation: a storage contract sweeps its
-    // orphaned objects for the life of the server (RFD 0018 §1.6), so every
-    // embedder gets it — not just the CLI. The task is aborted when the server's
-    // runtime is dropped.
-    if crate::storage::storage_active(&app.contract) {
-        tokio::spawn(crate::storage::sweep_loop(app.clone()));
-    }
-    let router = router(app).map_err(std::io::Error::other)?;
-    axum::serve(listener, router).await
+    // Preserve standalone behavior through the explicit generation lifecycle:
+    // the guard owns the sweep and aborts it if this serve future is dropped.
+    let generation = crate::generation::BackendGeneration::from_app(app);
+    let lifecycle = generation
+        .start_background_tasks()
+        .map_err(std::io::Error::other)?;
+    let router = router(generation.app()).map_err(std::io::Error::other)?;
+    let result = axum::serve(listener, router).await;
+    lifecycle.shutdown().await;
+    result
 }
 
 /// The GraphQL route's state: the derived schema plus the app, so

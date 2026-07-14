@@ -1,0 +1,14 @@
+page
+
+<view class="welcome">
+  <text class="eyebrow">SPOCK + UHURA</text>
+  <text class="title">Your app is running.</text>
+  <text class="body">Edit client/app/home/page.uhura to begin.</text>
+</view>
+
+<style>
+  .welcome { display: flex; flex-direction: column; gap: 12px; padding: 48px; }
+  .eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; }
+  .title { font-size: 32px; font-weight: 700; }
+  .body { font-size: 16px; }
+</style>

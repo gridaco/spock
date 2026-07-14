@@ -4,10 +4,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use spock_lang::ir::Contract;
+use spock_cli::{FileProgram, GenerationTarget, StandaloneRun};
 
 #[derive(Parser)]
 #[command(name = "spock", version, about = "The Spock v0 toolchain")]
@@ -61,43 +60,25 @@ enum GenTarget {
 fn main() -> ExitCode {
     match Cli::parse().command {
         Command::Check { file } => {
-            let Some(contract) = load(&file) else {
+            let Some(program) = load_or_report(&file) else {
                 return ExitCode::FAILURE;
             };
-            // The full load proof (RFD 0013): materialize the schema in
-            // memory, validate every fn body and inlined check, prove
-            // defaults against their checks, and replay the seed — so
-            // anything `spock run` would reject at load surfaces here,
-            // without starting a server.
-            if let Err(e) = spock_runtime::engine::open(&contract, None, Some(&source_dir(&file))) {
-                eprintln!("error: {e}");
-                return ExitCode::FAILURE;
+            match spock_cli::full_load_check(program.contract(), program.source_dir()) {
+                Ok(summary) => {
+                    println!("{summary}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::FAILURE
+                }
             }
-            // every v0 fn statement is an SQL escape — the unchecked count
-            // is the ledger (RFD 0011 §4), trending to zero as native
-            // bodies arrive
-            let fns = if contract.fns.is_empty() {
-                "0 fn(s)".to_string()
-            } else {
-                format!(
-                    "{} fn(s) ({} unchecked escapes)",
-                    contract.fns.len(),
-                    contract.fns.iter().map(|f| f.sql.len()).sum::<usize>()
-                )
-            };
-            println!(
-                "ok: {} table(s), {} record(s), {fns}, {} seed row(s)",
-                contract.tables.len(),
-                contract.records.len(),
-                contract.seed.len()
-            );
-            ExitCode::SUCCESS
         }
         Command::Build { file, out } => {
-            let Some(contract) = load(&file) else {
+            let Some(program) = load_or_report(&file) else {
                 return ExitCode::FAILURE;
             };
-            let json = serde_json::to_string_pretty(&contract).expect("contract serializes");
+            let json = spock_cli::build_artifact(program.contract());
             match out {
                 None => println!("{json}"),
                 Some(path) => {
@@ -111,10 +92,16 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Run { file, port, db } => {
-            let Some(contract) = load(&file) else {
+            let Some(program) = load_or_report(&file) else {
                 return ExitCode::FAILURE;
             };
-            match run(contract, port, db, source_dir(&file)) {
+            let base_dir = program.source_dir();
+            let run = StandaloneRun::construct(program.into_contract(), db.as_deref(), base_dir);
+            match run.and_then(|run| {
+                let summary = run.summary();
+                println!("{summary}");
+                run.serve_until_ctrl_c(port, move || print_listening(port, summary.storage))
+            }) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -128,14 +115,17 @@ fn main() -> ExitCode {
                     (file.clone(), out.clone())
                 }
             };
-            let Some(contract) = load(&file) else {
+            let Some(program) = load_or_report(&file) else {
                 return ExitCode::FAILURE;
             };
             let artifact = match target {
                 GenTarget::Types { .. } => {
-                    spock_lang::typescript::typescript(&contract).map_err(anyhow::Error::from)
+                    spock_cli::generate_artifact(program.contract(), GenerationTarget::Types)
                 }
-                GenTarget::GraphqlSchema { .. } => graphql_sdl(contract),
+                GenTarget::GraphqlSchema { .. } => spock_cli::generate_artifact(
+                    program.contract(),
+                    GenerationTarget::GraphqlSchema,
+                ),
             };
             match artifact {
                 Ok(content) => emit(out, content),
@@ -146,19 +136,6 @@ fn main() -> ExitCode {
             }
         }
     }
-}
-
-/// The SDL of the schema the runtime would serve — derived through the
-/// same builder as `run`, so it cannot drift. The in-memory engine exists
-/// only because the builder wants a full `App`; no resolver ever runs,
-/// and the seed is dropped first: the SDL is a pure function of the
-/// tables, so a data problem (say, a seed unique conflict) must not gate
-/// a data-independent artifact.
-fn graphql_sdl(mut contract: Contract) -> anyhow::Result<String> {
-    contract.seed.clear();
-    let conn = spock_runtime::engine::open(&contract, None, None)?;
-    let app = Arc::new(spock_runtime::App::new(contract, conn));
-    Ok(spock_runtime::graphql::schema(app)?.sdl())
 }
 
 /// Print to stdout, or write to `-o FILE`.
@@ -179,71 +156,25 @@ fn emit(out: Option<PathBuf>, content: String) -> ExitCode {
     }
 }
 
-/// The directory a `.spock` file lives in — the root for `file("...")` seed
-/// assets (RFD 0018). Empty (cwd-relative) when the path has no parent.
-fn source_dir(file: &Path) -> PathBuf {
-    file.parent().map(|p| p.to_path_buf()).unwrap_or_default()
-}
-
-/// Read, compile, and (on failure) render every diagnostic.
-fn load(path: &PathBuf) -> Option<Contract> {
-    let source = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("error: could not read {}: {e}", path.display());
-            return None;
-        }
-    };
-    match spock_lang::compile(&source) {
-        Ok(contract) => Some(contract),
-        Err(diags) => {
-            for diag in &diags {
-                eprintln!("{}", diag.render(&source, &path.display().to_string()));
-            }
-            eprintln!(
-                "error: {} diagnostic(s), contract not produced",
-                diags.len()
-            );
+/// Binary-only presentation adapter for the library's structured load error.
+fn load_or_report(path: &Path) -> Option<FileProgram> {
+    match FileProgram::load(path) {
+        Ok(program) => Some(program),
+        Err(error) => {
+            eprintln!("{error}");
             None
         }
     }
 }
 
-fn run(
-    contract: Contract,
-    port: u16,
-    db: Option<PathBuf>,
-    base_dir: PathBuf,
-) -> anyhow::Result<()> {
-    let conn = spock_runtime::engine::open(&contract, db.as_deref(), Some(base_dir.as_path()))?;
-    println!(
-        "spock v0 — contract loaded: {} table(s), {} fn(s), {} seed row(s) replayed",
-        contract.tables.len(),
-        contract.fns.len(),
-        contract.seed.len()
-    );
-
-    let app = Arc::new(spock_runtime::App::new(contract, conn));
-    let storage = spock_runtime::storage::storage_active(&app.contract);
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(async move {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-        println!("listening on http://127.0.0.1:{port}");
-        println!("  GET  /~studio             the developer console — browse, impersonate, run");
-        println!("  GET  /~contract           the contract, as data");
-        println!("  GET  /rest/v1/{{table}}     open reads (identity view)");
-        println!("  POST /rest/v1/rpc/{{fn}}    call a declared fn");
-        println!("  POST /graphql/v1          GraphQL reads + writes (GraphiQL in the browser)");
-        if storage {
-            println!("  *    /storage/v1/object    upload + serve files (signed URLs)");
-        }
-        // `serve` owns the in-process orphan sweep for a storage contract
-        // (RFD 0018 §1.6); the binary only decides when to stop.
-        tokio::select! {
-            result = spock_runtime::http::serve(app.clone(), listener) => result?,
-            _ = tokio::signal::ctrl_c() => {}
-        }
-        Ok::<(), anyhow::Error>(())
-    })?;
-    Ok(())
+fn print_listening(port: u16, storage: bool) {
+    println!("listening on http://127.0.0.1:{port}");
+    println!("  GET  /~studio             the developer console — browse, impersonate, run");
+    println!("  GET  /~contract           the contract, as data");
+    println!("  GET  /rest/v1/{{table}}     open reads (identity view)");
+    println!("  POST /rest/v1/rpc/{{fn}}    call a declared fn");
+    println!("  POST /graphql/v1          GraphQL reads + writes (GraphiQL in the browser)");
+    if storage {
+        println!("  *    /storage/v1/object    upload + serve files (signed URLs)");
+    }
 }

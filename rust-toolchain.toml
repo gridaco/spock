@@ -1,0 +1,5 @@
+[toolchain]
+# Exact framework build pin. This matches the Uhura submodule and is not a
+# floating `stable` alias (RFD 0022 section 12.4).
+channel = "1.92.0"
+components = ["rustfmt", "clippy"]
