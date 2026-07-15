@@ -15,8 +15,18 @@ pub struct File {
     pub doc: Option<String>,
     pub tables: Vec<TableDecl>,
     pub records: Vec<RecordDecl>,
+    pub errors: Vec<ErrorDecl>,
     pub fns: Vec<FnDecl>,
     pub seeds: Vec<SeedBlock>,
+}
+
+/// `error name` — a contract-global authored product-error symbol.
+#[derive(Clone, Debug)]
+pub struct ErrorDecl {
+    /// `///` outer doc comments preceding the declaration.
+    pub doc: Option<String>,
+    pub name: Ident,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -172,7 +182,7 @@ pub struct FnDecl {
     pub mutates: bool,
     pub params: Vec<ParamDecl>,
     pub ret: RetDecl,
-    /// Declared error codes (the `! a | b` clause), possibly empty.
+    /// Error codes named by the `! a | b` clause, possibly empty.
     pub errors: Vec<Ident>,
     /// The escape body: one or more `unchecked sql(...)` statements in
     /// execution order; the last produces the return value (§7.4).

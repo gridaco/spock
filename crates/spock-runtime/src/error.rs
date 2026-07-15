@@ -4,10 +4,14 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
-use spock_lang::ir::{DerivedError, ErrorKind};
+use spock_lang::ir::{
+    DerivedError, ErrorKind, BAD_REQUEST_CODE, CONFLICT_CODE, INTERNAL_CODE, NOT_FOUND_CODE,
+    TYPE_MISMATCH_CODE, UNAUTHORIZED_CODE, UNKNOWN_FIELD_CODE,
+};
 
-/// An error as it leaves the runtime: derived (schema-owned) or reserved
-/// (protocol-owned). Renders as the §8.1 envelope.
+/// An error as it leaves the runtime: derived (schema-owned), reserved
+/// (protocol-owned), or an authored product refusal. Renders as the §8.1
+/// envelope.
 #[derive(Clone, Debug)]
 pub struct ApiError {
     pub status: u16,
@@ -33,8 +37,8 @@ impl ApiError {
     pub fn bad_request(message: impl Into<String>) -> Self {
         ApiError {
             status: 400,
-            code: "bad_request".into(),
-            kind: "bad_request",
+            code: BAD_REQUEST_CODE.into(),
+            kind: BAD_REQUEST_CODE,
             table: None,
             fields: vec![],
             message: message.into(),
@@ -44,8 +48,8 @@ impl ApiError {
     pub fn not_found(message: impl Into<String>) -> Self {
         ApiError {
             status: 404,
-            code: "not_found".into(),
-            kind: "not_found",
+            code: NOT_FOUND_CODE.into(),
+            kind: NOT_FOUND_CODE,
             table: None,
             fields: vec![],
             message: message.into(),
@@ -55,8 +59,8 @@ impl ApiError {
     pub fn unknown_field(table: &str, field: &str) -> Self {
         ApiError {
             status: 422,
-            code: "unknown_field".into(),
-            kind: "unknown_field",
+            code: UNKNOWN_FIELD_CODE.into(),
+            kind: UNKNOWN_FIELD_CODE,
             table: Some(table.to_string()),
             fields: vec![field.to_string()],
             message: format!("`{table}` has no field `{field}`"),
@@ -66,8 +70,8 @@ impl ApiError {
     pub fn type_mismatch(table: &str, field: &str, expected: &str) -> Self {
         ApiError {
             status: 422,
-            code: "type_mismatch".into(),
-            kind: "type_mismatch",
+            code: TYPE_MISMATCH_CODE.into(),
+            kind: TYPE_MISMATCH_CODE,
             table: Some(table.to_string()),
             fields: vec![field.to_string()],
             message: format!("`{table}.{field}` expects {expected}"),
@@ -79,8 +83,8 @@ impl ApiError {
     pub fn fn_arg_mismatch(fn_name: &str, param: &str, expected: &str) -> Self {
         ApiError {
             status: 422,
-            code: "type_mismatch".into(),
-            kind: "type_mismatch",
+            code: TYPE_MISMATCH_CODE.into(),
+            kind: TYPE_MISMATCH_CODE,
             table: None,
             fields: vec![param.to_string()],
             message: format!("fn `{fn_name}` argument `{param}` expects {expected}"),
@@ -91,16 +95,16 @@ impl ApiError {
     pub fn fn_unknown_arg(fn_name: &str, arg: &str) -> Self {
         ApiError {
             status: 422,
-            code: "unknown_field".into(),
-            kind: "unknown_field",
+            code: UNKNOWN_FIELD_CODE.into(),
+            kind: UNKNOWN_FIELD_CODE,
             table: None,
             fields: vec![arg.to_string()],
             message: format!("fn `{fn_name}` has no parameter `{arg}`"),
         }
     }
 
-    /// A refusal the fn minted in its `!` clause and raised from the
-    /// body via `spock_refuse` (§7.4, RFD 0012). The conflict family —
+    /// A declared product error the fn lists in its `!` clause and raises
+    /// from the body via `spock_refuse` (§7.4, RFD 0012). The conflict family —
     /// a product rule said no — beside the derived constraint
     /// violations.
     pub fn refused(code: &str, fn_name: &str) -> Self {
@@ -119,8 +123,8 @@ impl ApiError {
     pub fn method_not_allowed(message: impl Into<String>) -> Self {
         ApiError {
             status: 405,
-            code: "bad_request".into(),
-            kind: "bad_request",
+            code: BAD_REQUEST_CODE.into(),
+            kind: BAD_REQUEST_CODE,
             table: None,
             fields: vec![],
             message: message.into(),
@@ -130,8 +134,8 @@ impl ApiError {
     pub fn internal(message: impl Into<String>) -> Self {
         ApiError {
             status: 500,
-            code: "internal".into(),
-            kind: "internal",
+            code: INTERNAL_CODE.into(),
+            kind: INTERNAL_CODE,
             table: None,
             fields: vec![],
             message: message.into(),
@@ -143,8 +147,8 @@ impl ApiError {
     pub fn unauthorized(message: impl Into<String>) -> Self {
         ApiError {
             status: 401,
-            code: "unauthorized".into(),
-            kind: "unauthorized",
+            code: UNAUTHORIZED_CODE.into(),
+            kind: UNAUTHORIZED_CODE,
             table: None,
             fields: vec![],
             message: message.into(),
@@ -156,8 +160,8 @@ impl ApiError {
     pub fn conflict(message: impl Into<String>) -> Self {
         ApiError {
             status: 409,
-            code: "conflict".into(),
-            kind: "conflict",
+            code: CONFLICT_CODE.into(),
+            kind: CONFLICT_CODE,
             table: None,
             fields: vec![],
             message: message.into(),
@@ -197,5 +201,35 @@ impl IntoResponse for ApiError {
             }
         });
         (status, Json(body)).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use spock_lang::ir::RESERVED_CODES;
+
+    #[test]
+    fn fixed_protocol_errors_share_the_language_registry() {
+        let errors = [
+            ApiError::bad_request("x"),
+            ApiError::not_found("x"),
+            ApiError::unknown_field("t", "f"),
+            ApiError::type_mismatch("t", "f", "text"),
+            ApiError::fn_arg_mismatch("f", "p", "text"),
+            ApiError::fn_unknown_arg("f", "p"),
+            ApiError::method_not_allowed("x"),
+            ApiError::internal("x"),
+            ApiError::unauthorized("x"),
+            ApiError::conflict("x"),
+        ];
+
+        for error in errors {
+            assert!(
+                RESERVED_CODES.contains(&error.code.as_str()),
+                "runtime code `{}` is absent from the language registry",
+                error.code
+            );
+        }
     }
 }

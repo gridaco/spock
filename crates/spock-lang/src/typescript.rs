@@ -1,7 +1,7 @@
 //! TypeScript emission (docs/rfd/0010-client-codegen-architecture.md §4).
 //!
 //! The contract as types: per table, the row shape, what insert and update
-//! accept, and the derived error vocabulary as literal unions — plus one
+//! accept, and the derived/product error vocabulary as literal unions — plus one
 //! `contract` map tying them together (the generic parameter a client
 //! takes). A sibling of the SQLite DDL emission: another conformance of
 //! the IR, versioned with the language.
@@ -217,7 +217,7 @@ pub fn typescript(contract: &Contract) -> Result<String, TsGenError> {
         emit_fn_args(&mut out, contract, f);
     }
 
-    out.push_str("\n/** Reserved non-derived codes (docs/spec/v0.md §6.1). */\n");
+    out.push_str("\n/** Reserved protocol codes (docs/spec/v0.md §§6.1, 8.3). */\n");
     out.push_str("export type reserved_error =\n");
     for (i, code) in crate::ir::RESERVED_CODES.iter().enumerate() {
         let end = if i + 1 == crate::ir::RESERVED_CODES.len() {
@@ -228,9 +228,10 @@ pub fn typescript(contract: &Contract) -> Result<String, TsGenError> {
         let _ = writeln!(out, "  | \"{code}\"{end}");
     }
 
-    // refusals minted by fns (§7.4) join the total union — `error_code`
-    // is "everything this contract can produce" (RFD 0010 §4), and the
-    // runtime demonstrably produces these
+    // Product refusals used by fns join the total union — `error_code` is
+    // "everything this contract can produce" (RFD 0010 §4). Keep deriving
+    // the value set from FnDef.refusals for old-contract compatibility;
+    // Contract.errors supplies declaration docs when present.
     let mut refusals: Vec<&str> = contract
         .fns
         .iter()
@@ -239,9 +240,15 @@ pub fn typescript(contract: &Contract) -> Result<String, TsGenError> {
     refusals.sort_unstable();
     refusals.dedup();
     if !refusals.is_empty() {
-        out.push_str("\n/** Refusals minted by fns (docs/spec/v0.md §7.4). */\n");
+        out.push_str("\n/** Explicit product refusals used by fns. */\n");
         out.push_str("export type refusal_code =\n");
         for (i, code) in refusals.iter().enumerate() {
+            let doc = contract
+                .errors
+                .iter()
+                .find(|error| error.code == *code)
+                .and_then(|error| error.doc.as_deref());
+            emit_jsdoc(&mut out, "  ", doc, None);
             let end = if i + 1 == refusals.len() { ";" } else { "" };
             let _ = writeln!(out, "  | \"{code}\"{end}");
         }
@@ -621,6 +628,34 @@ mod tests {
     }
 
     #[test]
+    fn explicit_refusals_carry_declaration_docs() {
+        let source = "/// The account is not visible to this actor.\n\
+                      error account_private\n\
+                      error unused_product_error\n\
+                      table user { key id: uuid = auto\n name: text }\n\
+                      fn find() -> user ! account_private { unchecked sql(\"S\") }";
+        let ts = emit(source).unwrap();
+        assert!(
+            ts.contains(
+                "export type refusal_code =\n  /**\n   * The account is not visible to this actor.\n   */\n  | \"account_private\";"
+            ),
+            "{ts}"
+        );
+        assert!(ts.contains("  | refusal_code\n"), "{ts}");
+        assert!(!ts.contains("\"unused_product_error\""), "{ts}");
+
+        // Old contract JSON can carry FnDef.refusals without Contract.errors;
+        // the emitted value set remains backward-compatible, only docless.
+        let mut contract = crate::compile(source).unwrap();
+        contract.errors.clear();
+        let legacy_ts = typescript(&contract).unwrap();
+        assert!(
+            legacy_ts.contains("  | \"account_private\";"),
+            "{legacy_ts}"
+        );
+    }
+
+    #[test]
     fn pure_key_table_has_no_update_shape() {
         let ts = emit(
             "table user { key id: uuid = auto\n a: int }\n\
@@ -688,13 +723,15 @@ export type user_error =
   | "user_username_taken"
   | "user_username_required";
 
-/** Reserved non-derived codes (docs/spec/v0.md §6.1). */
+/** Reserved protocol codes (docs/spec/v0.md §§6.1, 8.3). */
 export type reserved_error =
   | "not_found"
   | "type_mismatch"
   | "unknown_field"
   | "bad_request"
-  | "internal";
+  | "internal"
+  | "unauthorized"
+  | "conflict";
 
 /** Every error code this contract can produce. */
 export type error_code =

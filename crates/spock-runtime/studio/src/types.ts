@@ -27,6 +27,11 @@ export interface DerivedError {
   kind?: string
 }
 
+export interface ProductError {
+  code: string
+  doc?: string | null
+}
+
 export interface Table {
   name: string
   doc?: string | null
@@ -79,6 +84,8 @@ export interface FnDef {
 export interface Contract {
   spock: string
   doc?: string | null
+  // Optional for contracts compiled before RFD 0024's branch prototype.
+  errors?: ProductError[]
   module?: string
   name?: string
   tables: Table[]

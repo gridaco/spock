@@ -104,12 +104,14 @@ provider once, then one command checks and serves the authority and client:
 ```sh
 corepack pnpm@10.11.0 -C uhura/web install --frozen-lockfile
 corepack pnpm@10.11.0 -C uhura/web build:provider
-npx --yes spock@0.5.0 start uhura/examples/instagram
+cargo run --locked -p spock-cli -- start uhura/examples/instagram
 ```
 
-This is also the distribution smoke: the second command runs the published npm
-CLI, not `target/debug/spock`. The same project remains independently checkable
-as a Spock backend and an Uhura client.
+On this experimental RFD 0024 branch, the final command uses the source
+toolchain because the backend fixture contains proposed `error` declarations.
+Supported `main` keeps this as a distribution smoke with the published npm
+CLI. The same project remains independently checkable as a Spock backend and
+an Uhura client.
 
 `spock dev` deliberately has asymmetric reload semantics today. Valid Uhura
 client saves publish live. Invalid saves retain the last good Play generation
@@ -385,9 +387,10 @@ linked, queryable, governable entities rather than detached blobs. Channels —
 email and other outbound systems — are planned to join them as explicit
 contracts, though that part of the design is not settled.
 
-Four more concepts are committed from day one, even though their syntax is
-not: `error` — failure outcomes are part of a function's contract, derived
-from the schema's own constraints rather than guessed; `role` and `policy` —
+Four more concepts are committed from day one, even though much of their syntax
+is not: `error` — failure outcomes are part of a function's contract; schema
+failures are derived from constraints, while draft RFD 0024 proposes an
+explicit home for authored product failures; `role` and `policy` —
 the actor taxonomy, and named, testable blocks of authorization logic that are
 deliberately richer than SQL predicates; and `seed` — the world is populated
 through the contract itself, so every prototype runs against believable state.
@@ -398,6 +401,11 @@ SQL's own ceiling. Where a field traces back to a base column, even renamed or
 nested, writes flow through it; computed fields are read-only by construction.
 Writability is provenance, derived per field
 (`docs/rfd/0003-write-through-views.md`).
+
+> **RFD 0024 branch prototype — experimental, unstable, and non-normative.**
+> The top-level `error` declaration below is proposed in draft RFD 0024, not
+> supported v0 syntax. This branch is evidence only, is not for merge, and asks
+> for no language adoption.
 
 ```spock
 // a value rule is an ordinary read fn; a `check` inline-expands it into a
@@ -420,10 +428,13 @@ view post_preview from post {
     published: .published
 }
 
-// deliberate mutation — shipped v0 syntax: the signature is the
-// contract (`mut` declares the polarity, `already_published` is a
-// refusal this fn mints), the body is a sequence of SQL escapes (it
-// may replace the body, never the contract)
+/// The post has already crossed the publication boundary.
+error already_published
+
+// deliberate mutation — `mut fn`, `!`, and the SQL body are shipped v0;
+// RFD 0024 proposes resolving `already_published` through the declaration
+// above. The signature remains the contract; an escape may replace the body,
+// never the contract.
 mut fn publish_post(post: post) -> post ! already_published | not_found {
     unchecked sql("""
       SELECT spock_refuse('already_published')

@@ -7,6 +7,13 @@ The v0 runtime implements **Tier 1** (§7); higher tiers are the target.
 discipline, error envelope); §9 here records the executed migration from
 the pre-dialect surface.
 
+> **Prospective branch delta — experimental, unstable, and non-normative.**
+> References below to top-level product-error declarations describe the RFD
+> 0024 branch prototype. RFD 0024 remains `decision: draft` and
+> `implementation: unplanned`; the GraphQL shape and envelope are unchanged,
+> and this wording has no normative force unless that RFD is accepted and
+> implemented.
+
 ---
 
 ## 1. Mental model
@@ -181,11 +188,12 @@ engine-enforced, not asserted:
   the failure surface, introspectable before any call. Codes the SQL can
   produce but the signature does not declare still surface truthfully at
   runtime, routed cross-table to the owning table's derived error.
-- Declared codes include **minted refusals** (spec v0 §7.4, RFD 0012):
-  a fn's own product-rule codes, raised from the body, carried in
-  `errors[].extensions` with `kind: "refused"` and `table: null` —
-  distinct names for distinct rules, where v1 collapsed every guard
-  into `not_found`.
+- In the proposed RFD 0024 delta, declared codes include **nominal product
+  errors**: a top-level `error ident` owns the product-rule code, and each fn
+  that can raise it lists it in `!`. The body raises it through the unchanged
+  RFD 0012 refusal path, carried in `errors[].extensions` with
+  `kind: "refused"` and `table: null` — distinct names for distinct rules,
+  where v1 collapsed every guard into `not_found`.
 - **Root names are claimed, per root**: on `Mutation`, derived CRUD
   names and `mut` fn names live in one namespace, and exactly what is
   registered is claimed (a pure-key table claims no update) — a `mut`
@@ -209,7 +217,15 @@ Where Hasura says `constraint-violation`, Spock says which constraint, on
 which table, over which fields — the code was in the contract (and in the
 mutation's description) before any request was made. Reserved
 non-derived codes: `not_found`, `type_mismatch`, `unknown_field`,
-`bad_request`, `internal`.
+`bad_request`, `internal`. The program-wide reserved vocabulary proposed by
+RFD 0024 also includes storage-plane `unauthorized` and `conflict`; GraphQL does
+not emit those two, and a product declaration cannot claim them.
+
+The proposed RFD 0024 product-error registry changes name ownership and
+introspection metadata only. A product error raised by a function keeps the
+same `kind: "refused"` and extensions shape. The underlying REST/`ApiError`
+status remains 409 while GraphQL remains HTTP 200 and omits status; its optional
+declaration doc remains contract metadata, not a runtime message.
 
 A value-constraint violation (RFD 0013) carries `kind: "invalid"`, code
 `<table>_<field>_invalid`. A **closed-set** field stays a GraphQL

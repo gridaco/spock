@@ -19,12 +19,12 @@ use crate::write::map_fn_engine_error;
 /// Route a rusqlite failure inside a fn body (§7.4). The refusal channel
 /// is checked first: `spock_refuse('<code>')` errors with a
 /// sentinel-prefixed message, and the code routes **only** if this fn
-/// minted it in its `!` clause — a declared derived or reserved code can
-/// only be produced by its own mechanism (raising one would let a body
-/// counterfeit evidence), and an unminted code is the body breaking its
-/// signature; both are `internal`. Everything else falls through to the
-/// cross-table constraint router. No vocabulary scan: the checker already
-/// stored the mint/reference partition (`refusals ⊆ errors`).
+/// lists it as a declared product error in its `!` clause — a derived or
+/// reserved code can only be produced by its own mechanism (raising one
+/// would let a body counterfeit evidence), and an unlisted code is the
+/// body breaking its signature; both are `internal`. Everything else falls
+/// through to the cross-table constraint router. No vocabulary scan: the
+/// checker already stored the product/reference partition (`refusals ⊆ errors`).
 fn map_fn_call_error(contract: &Contract, f: &FnDef, e: rusqlite::Error) -> ApiError {
     if let rusqlite::Error::SqliteFailure(_, Some(msg)) = &e {
         if let Some(code) = msg.strip_prefix(crate::engine::REFUSE_SENTINEL) {
@@ -250,6 +250,10 @@ table post {
 
 record stats { posts: int }
 record ratio { value: float }
+
+error name_reserved
+error bio_missing
+error always_no
 
 mut fn rename_user(user: user, username: text) -> user ! user_username_taken {
   unchecked sql("UPDATE user SET username = :username WHERE id = :user RETURNING *")
@@ -698,7 +702,7 @@ seed {
         )
         .unwrap();
         assert_eq!(hit, "photographer");
-        // a minted refusal fires with its own name — no more collapsed
+        // a declared product refusal fires with its own name — no more collapsed
         // not_found lies (v0-FEEDBACK G2)
         let f = contract.fn_def("guarded_rename").unwrap();
         let err = call(
@@ -721,7 +725,7 @@ seed {
         )
         .unwrap();
         assert_eq!(row["username"], "maya_ok");
-        // an unminted raise is the body breaking its signature
+        // an unlisted raise is the body breaking its signature
         let f = contract.fn_def("rogue").unwrap();
         let err = call(
             &contract,

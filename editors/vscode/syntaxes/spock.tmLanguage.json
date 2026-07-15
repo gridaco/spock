@@ -87,6 +87,13 @@
           }
         },
         {
+          "match": "\\b(error)(\\s+)([a-z_][a-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.error.spock" },
+            "3": { "name": "constant.other.error.spock" }
+          }
+        },
+        {
           "name": "meta.function.signature.spock",
           "begin": "\\b(?:(mut)(\\s+))?(fn)(\\s+)([a-z_][a-z0-9_]*)(?=\\s*\\()",
           "beginCaptures": {
@@ -141,7 +148,7 @@
       "patterns": [
         {
           "name": "invalid.illegal.reserved.spock",
-          "match": "\\b(?:view|role|policy|error|state|extern|unsafe|derived|protected|module|enum|expect|transition|upsert|match|with)\\b"
+          "match": "\\b(?:view|role|policy|state|extern|unsafe|derived|protected|module|enum|expect|transition|upsert|match|with)\\b"
         }
       ]
     },
@@ -149,7 +156,7 @@
       "patterns": [
         {
           "name": "keyword.declaration.spock",
-          "match": "\\b(?:table|auth|record|fn|mut|seed)\\b"
+          "match": "\\b(?:table|auth|record|fn|mut|error|seed)\\b"
         },
         {
           "name": "keyword.other.constraint.spock",

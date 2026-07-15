@@ -176,13 +176,14 @@ impl Parser {
         }
     }
 
-    // file = { table_decl | record_decl | fn_decl | seed_block }
+    // file = { table_decl | record_decl | error_decl | fn_decl | seed_block }
     fn file(&mut self) -> Result<File, Diagnostic> {
         // `//!` lines in the preamble (before any declaration) document the
         // contract itself (RFD 0016).
         let doc = self.take_inner_doc(0);
         let mut tables = Vec::new();
         let mut records = Vec::new();
+        let mut errors = Vec::new();
         let mut fns = Vec::new();
         let mut seeds = Vec::new();
         loop {
@@ -214,6 +215,11 @@ impl Parser {
                     decl.doc = self.take_outer_doc(at);
                     records.push(decl);
                 }
+                TokenKind::KwError => {
+                    let mut decl = self.error_decl()?;
+                    decl.doc = self.take_outer_doc(at);
+                    errors.push(decl);
+                }
                 TokenKind::KwFn => {
                     let mut decl = self.fn_decl(false)?;
                     decl.doc = self.take_outer_doc(at);
@@ -234,8 +240,9 @@ impl Parser {
                 TokenKind::KwSeed => seeds.push(self.seed_block()?),
                 TokenKind::Eof => break,
                 _ => {
-                    return Err(self
-                        .unexpected("`table`, `auth table`, `record`, `fn`, `mut fn`, or `seed`"));
+                    return Err(self.unexpected(
+                        "`table`, `auth table`, `record`, `error`, `fn`, `mut fn`, or `seed`",
+                    ));
                 }
             }
         }
@@ -247,8 +254,20 @@ impl Parser {
             doc,
             tables,
             records,
+            errors,
             fns,
             seeds,
+        })
+    }
+
+    // error_decl = "error" ident
+    fn error_decl(&mut self) -> Result<ErrorDecl, Diagnostic> {
+        let start = self.expect(TokenKind::KwError, "`error`")?.span;
+        let name = self.ident("error code")?;
+        Ok(ErrorDecl {
+            doc: None,
+            span: start.to(name.span),
+            name,
         })
     }
 
@@ -1108,6 +1127,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_error_declarations() {
+        let file = parse_ok(
+            "/// The account is not visible to this actor.\n\
+             error account_private\n\
+             error request_expired",
+        );
+        assert_eq!(file.errors.len(), 2);
+        assert_eq!(file.errors[0].name.name, "account_private");
+        assert_eq!(
+            file.errors[0].doc.as_deref(),
+            Some("The account is not visible to this actor.")
+        );
+        assert_eq!(file.errors[1].name.name, "request_expired");
+        assert!(file.errors[1].doc.is_none());
+    }
+
+    #[test]
     fn parses_polarity_markers() {
         let file = parse_ok(
             "mut fn rename(user: user, name: text) -> user { unchecked sql(\"S\") }\n\
@@ -1276,6 +1312,8 @@ mod tests {
              }\n\
              /// a wire shape\n\
              record stats { /// how many\n posts: int }\n\
+             /// account cannot be viewed\n\
+             error account_private\n\
              /// rename someone\n\
              mut fn rename(\n\
                /// the target\n\
@@ -1299,6 +1337,11 @@ mod tests {
             panic!("expected field");
         };
         assert_eq!(posts.doc.as_deref(), Some("how many"));
+        // product-error declaration doc
+        assert_eq!(
+            file.errors[0].doc.as_deref(),
+            Some("account cannot be viewed")
+        );
         // fn doc across the `mut` prefix, plus per-parameter docs
         assert_eq!(file.fns[0].doc.as_deref(), Some("rename someone"));
         assert_eq!(file.fns[0].params[0].doc.as_deref(), Some("the target"));
