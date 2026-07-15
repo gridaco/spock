@@ -41,19 +41,13 @@ State these boundaries plainly. Do not imply production guarantees that v0 does 
 
 ## Accepted versus speculative inputs
 
-Accepted smoke inputs:
+Use these published-source examples as accepted smoke inputs:
 
-```text
-examples/filter-lab/schema.spock
-uhura/examples/instagram/backend/app.spock
-examples/instagram/v0.spock
-```
+- [filter lab schema](https://github.com/gridaco/spock/blob/v0.5.0/examples/filter-lab/schema.spock)
+- [Instagram backend](https://github.com/gridaco/uhura/blob/77bee48bae90b0246351dc6ad27b27f34bbc0a65/examples/instagram/backend/app.spock)
+- [standalone Instagram program](https://github.com/gridaco/spock/blob/v0.5.0/examples/instagram/v0.spock)
 
-Do not use these as conformance inputs:
-
-```text
-examples/instagram/v1.spock
-docs/rfd/0000-vision.spock
-```
-
-They intentionally contain future syntax.
+Do not use the
+[Instagram paper program](https://github.com/gridaco/spock/blob/v0.5.0/examples/instagram/v1.spock)
+or [vision RFD](https://github.com/gridaco/spock/blob/v0.5.0/docs/rfd/0000-vision.spock)
+as conformance inputs. They intentionally contain proposed syntax.
