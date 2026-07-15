@@ -1,4 +1,4 @@
 interface:
   display_name: "Uhura Language"
-  short_description: "Build and verify deterministic Uhura experiences"
-  default_prompt: "Use $uhura-lang to create and verify a deterministic Uhura experience for these requirements."
+  short_description: "Build Uhura clients with npm Spock"
+  default_prompt: "Use $uhura-lang to create or modify this Uhura client with the npm-distributed Spock CLI, then verify Editor, Play, and authority behavior."

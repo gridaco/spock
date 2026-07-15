@@ -1,6 +1,8 @@
 # Current Uhura Source Language
 
-Use the checked Instagram corpus as the accepted syntax reference. The language is incubating and not compatibility-frozen.
+Use `spock check` from the installed npm distribution as the acceptance test
+for every source form. The language is incubating and not
+compatibility-frozen; do not infer syntax that the installed version rejects.
 
 ## File placement and headers
 
@@ -175,4 +177,6 @@ Use CSS for layout, visual treatment, responsive presentation, and theme tokens.
 
 ## Source bounds
 
-Current spike bounds include one definition per file, files up to 256 KiB, nesting up to 32, up to 512 nodes per view, and up to 128 handlers per page. Keep authoring substantially below these ceilings.
+Current implementation bounds include one definition per file, files up to
+256 KiB, nesting up to 32, up to 512 nodes per view, and up to 128 handlers per
+page. Keep authoring substantially below these ceilings.

@@ -1,23 +1,32 @@
 # Uhura Projects, Examples, and Providers
 
-## Project layout
+## Framework project layout
 
 ```text
-uhura.toml
-uhura.lock
-app/**/page.uhura
-components/*.uhura
-surfaces/*.uhura
-ports/*.port.toml
-fixtures/standard.toml
-fixtures/scripts/*.toml
-fixtures/assets/manifest.toml
-providers/
-catalog/base.toml
-styles/theme.css
+spock.toml
+backend/
+  app.spock
+client/
+  uhura.toml
+  uhura.lock
+  app/**/page.uhura
+  components/*.uhura
+  surfaces/*.uhura
+  ports/*.port.toml
+  fixtures/standard.toml
+  fixtures/scripts/*.toml
+  fixtures/assets/manifest.toml
+  providers/
+  catalog/base.toml
+  styles/theme.css
 ```
 
-`uhura.toml` declares the app entry route, catalog, named ports, fixtures, assets, play profile, and optional live provider module/configuration. `uhura.lock` pins canonical catalog and port hashes. Contract drift is a link error; delete and regenerate the lock only as an intentional re-pin after reviewing the contract change.
+`spock.toml` composes the authority and client roots without merging their
+languages or ownership. Inside the configured client, `uhura.toml` declares
+the entry route, catalog, named ports, fixtures, assets, play profile, and
+optional provider module/configuration. `uhura.lock` pins catalog and port
+hashes. Treat contract drift as a project error; never hand-edit or silently
+delete the lock to bypass it.
 
 ## Port contracts
 
@@ -59,7 +68,10 @@ refusals = ["not-authorized"]
 
 Current type grammar includes `bool`, `int`, `text`, `option<T>`, `list<T>`, and declared types of kind `record`, `union`, `enum`, `id`, `opaque`, or `asset`.
 
-Use opaque values for provider-owned cursors that Uhura may echo but not inspect. Use asset values for provider-resolved media references. Command success payloads are empty in the current spike; authority settlement travels as projection updates, not a second payload carrier.
+Use opaque values for provider-owned cursors that Uhura may echo but not
+inspect. Use asset values for provider-resolved media references. Command
+success payloads are empty in the current implementation; authority settlement
+travels as projection updates, not a second payload carrier.
 
 Projections are absent until delivered. A `boot = true` projection arrives before `Init`; other projections must be handled through availability. Keyed projections use a typed key.
 
@@ -128,8 +140,13 @@ Rules:
 
 The fixture driver is the deterministic CI provider. A live provider may use Spock, but no Spock object or source syntax belongs in Uhura Core or `.uhura` source.
 
-## Spock boundary
+## Authority boundary
 
 Spock owns users, posts, relationships, permissions, transactions, files, accepted commands, and durable timestamps. Uhura owns local drafts, optimistic overlays, pending markers, notices, selected UI sections, surfaces, and logical navigation.
 
-Derive displayed counts from Spock source rows in the provider. Do not store decorative counts in both systems. Return authority echoes and projection updates after mutations. Treat the current `X-Spock-Actor` integration as prototype impersonation, not production authentication.
+Derive displayed counts from authority source rows in the provider. Do not
+store decorative counts in both systems. Return authority echoes and
+projection updates after mutations. Treat local actor selection as prototype
+impersonation, not production authentication. Verify authoritative
+consequences through Studio or the affected endpoint, not by trusting client
+state alone.

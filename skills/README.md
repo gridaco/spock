@@ -21,6 +21,6 @@ npx skills add gridaco/spock --skill uhura-lang
 The `spock-lang` skill helps coding agents create, inspect, validate, run,
 debug, and modify Spock programs.
 
-The `uhura-lang` skill helps coding agents create, inspect, validate, render,
-play, debug, and modify Uhura experience projects, including Spock-backed
-integrations.
+The `uhura-lang` skill helps coding agents create, inspect, validate, run,
+debug, and modify Uhura clients inside npm-distributed Spock framework
+projects.
