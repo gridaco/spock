@@ -13,11 +13,13 @@ differentiator — **impersonate** a seed persona (the Actor selector sets
 
 The console is **not** served by a Node process at runtime. `pnpm build`
 compiles it to static assets in `dist/` (JS/CSS + the bundled Inter font — no
-CDN). `dist/` is **committed** and embedded into the `spock` binary via
+CDN). The build output is gitignored and embedded into the `spock` binary via
 `rust-embed` (`crates/spock-runtime/src/http.rs`, `StudioAssets`), served
-same-origin at `/~studio`. So the end-user runs one command — `spock run
-app.spock` — and the binary serves the console fully offline. Only a developer
-editing the console needs Node.
+same-origin at `/~studio`. Release jobs build and guard it before compiling the
+binary; a clean source checkout keeps only `dist/.gitkeep`. So the end-user
+runs one command — `spock run app.spock` — and the distributed binary serves
+the console fully offline. Only a developer building or editing the console
+needs Node.
 
 ## Develop
 

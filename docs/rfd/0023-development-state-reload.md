@@ -1,14 +1,50 @@
 # RFD 0023 — Development reload, state continuity, and the auto-migration boundary
 
-Status: **problem study; direction under evaluation.** This document records
-the constraints, vocabulary, candidate models, and decisions required before
-Spock and Uhura share a development host. It does not amend the v0 contract,
-promise state-preserving reload, or introduce production migrations.
+Status: **problem study; long-term direction under evaluation.** This document
+does not amend the v0 contract, promise state-preserving reload, or introduce
+production migrations. A deliberately smaller interim host policy was accepted
+and implemented on 2026-07-15 so framework composition can proceed without
+selecting a world, rebase, or migration model.
 
 The working candidate is **non-destructive development worlds with an optional
 three-way state rebase**. Worlds are the safety and rollback primitive. Rebase
 is only a convenience for initializing a new world when compatibility can be
 proved. Both parts remain subject to experiments and review.
+
+## Interim implementation policy — client live, backend pinned
+
+During the first combined `spock dev`, one valid Spock backend generation is
+constructed and activated exactly once. Uhura client changes continue to use
+coherent capture, current diagnostics, immutable candidates, newest-result
+ordering, and last-known-good publication against that active generation.
+
+Backend source, referenced seed assets, and backend/topology manifest changes
+are observed and fingerprinted but receive the terminal disposition
+`restart_required`. They never call `engine::open`, delete or reopen a
+database, replay seed, construct a shadow backend, or swap any backend-owned
+contract, connection, signer, blob store, route, or background task. Reverting
+all changed backend inputs and topology to the active fingerprints clears the
+warning without touching state. Client publication may continue during the
+warning and must name the active backend generation, not the changed source.
+
+An explicit process restart is the only way this first implementation adopts
+a backend edit, and the CLI warns that current v0 startup reconstructs the
+database from seed. This policy is not a candidate answer to auto-migration;
+it is the safe no-activation baseline against which every later proposal must
+improve. The implementation has exactly one future marker at the disposition
+seam and no migration logic elsewhere:
+
+```text
+TODO(RFD-0023): replace restart-required with off-path backend candidate
+construction and an explicit activation policy after development-world
+semantics are accepted. Never reopen or mutate the active world here.
+```
+
+The implementation establishes an immutable backend generation and explicit
+project-generation status, but deliberately constructs no watched backend
+candidate. This is important: lifecycle ownership and coherent observation are
+prerequisites for a future solution, not acceptance of the world/rebase model
+studied below.
 
 ## 0. Why this must be decided before runtime composition
 
@@ -41,7 +77,7 @@ meaning independently.
 Uhura does not currently migrate a running Play session across source edits.
 Its accepted RFC deliberately calls the feature **saved-source live
 rebuilding**, and lists Play runtime-state migration/HMR as a non-goal
-([Uhura RFC 0002](https://github.com/gridaco/uhura/blob/42ece8e3c44efe89d3c9417761504e7b190db230/docs/rfcs/0002-model-driven-editor-live-updates.md)).
+([Uhura RFC 0002](https://github.com/gridaco/uhura/blob/8f20987d1f19b927b3d067872885c9adaed83b6e/docs/rfcs/0002-model-driven-editor-live-updates.md)).
 
 What Uhura already establishes — and what a combined host should share first
 — is:
@@ -138,13 +174,22 @@ Consequently, replaying GraphQL/RPC requests is not a faithful state model.
 Re-execution under a new function body, actor, clock, or generated identifier
 can yield a different database even when every request succeeds.
 
-### 2.4 The current runtime has no generation seam
+### 2.4 The runtime has a generation seam, not an activation policy
 
-[`App`](../../crates/spock-runtime/src/lib.rs) owns an immutable `Contract`, a
-single serialized `Connection`, a randomly generated URL signer, and a blob
-store. The GraphQL schema and Axum router eagerly capture that `App`. A reload
-design therefore needs a new immutable generation boundary and a supervisor;
-mutating fields inside the current `App` is not a coherent cutover protocol.
+The initial framework implementation added
+[`BackendGeneration`](../../crates/spock-runtime/src/generation.rs), which
+binds an immutable `App`, checked contract, captured-input and contract
+fingerprints, authority router, signer/blob ownership, and a one-shot
+background-task lifecycle. The project host owns the active generation and its
+status coordinator; there is intentionally no method that replaces the active
+backend inside a process.
+
+That closes the lifecycle precondition identified by the original study, but
+not the state problem. The watcher fingerprints backend inputs and reports
+`restart_required`; it does not construct a second `BackendGeneration`, open a
+shadow database, classify compatibility, or activate a candidate. A future
+reload design must add those operations explicitly rather than mutate fields
+inside the active `App`.
 
 ### 2.5 Storage is part of authoritative state
 
@@ -152,9 +197,11 @@ The default blob implementation stores bytes in a hidden SQLite table keyed
 to `storage_object` metadata
 ([`storage/blob.rs`](../../crates/spock-runtime/src/storage/blob.rs)). A
 metadata-only transfer can create committed objects whose bytes are absent.
-The signer is random per `App`, so recreating an `App` on a behavior-only edit
-currently invalidates outstanding signed URLs. A sweep task is spawned for a
-serving storage contract and has no generation-level cancellation handle.
+The signer is random per `App`. The interim pinned process therefore keeps it
+stable, but any future generation replacement must decide whether outstanding
+signed URLs belong to a session, world, or generation. Storage sweep work now
+has a generation-owned cancellation handle; transfer, fencing, and lease rules
+across two worlds remain unresolved.
 
 Rows, blob bytes, pending uploads, signing lifetime, and sweep ownership all
 belong in the reload study.
@@ -963,7 +1010,13 @@ must not leave disk growth unbounded.
 
 ### P1 — coherent last-good generations
 
-- Add stable project snapshot capture and newest-revision ordering.
+The interim host already supplies coherent observation, an immutable active
+backend generation, and last-good client publication. P1 here begins where
+that safe baseline stops: complete off-path **backend** candidates and an
+explicit fresh-world activation decision.
+
+- Preserve stable project snapshot capture and newest-revision ordering while
+  backend candidate work moves off-path.
 - Build complete backend candidates off-path.
 - Keep the current generation serving on source failure.
 - Use fresh shadow worlds only; make no preservation claim.
@@ -1010,10 +1063,12 @@ must not leave disk growth unbounded.
 - Add explicit rename maps or type conversions only when real projects demand
   them.
 
-[RFD 0022](0022-spock-framework.md)'s combined `spock dev` should not be
-treated as complete before at
-least P1 and P2. Whether P5 is required for the first public release is an
-open product decision; it should not delay the correctness model itself.
+[RFD 0022](0022-spock-framework.md)'s interim combined `spock dev` is complete
+under the narrower client-live/backend-pinned contract at the top of this
+document. No feature should be described as backend live reload or
+state-preserving activation before at least P1 and P2. Whether P5 is required
+for a later backend-reload release is an open product decision; it should not
+delay the correctness model itself.
 
 ## 16. Required experiments and conformance matrix
 
@@ -1189,7 +1244,7 @@ The central idea is not “migrate on every save.” It is:
   combined host study.
 - [v0 specification](../spec/v0.md) — current fresh materialization and seed
   semantics.
-- [Uhura RFC 0002](https://github.com/gridaco/uhura/blob/42ece8e3c44efe89d3c9417761504e7b190db230/docs/rfcs/0002-model-driven-editor-live-updates.md)
+- [Uhura RFC 0002](https://github.com/gridaco/uhura/blob/8f20987d1f19b927b3d067872885c9adaed83b6e/docs/rfcs/0002-model-driven-editor-live-updates.md)
   — saved-source capture, stale publication, and Play migration non-goal.
 
 ### External primary sources

@@ -1,0 +1,15 @@
+[package]
+name = "spock-project"
+description = "Project manifests, discovery, contained paths, and creation plans for Spock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+toml.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

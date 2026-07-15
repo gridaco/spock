@@ -2,8 +2,9 @@
 //! the schema fresh, replay the seed through the write path. There are no
 //! migrations in v0 — state is disposable by doctrine (RFD 0008 §3).
 
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rusqlite::types::Value as SqlValue;
 use rusqlite::Connection;
@@ -38,6 +39,25 @@ pub fn open(
     path: Option<&Path>,
     base_dir: Option<&Path>,
 ) -> Result<Connection, EngineError> {
+    open_with_seed_assets(contract, path, SeedAssetSource::Filesystem(base_dir))
+}
+
+/// Materialize from an immutable map of already captured `file(...)` bytes.
+/// The generation boundary calls this after compiling the captured source, so
+/// bootstrap never rereads mutable project paths.
+pub(crate) fn open_with_captured_assets(
+    contract: &Contract,
+    path: Option<&Path>,
+    assets: &BTreeMap<String, Arc<[u8]>>,
+) -> Result<Connection, EngineError> {
+    open_with_seed_assets(contract, path, SeedAssetSource::Captured(assets))
+}
+
+fn open_with_seed_assets(
+    contract: &Contract,
+    path: Option<&Path>,
+    seed_assets: SeedAssetSource<'_>,
+) -> Result<Connection, EngineError> {
     let mut conn = match path {
         None => Connection::open_in_memory()?,
         Some(p) => {
@@ -71,8 +91,46 @@ pub fn open(
     }
     validate_fns(contract, &conn)?;
     check_defaults(contract, &conn)?;
-    seed(contract, &mut conn, base_dir)?;
+    seed(contract, &mut conn, &seed_assets)?;
     Ok(conn)
+}
+
+enum SeedAssetSource<'a> {
+    Filesystem(Option<&'a Path>),
+    Captured(&'a BTreeMap<String, Arc<[u8]>>),
+}
+
+struct LoadedSeedAsset {
+    bytes: Vec<u8>,
+    metadata_path: PathBuf,
+}
+
+impl SeedAssetSource<'_> {
+    fn load(&self, rel_path: &str) -> Result<LoadedSeedAsset, String> {
+        match self {
+            Self::Filesystem(Some(base)) => {
+                let full = base.join(rel_path);
+                let bytes = std::fs::read(&full)
+                    .map_err(|error| format!("cannot read seed asset `{rel_path}`: {error}"))?;
+                Ok(LoadedSeedAsset {
+                    bytes,
+                    metadata_path: full,
+                })
+            }
+            Self::Filesystem(None) => {
+                Err("file(...) seed needs a source directory; run against a .spock file".into())
+            }
+            Self::Captured(assets) => {
+                let bytes = assets.get(rel_path).ok_or_else(|| {
+                    format!("captured seed asset `{rel_path}` is missing from the input bundle")
+                })?;
+                Ok(LoadedSeedAsset {
+                    bytes: bytes.to_vec(),
+                    metadata_path: PathBuf::from(rel_path),
+                })
+            }
+        }
+    }
 }
 
 /// Prove every field validator against its own literal default (RFD 0013
@@ -386,7 +444,7 @@ fn validate_return_columns(
 fn seed(
     contract: &Contract,
     conn: &mut Connection,
-    base_dir: Option<&Path>,
+    seed_assets: &SeedAssetSource<'_>,
 ) -> Result<(), EngineError> {
     // binding name -> the bound row's key value (as JSON)
     let mut bindings: HashMap<String, Json> = HashMap::new();
@@ -414,7 +472,7 @@ fn seed(
                 SeedValue::File { path } => Json::String(seed_file(
                     contract,
                     conn,
-                    base_dir,
+                    seed_assets,
                     path,
                     index,
                     &table.name,
@@ -454,7 +512,7 @@ fn seed(
 fn seed_file(
     contract: &Contract,
     conn: &mut Connection,
-    base_dir: Option<&Path>,
+    seed_assets: &SeedAssetSource<'_>,
     rel_path: &str,
     index: usize,
     table_name: &str,
@@ -465,17 +523,15 @@ fn seed_file(
         source: Box::new(ApiError::internal(message)),
     };
 
-    let base = base_dir.ok_or_else(|| {
-        seed_err("file(...) seed needs a source directory; run against a .spock file".into())
-    })?;
-    let full = base.join(rel_path);
-    let bytes = std::fs::read(&full)
-        .map_err(|e| seed_err(format!("cannot read seed asset `{rel_path}`: {e}")))?;
+    let LoadedSeedAsset {
+        bytes,
+        metadata_path,
+    } = seed_assets.load(rel_path).map_err(seed_err)?;
 
-    let content_type = mime_guess::from_path(&full)
+    let content_type = mime_guess::from_path(&metadata_path)
         .first_or_octet_stream()
         .to_string();
-    let name = full
+    let name = metadata_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("file")

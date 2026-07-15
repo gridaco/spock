@@ -4,3 +4,6 @@
 
 # Prebuilt binaries assembled into the npm package at release time (RFD 0020).
 /npm/binaries/
+
+# Framework web/Wasm sidecar assembled once during npm release (RFD 0022).
+/npm/share/

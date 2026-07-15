@@ -1,22 +1,23 @@
 name: npm
 
-# Distribution of the `spock` CLI over npm (RFD 0020). One package bundles a
-# prebuilt binary per platform; a Node shim (npm/bin/spock.js) execs the one
+# Distribution of the `spock` framework CLI over npm (RFDs 0020 and 0022). One
+# package bundles a prebuilt binary per platform and one platform-independent
+# Uhura web/Wasm sidecar; a Node shim (npm/bin/spock.js) owns the binary
 # matching the host. Publishing is tokenless via npm Trusted Publishing (OIDC):
 # this workflow file name (npm.yml) is what the trusted-publisher config on
 # npmjs.com is pinned to, and `id-token: write` lets `npm publish` authenticate
 # without a token.
 #
 # Trigger it manually (Actions -> npm -> Run workflow) to dry-run or publish a
-# prerelease under a dist-tag; push a `vX.Y.Z` tag to cut a real `latest`.
+# prerelease under a dist-tag; stable tags publish `latest` and prerelease tags
+# publish `next`.
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to publish (e.g. 0.1.0 or 0.1.0-rc.1)"
-        required: true
-        default: "0.1.0-rc.1"
+        description: "Optional version assertion (defaults to Cargo.toml)"
+        required: false
       dist_tag:
         description: "npm dist-tag (keeps prereleases off `latest`)"
         required: true
@@ -32,6 +33,9 @@ on:
 permissions:
   contents: read
 
+env:
+  NPM_CLI_VERSION: 11.6.2
+
 concurrency:
   group: npm-publish
   cancel-in-progress: false
@@ -41,19 +45,104 @@ defaults:
     shell: bash
 
 jobs:
+  assets:
+    name: build shared framework assets
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    outputs:
+      manifest_sha256: ${{ steps.sidecar.outputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: uhura/web/pnpm-lock.yaml
+
+      - name: self-test sidecar tooling
+        run: node npm/scripts/sidecar.mjs self-test
+
+      - uses: dtolnay/rust-toolchain@1.92.0
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: npm-uhura-wasm
+          workspaces: uhura -> target
+          cache-directories: uhura/target/tools
+
+      - name: check and build Uhura Editor, Play, and provider
+        run: |
+          pnpm -C uhura/web install --frozen-lockfile
+          pnpm -C uhura/web check
+
+      - name: install lockfile-exact wasm-bindgen CLI
+        run: |
+          version="$(sed -n '/name = "wasm-bindgen"/{n;s/version = "\([^"]*\)"/\1/p;q;}' uhura/Cargo.lock)"
+          test -n "$version"
+          installed=""
+          if [ -x uhura/target/tools/bin/wasm-bindgen ]; then
+            installed="$(uhura/target/tools/bin/wasm-bindgen --version | awk '{print $2}')"
+          fi
+          if [ "$installed" != "$version" ]; then
+            cargo install wasm-bindgen-cli \
+              --version "$version" \
+              --locked \
+              --force \
+              --root uhura/target/tools
+          fi
+          test "$(uhura/target/tools/bin/wasm-bindgen --version | awk '{print $2}')" = "$version"
+
+      - name: build Uhura WebAssembly bundle
+        run: WASM_BINDGEN="$GITHUB_WORKSPACE/uhura/target/tools/bin/wasm-bindgen" bash uhura/scripts/build-wasm.sh
+
+      - name: assemble and guard shared sidecar
+        id: sidecar
+        run: |
+          node npm/scripts/sidecar.mjs assemble \
+            --web-dir uhura/web/dist \
+            --wasm-dir uhura/crates/uhura-wasm/pkg/web \
+            --out-dir npm/share/spock/uhura \
+            --spock-commit "$(git rev-parse HEAD)" \
+            --uhura-commit "$(git -C uhura rev-parse HEAD)"
+          node npm/scripts/sidecar.mjs verify --root npm/share/spock/uhura
+          manifest_sha256="$(sha256sum npm/share/spock/uhura/manifest.json | awk '{print $1}')"
+          if [[ ! "$manifest_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::could not derive the sidecar manifest SHA-256"
+            exit 1
+          fi
+          printf 'manifest_sha256=%s\n' "$manifest_sha256" >> "$GITHUB_OUTPUT"
+          echo "sidecar manifest SHA-256: $manifest_sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: framework-assets
+          path: npm/share/spock/uhura/
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     name: build ${{ matrix.key }}
+    needs: assets
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - { key: darwin-arm64, os: macos-14,     target: aarch64-apple-darwin,     smoke: true }
-          - { key: darwin-x64,   os: macos-14,     target: x86_64-apple-darwin,      smoke: false }
+          - { key: darwin-x64,   os: macos-14,     target: x86_64-apple-darwin,      smoke: false, rosetta: true }
           - { key: linux-x64,    os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, smoke: true }
           - { key: win32-x64,    os: windows-2025, target: x86_64-pc-windows-msvc,   smoke: true }
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - uses: pnpm/action-setup@v4
         with:
@@ -77,7 +166,7 @@ jobs:
           test "$bytes" -gt 200 || { echo "::error::$f is only $bytes bytes"; exit 1; }
           echo "studio dist/index.html: $bytes bytes"
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.92.0
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
@@ -85,7 +174,14 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: cargo build --release
-        run: cargo build --release -p spock-cli --target ${{ matrix.target }}
+        env:
+          SPOCK_PACKAGED_UHURA_MANIFEST_SHA256: ${{ needs.assets.outputs.manifest_sha256 }}
+        run: |
+          if [[ ! "$SPOCK_PACKAGED_UHURA_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::missing or malformed executable-bound sidecar manifest identity"
+            exit 1
+          fi
+          cargo build --locked --release -p spock-cli --target ${{ matrix.target }}
 
       - name: smoke test (native arch only)
         if: matrix.smoke
@@ -94,6 +190,24 @@ jobs:
           bin="target/${{ matrix.target }}/release/$exe"
           "$bin" --version
           "$bin" check examples/instagram/v0.spock
+
+      - name: smoke test (macOS x64 through Rosetta)
+        if: matrix.rosetta
+        run: |
+          bin="target/${{ matrix.target }}/release/spock"
+          if ! file "$bin" | grep -q 'Mach-O 64-bit executable x86_64'; then
+            echo "::error::$bin is not an x86_64 Mach-O executable"
+            file "$bin"
+            exit 1
+          fi
+          if ! arch -x86_64 "$bin" --version; then
+            echo "::error::the advertised macOS x64 binary did not run through Rosetta"
+            exit 1
+          fi
+          if ! arch -x86_64 "$bin" check examples/instagram/v0.spock; then
+            echo "::error::the advertised macOS x64 binary could not load and check a Spock program through Rosetta"
+            exit 1
+          fi
 
       - name: stage binary
         run: |
@@ -110,42 +224,92 @@ jobs:
 
   publish:
     name: publish
-    needs: build
+    needs: [assets, build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write # required for OIDC trusted publishing
     outputs:
       version: ${{ steps.resolve.outputs.version }}
+      cargo_version: ${{ steps.resolve.outputs.cargo_version }}
       dist_tag: ${{ steps.resolve.outputs.dist_tag }}
       dry_run: ${{ steps.resolve.outputs.dry_run }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
           registry-url: "https://registry.npmjs.org"
 
-      - name: use latest npm (Trusted Publishing needs >= 11.5.1)
-        run: npm install -g npm@latest
+      - name: install pinned Trusted-Publishing-capable npm
+        run: npm install -g "npm@$NPM_CLI_VERSION"
 
       - name: resolve version, tag, dry_run
         id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_DIST_TAG: ${{ inputs.dist_tag }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            v="${GITHUB_REF_NAME#v}"; tag="latest"; dry="false"
+          cargo_version="$(awk '
+            /^\[workspace.package\]$/ { section = 1; next }
+            /^\[/ { section = 0 }
+            section && /^version = / {
+              gsub(/^version = "|"$/, ""); print; exit
+            }
+          ' Cargo.toml)"
+          test -n "$cargo_version"
+          if [ "$EVENT_NAME" = "push" ]; then
+            v="${GITHUB_REF_NAME#v}"; dry="false"
           else
-            v="${{ inputs.version }}"; tag="${{ inputs.dist_tag }}"; dry="${{ inputs.dry_run }}"
+            v="${INPUT_VERSION:-$cargo_version}"; tag="$INPUT_DIST_TAG"; dry="$INPUT_DRY_RUN"
           fi
-          printf 'version=%s\n'  "$v"   >> "$GITHUB_OUTPUT"
-          printf 'dist_tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
-          printf 'dry_run=%s\n'  "$dry" >> "$GITHUB_OUTPUT"
-          echo "resolved: version=$v dist_tag=$tag dry_run=$dry"
+          # Every successful matrix build has already made Cargo parse this
+          # workspace version. Keep Cargo authoritative instead of maintaining
+          # a second, inevitably incomplete SemVer grammar in bash.
+          if [ "$v" != "$cargo_version" ]; then
+            echo "::error::release version $v does not match Cargo workspace version $cargo_version"
+            exit 1
+          fi
+          package_version="${cargo_version%%+*}"
+          if [[ "$package_version" == *-* ]]; then
+            prerelease="true"
+          else
+            prerelease="false"
+          fi
+          if [ "$EVENT_NAME" = "push" ]; then
+            if [ "$prerelease" = "true" ]; then tag="next"; else tag="latest"; fi
+          fi
+          if [[ ! "$tag" =~ ^[A-Za-z][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::invalid npm dist-tag: $tag"
+            exit 1
+          fi
+          if [ "$prerelease" = "true" ] && [ "$tag" = "latest" ]; then
+            echo "::error::prerelease version $v may not publish to the latest dist-tag"
+            exit 1
+          fi
+          if [ "$dry" != "true" ] && [ "$dry" != "false" ]; then
+            echo "::error::dry_run must be true or false"
+            exit 1
+          fi
+          printf 'version=%s\n'       "$package_version" >> "$GITHUB_OUTPUT"
+          printf 'cargo_version=%s\n' "$cargo_version"   >> "$GITHUB_OUTPUT"
+          printf 'dist_tag=%s\n'      "$tag"             >> "$GITHUB_OUTPUT"
+          printf 'dry_run=%s\n'       "$dry"             >> "$GITHUB_OUTPUT"
+          echo "resolved: cargo_version=$cargo_version package_version=$package_version dist_tag=$tag dry_run=$dry"
 
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           pattern: bin-*
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: framework-assets
+          path: npm/share/spock/uhura
 
       - name: assemble platform binaries into the package
         run: |
@@ -155,9 +319,10 @@ jobs:
             exe=spock; [ "$key" = "win32-x64" ] && exe=spock.exe
             mkdir -p "npm/binaries/$key"
             cp "$d/$exe" "npm/binaries/$key/$exe"
-            [ "$key" = "win32-x64" ] || chmod +x "npm/binaries/$key/$exe"
+            [ "$key" = "win32-x64" ] || chmod 0755 "npm/binaries/$key/$exe"
           done
-          echo "=== assembled ==="; ls -laR npm/binaries
+          echo "=== assembled ==="
+          ls -laR npm/binaries
 
       - name: guard — all four platforms present
         run: |
@@ -167,12 +332,99 @@ jobs:
             test -s "npm/binaries/$key/$exe" || { echo "::error::missing binary for $key"; exit 1; }
           done
 
+      - name: guard — shared framework sidecar is complete
+        run: node npm/scripts/sidecar.mjs verify --root npm/share/spock/uhura
+
       - name: stamp version
-        run: cd npm && npm version "${{ steps.resolve.outputs.version }}" --no-git-tag-version --allow-same-version
+        env:
+          PACKAGE_VERSION: ${{ steps.resolve.outputs.version }}
+        run: cd npm && npm version "$PACKAGE_VERSION" --no-git-tag-version --allow-same-version
+
+      - name: guard — packed package is complete and within 25 MiB
+        env:
+          PACKAGE_VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/npm-pack"
+          (cd npm && npm pack --json --pack-destination "$RUNNER_TEMP/npm-pack") \
+            > "$RUNNER_TEMP/npm-pack.json"
+          shopt -s nullglob
+          packages=("$RUNNER_TEMP/npm-pack/"*.tgz)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one guarded npm tarball; found ${#packages[@]}"
+            exit 1
+          fi
+          node - "$RUNNER_TEMP/npm-pack.json" <<'NODE'
+          const fs = require("node:fs");
+          const [entry] = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          if (!entry || !Number.isSafeInteger(entry.size)) {
+            throw new Error("npm pack did not report a package size");
+          }
+          if (entry.version !== process.env.PACKAGE_VERSION) {
+            throw new Error(
+              `packed npm version ${entry.version} does not match ${process.env.PACKAGE_VERSION}`,
+            );
+          }
+          const manifest = JSON.parse(
+            fs.readFileSync("npm/share/spock/uhura/manifest.json", "utf8"),
+          );
+          const expected = new Set([
+            "LICENSE",
+            "README.md",
+            "THIRD_PARTY_NOTICES.md",
+            "bin/spock.js",
+            "binaries/darwin-arm64/spock",
+            "binaries/darwin-x64/spock",
+            "binaries/linux-x64/spock",
+            "binaries/win32-x64/spock.exe",
+            "package.json",
+            "share/spock/uhura/manifest.json",
+            ...manifest.files.map((file) => `share/spock/uhura/${file.path}`),
+          ]);
+          const packed = new Map(entry.files.map((file) => [file.path, file]));
+          for (const required of expected) {
+            if (!packed.has(required)) throw new Error(`packed package is missing ${required}`);
+          }
+          for (const actual of packed.keys()) {
+            if (!expected.has(actual)) throw new Error(`packed package has unexpected ${actual}`);
+          }
+          for (const path of [
+            "bin/spock.js",
+            "binaries/darwin-arm64/spock",
+            "binaries/darwin-x64/spock",
+            "binaries/linux-x64/spock",
+          ]) {
+            const mode = packed.get(path)?.mode;
+            if (!Number.isSafeInteger(mode) || (mode & 0o777) !== 0o755) {
+              throw new Error(`packed executable must have mode 0755: ${path} (mode ${mode})`);
+            }
+          }
+          const limit = 25 * 1024 * 1024;
+          if (entry.size > limit) {
+            throw new Error(`packed package is ${entry.size} bytes; limit is ${limit} bytes`);
+          }
+          console.log(`packed package: ${entry.size} bytes (${entry.unpackedSize} unpacked)`);
+          NODE
+
+      - name: upload guarded npm tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/npm-pack/*.tgz
+          if-no-files-found: error
+          retention-days: 1
 
       - name: npm publish (dry run)
         if: steps.resolve.outputs.dry_run == 'true'
-        run: cd npm && npm publish --dry-run --tag "${{ steps.resolve.outputs.dist_tag }}"
+        env:
+          DIST_TAG: ${{ steps.resolve.outputs.dist_tag }}
+        run: |
+          shopt -s nullglob
+          packages=("$RUNNER_TEMP/npm-pack/"*.tgz)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one guarded npm tarball; found ${#packages[@]}"
+            exit 1
+          fi
+          npm publish "${packages[0]}" --dry-run --tag "$DIST_TAG"
 
       - name: npm publish
         if: steps.resolve.outputs.dry_run != 'true'
@@ -180,12 +432,20 @@ jobs:
         # races the tarball PUT and returns a false "cannot publish over
         # previously published version" (npm/cli). Tokenless OIDC auth is
         # independent of provenance and still applies.
-        run: cd npm && npm publish --tag "${{ steps.resolve.outputs.dist_tag }}" --no-provenance
+        env:
+          DIST_TAG: ${{ steps.resolve.outputs.dist_tag }}
+        run: |
+          shopt -s nullglob
+          packages=("$RUNNER_TEMP/npm-pack/"*.tgz)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one guarded npm tarball; found ${#packages[@]}"
+            exit 1
+          fi
+          npm publish "${packages[0]}" --tag "$DIST_TAG" --no-provenance
 
   verify:
     name: verify ${{ matrix.key }}
     needs: publish
-    if: needs.publish.outputs.dry_run != 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -196,18 +456,60 @@ jobs:
           - { key: win32-x64,    os: windows-2025 }
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
 
-      - name: install spock from npm
+      - name: download guarded npm tarball
+        if: needs.publish.outputs.dry_run == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+          path: packed-npm
+
+      - name: install spock from guarded tarball
+        if: needs.publish.outputs.dry_run == 'true'
         run: |
-          v="${{ needs.publish.outputs.version }}"
+          shopt -s nullglob
+          packages=(packed-npm/*.tgz)
+          if [ "${#packages[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one guarded npm tarball; found ${#packages[@]}"
+            exit 1
+          fi
+          package_path="$(pwd)/${packages[0]}"
+          npm install -g "$package_path"
+          echo "installed $package_path"
+
+      - name: install spock from npm registry
+        if: needs.publish.outputs.dry_run != 'true'
+        env:
+          PACKAGE_VERSION: ${{ needs.publish.outputs.version }}
+        run: |
+          installed=""
           for i in $(seq 1 12); do
-            if npm install -g "spock@$v"; then echo "installed spock@$v"; break; fi
-            echo "attempt $i: spock@$v not visible yet; waiting"; sleep 6
+            if npm install -g "spock@$PACKAGE_VERSION"; then installed=1; echo "installed spock@$PACKAGE_VERSION"; break; fi
+            echo "attempt $i: spock@$PACKAGE_VERSION not visible yet; waiting"; sleep 6
           done
-          spock --version
+          test -n "$installed" || { echo "::error::spock@$PACKAGE_VERSION was not installable"; exit 1; }
+
+      - name: verify installed npm and Cargo versions
+        env:
+          PACKAGE_VERSION: ${{ needs.publish.outputs.version }}
+          CARGO_VERSION: ${{ needs.publish.outputs.cargo_version }}
+        run: |
+          package_root="$(npm root -g)"
+          installed_version="$(node -e '
+            const path = require("node:path");
+            const manifest = require(path.join(process.argv[1], "spock", "package.json"));
+            process.stdout.write(manifest.version);
+          ' "$package_root")"
+          test "$installed_version" = "$PACKAGE_VERSION"
+          test "$(spock --version)" = "spock $CARGO_VERSION"
+
+      - name: verify installed framework sidecar
+        run: node npm/scripts/sidecar.mjs verify --root "$(npm root -g)/spock/share/spock/uhura"
 
       - name: spock check
         run: spock check examples/instagram/v0.spock
@@ -225,3 +527,97 @@ jobs:
           if [ -z "$ok" ]; then echo "::error::server did not start"; kill "$pid" 2>/dev/null || true; exit 1; fi
           curl -fsS http://127.0.0.1:4123/~studio | grep -qi "<!doctype html" && echo "studio served OK"
           kill "$pid" 2>/dev/null || true
+
+      - name: spock framework routes + shared assets served
+        if: runner.os != 'Windows'
+        run: |
+          smoke_root="$RUNNER_TEMP/spock-framework-smoke"
+          mkdir -p "$smoke_root"
+          (cd "$smoke_root" && spock new npm-smoke)
+          spock start "$smoke_root/npm-smoke" --port 4124 >"$smoke_root/server.log" 2>&1 &
+          pid=$!
+          cleanup() {
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          ok=""
+          for i in $(seq 1 40); do
+            if curl -fsS http://127.0.0.1:4124/~health >/dev/null 2>&1; then ok=1; break; fi
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 0.25
+          done
+          if [ -z "$ok" ]; then
+            echo "::error::framework server did not become ready"
+            cat "$smoke_root/server.log"
+            exit 1
+          fi
+          curl -fsS http://127.0.0.1:4124/ | grep -qi "<!doctype html"
+          curl -fsS http://127.0.0.1:4124/play | grep -qi "<!doctype html"
+          curl -fsS http://127.0.0.1:4124/api/editor/state | grep -q '"protocol":"uhura-editor-state/1"'
+          curl -fsS http://127.0.0.1:4124/api/play/wasm/uhura_wasm.js >/dev/null
+          curl -fsS http://127.0.0.1:4124/api/play/wasm/uhura_wasm_bg.wasm >/dev/null
+          curl -fsS http://127.0.0.1:4124/~project/status | grep -q '"protocol":"spock-project-status/1"'
+          curl -fsS http://127.0.0.1:4124/~project/environment | grep -q '"protocol":"spock-host-environment/1"'
+
+      - name: spock framework routes + shared assets served (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "spock-framework-smoke"
+          $project = Join-Path $smokeRoot "npm-smoke"
+          $stdout = Join-Path $smokeRoot "server.stdout.log"
+          $stderr = Join-Path $smokeRoot "server.stderr.log"
+          New-Item -ItemType Directory -Force -Path $smokeRoot | Out-Null
+
+          $packageRoot = (& npm root -g).Trim()
+          $shim = Join-Path $packageRoot "spock/bin/spock.js"
+          Push-Location $smokeRoot
+          try {
+            & node $shim new npm-smoke
+            if ($LASTEXITCODE -ne 0) { throw "spock new failed with exit code $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+
+          $node = (Get-Command node -ErrorAction Stop).Source
+          $arguments = @("`"$shim`"", "start", "`"$project`"", "--port", "4124")
+          $process = Start-Process -FilePath $node -ArgumentList $arguments -PassThru `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          try {
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 40; $attempt += 1) {
+              if ($process.HasExited) { break }
+              try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:4124/~health" -TimeoutSec 1
+                if ($health.ready -eq $true) { $ready = $true; break }
+              } catch {
+                Start-Sleep -Milliseconds 250
+              }
+            }
+            if (-not $ready) {
+              if (Test-Path $stdout) { Get-Content $stdout }
+              if (Test-Path $stderr) { Get-Content $stderr }
+              throw "framework server did not become ready"
+            }
+
+            $editor = (Invoke-WebRequest -Uri "http://127.0.0.1:4124/").Content
+            $play = (Invoke-WebRequest -Uri "http://127.0.0.1:4124/play").Content
+            if ($editor -notmatch "<!doctype html" -or $play -notmatch "<!doctype html") {
+              throw "Editor or Play did not serve HTML"
+            }
+            $state = Invoke-RestMethod -Uri "http://127.0.0.1:4124/api/editor/state"
+            if ($state.protocol -ne "uhura-editor-state/1") { throw "wrong Editor protocol" }
+            Invoke-WebRequest -Uri "http://127.0.0.1:4124/api/play/wasm/uhura_wasm.js" | Out-Null
+            Invoke-WebRequest -Uri "http://127.0.0.1:4124/api/play/wasm/uhura_wasm_bg.wasm" | Out-Null
+            $status = Invoke-RestMethod -Uri "http://127.0.0.1:4124/~project/status"
+            if ($status.protocol -ne "spock-project-status/1") { throw "wrong project status protocol" }
+            $environment = Invoke-RestMethod -Uri "http://127.0.0.1:4124/~project/environment"
+            if ($environment.protocol -ne "spock-host-environment/1") { throw "wrong host environment protocol" }
+          } finally {
+            if (-not $process.HasExited) {
+              & taskkill.exe /PID $process.Id /T /F | Out-Null
+            }
+            $process.WaitForExit(5000) | Out-Null
+          }

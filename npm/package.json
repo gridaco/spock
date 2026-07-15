@@ -1,13 +1,15 @@
 {
   "name": "spock",
-  "version": "0.4.0",
-  "description": "Spock — prototype application backends as a single, inspectable source of truth. It's only logical.",
+  "version": "0.5.0",
+  "description": "Spock — prototype an authority backend and optional Uhura client as one inspectable project.",
   "bin": {
     "spock": "bin/spock.js"
   },
   "files": [
     "bin/",
-    "binaries/"
+    "binaries/",
+    "share/",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "engines": {
     "node": ">=18"
@@ -15,6 +17,8 @@
   "keywords": [
     "spock",
     "backend",
+    "full-stack",
+    "uhura",
     "prototype",
     "language",
     "graphql",

@@ -1,0 +1,12 @@
+[catalog]
+name = "spock-starter"
+version = "0.1.0"
+icons = []
+
+[elements.view]
+class = "layout"
+children = "any"
+
+[elements.text]
+class = "content"
+children = "text"

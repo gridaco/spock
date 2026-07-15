@@ -1,11 +1,18 @@
 [workspace]
-resolver = "2"
-members = ["crates/spock-lang", "crates/spock-runtime", "crates/spock-cli"]
+resolver = "3"
+exclude = ["uhura"]
+members = [
+    "crates/spock-lang",
+    "crates/spock-runtime",
+    "crates/spock-project",
+    "crates/spock-host",
+    "crates/spock-cli",
+]
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.92"
 license = "MIT"
 repository = "https://github.com/gridaco/spock"
 
@@ -20,11 +27,17 @@ rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 axum = "0.8"
 async-graphql = { version = "7", default-features = false, features = ["dynamic-schema", "graphiql"] }
 async-graphql-value = "7"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tokio-stream = "0.1"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", features = ["json"] }
 assert_cmd = "2"
 predicates = "3"
+toml = "0.8"
+tempfile = "3"
+sha2 = "0.10"
+same-file = "1"
+unicode-normalization = "0.1"
 
 # Release binaries are distributed over npm (RFD 0020); trim size without
 # trading away SQLite throughput — keep opt-level at the default 3, since
