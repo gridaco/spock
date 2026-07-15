@@ -7,9 +7,10 @@ The v0 runtime implements **Tier 1** (§7); higher tiers are the target.
 discipline, error envelope); §9 here records the executed migration from
 the pre-dialect surface.
 
-> **Prospective branch delta — experimental, unstable, and non-normative.**
-> References below to top-level product-error declarations describe the RFD
-> 0024 branch prototype. RFD 0024 remains `decision: draft` and
+> **0.5.2 implementation preview — experimental, unstable, and
+> non-normative.** References below to top-level product-error declarations
+> describe the RFD 0024 prototype included in the `0.5.2` toolchain. RFD 0024
+> remains `decision: draft` and
 > `implementation: unplanned`; the GraphQL shape and envelope are unchanged,
 > and this wording has no normative force unless that RFD is accepted and
 > implemented.

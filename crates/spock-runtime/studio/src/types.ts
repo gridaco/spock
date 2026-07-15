@@ -84,7 +84,7 @@ export interface FnDef {
 export interface Contract {
   spock: string
   doc?: string | null
-  // Optional for contracts compiled before RFD 0024's branch prototype.
+  // Optional for contracts compiled before RFD 0024's 0.5.2 implementation preview.
   errors?: ProductError[]
   module?: string
   name?: string

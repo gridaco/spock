@@ -39,15 +39,16 @@ State these boundaries plainly. Do not imply production guarantees that v0 does 
 - Return the authority echo from a mutation instead of inventing client state.
 - Declare refusals for product rules and preserve constraint-derived errors for data laws.
 
-## Accepted versus speculative inputs
+## Current-toolchain versus speculative inputs
 
-Use these published-source examples as accepted smoke inputs:
+Use these published-source examples as current-toolchain smoke inputs. The
+Instagram fixtures include the experimental, non-normative RFD 0024 preview:
 
-- [filter lab schema](https://github.com/gridaco/spock/blob/v0.5.0/examples/filter-lab/schema.spock)
-- [Instagram backend](https://github.com/gridaco/uhura/blob/77bee48bae90b0246351dc6ad27b27f34bbc0a65/examples/instagram/backend/app.spock)
-- [standalone Instagram program](https://github.com/gridaco/spock/blob/v0.5.0/examples/instagram/v0.spock)
+- [filter lab schema](https://github.com/gridaco/spock/blob/v0.5.2/examples/filter-lab/schema.spock)
+- [Instagram backend](https://github.com/gridaco/uhura/blob/662d5435fe082044814b28a0cc7ee6c1e664417f/examples/instagram/backend/app.spock)
+- [standalone Instagram program](https://github.com/gridaco/spock/blob/v0.5.2/examples/instagram/v0.spock)
 
 Do not use the
-[Instagram paper program](https://github.com/gridaco/spock/blob/v0.5.0/examples/instagram/v1.spock)
-or [vision RFD](https://github.com/gridaco/spock/blob/v0.5.0/docs/rfd/0000-vision.spock)
+[Instagram paper program](https://github.com/gridaco/spock/blob/v0.5.2/examples/instagram/v1.spock)
+or [vision RFD](https://github.com/gridaco/spock/blob/v0.5.2/docs/rfd/0000-vision.spock)
 as conformance inputs. They intentionally contain proposed syntax.

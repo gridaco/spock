@@ -28,17 +28,18 @@ checkout, a Rust toolchain, or source-built web assets are available.
 
 - Treat the globally installed npm CLI as the executable contract.
 - Use the bundled references for concise guidance. Consult the
-  [Spock v0.5.0 specification](https://github.com/gridaco/spock/blob/v0.5.0/docs/spec/v0.md)
-  when exact syntax or semantics matter.
+  [Spock v0.5.2 toolchain specification](https://github.com/gridaco/spock/blob/v0.5.2/docs/spec/v0.md)
+  when exact syntax or semantics matter; its RFD 0024 additions are explicitly
+  marked experimental and non-normative.
 - Use the
-  [filter lab schema](https://github.com/gridaco/spock/blob/v0.5.0/examples/filter-lab/schema.spock),
-  [Instagram backend](https://github.com/gridaco/uhura/blob/77bee48bae90b0246351dc6ad27b27f34bbc0a65/examples/instagram/backend/app.spock),
+  [filter lab schema](https://github.com/gridaco/spock/blob/v0.5.2/examples/filter-lab/schema.spock),
+  [Instagram backend](https://github.com/gridaco/uhura/blob/662d5435fe082044814b28a0cc7ee6c1e664417f/examples/instagram/backend/app.spock),
   and
-  [standalone Instagram program](https://github.com/gridaco/spock/blob/v0.5.0/examples/instagram/v0.spock)
-  as accepted-language examples.
+  [standalone Instagram program](https://github.com/gridaco/spock/blob/v0.5.2/examples/instagram/v0.spock)
+  as current-toolchain examples.
 - Do not copy syntax from the
-  [Instagram paper program](https://github.com/gridaco/spock/blob/v0.5.0/examples/instagram/v1.spock),
-  [vision RFD](https://github.com/gridaco/spock/blob/v0.5.0/docs/rfd/0000-vision.spock),
+  [Instagram paper program](https://github.com/gridaco/spock/blob/v0.5.2/examples/instagram/v1.spock),
+  [vision RFD](https://github.com/gridaco/spock/blob/v0.5.2/docs/rfd/0000-vision.spock),
   or other proposals. They do not override the published compiler.
 - Run the installed toolchain instead of guessing whether a construct is
   accepted. If a bundled reference and the installed CLI disagree, preserve
@@ -99,8 +100,9 @@ Read the bundled references only as needed:
 - Keep each `unchecked sql(...)` escape to one statement. Use `:param`
   placeholders only. The final statement must return columns matching the
   declared return contract.
-- Mint product refusals in a function `!` clause and raise them with
-  `spock_refuse`. Do not fake derived or reserved errors.
+- In the experimental `0.5.2` RFD 0024 preview, declare each product refusal
+  once with top-level `error name`, list it in each function's `!` clause, and
+  raise it with `spock_refuse`. Do not fake derived or reserved errors.
 - Do not introduce `view`, `role`, `policy`, state-machine syntax, modules,
   native function statements, or other reserved or proposed syntax.
 

@@ -129,11 +129,13 @@ reasonable first slice: it proved named refusal routing without needing a new
 declaration. It is now the evidence for the smaller missing concept—nominal
 ownership—rather than evidence for immediately designing rich errors.
 
-A branch prototype may accompany this draft to test parser, checker, contract,
-and tooling consequences. It is experimental and unstable. Under the [language-change
+The `0.5.2` toolchain includes a prototype to test parser, checker, contract,
+and tooling consequences. It is experimental and unstable. Under the
+[language-change
 process](../governance/language-change-process.md#exploration-before-10), that
 prototype is non-normative evidence: it does not make this draft accepted,
-change supported v0 behavior, or change `implementation: unplanned`.
+change the supported v0 contract, or change `implementation: unplanned` for a
+supported implementation.
 
 No language-problem issue or committee triage record is linked yet. This draft
 must not enter public review until that problem record exists and the committee
@@ -505,9 +507,9 @@ Acceptance would authorize, but does not schedule, the following work:
    the declaration registry while preserving existing per-function surfaces.
 5. Add parser, checker, serialization/back-compatibility, runtime-regression,
    codegen, Studio, and editor conformance tests.
-6. While the RFD is draft, keep any branch-only fixture migration prominently
-   marked as non-normative and off supported `main`; migrate maintained
-   examples as supported language only after acceptance.
+6. While the RFD is draft, keep every prototype fixture migration prominently
+   marked experimental, unstable, and non-normative. Inclusion in the `0.5.2`
+   toolchain does not make those fixtures supported-language conformance.
 7. Reconcile `docs/spec/v0.md`, `docs/spec/graphql.md`, user documentation, and
    conformance fixtures when supported implementation ships.
 
@@ -518,10 +520,10 @@ code; rejection of the two storage-only reserved codes on function surfaces;
 old contracts missing the field; and proof that refusal envelopes and
 transaction rollback are unchanged.
 
-Any implementation on a branch while this RFD is draft is an experimental,
-unstable, non-normative prototype. It must not be presented as supported v0
-behavior or merged into the normative specification before the language-change
-process authorizes it.
+The implementation preview included in `0.5.2` while this RFD is draft is an
+experimental, unstable, non-normative prototype. It must not be presented as
+supported v0 behavior or merged into the normative specification before the
+language-change process authorizes it.
 
 ## Specification changes
 
@@ -542,9 +544,9 @@ If accepted and implemented, the following normative sections change:
 - `docs/spec/graphql.md` §§5.1 and 6: describe declared product errors instead
   of implicitly minted refusals; the GraphQL schema and envelope do not change.
 
-A proposed spec patch may live beside a branch prototype for review, but it is
-non-normative while this RFD remains draft and implementation remains
-unplanned.
+A proposed spec patch may live beside an implementation preview for review,
+but it is non-normative while this RFD remains draft and supported
+implementation remains unplanned.
 
 ## Unresolved questions
 
@@ -588,7 +590,7 @@ problems requiring their own evidence and decision.
 <!-- Update links and state without rewriting the decided design. -->
 
 - Tracking issue: not assigned
-- Implementation pull requests: none
-- Conformance tests: not started
-- Documentation and specification reconciliation: not started
-- Shipped release: not shipped
+- Implementation pull requests: [spock#24](https://github.com/gridaco/spock/pull/24), [uhura#14](https://github.com/gridaco/uhura/pull/14)
+- Conformance tests: prototype coverage is included in spock#24; accepted-language conformance has not started
+- Documentation and specification reconciliation: non-normative preview text only
+- Shipped release: `0.5.2` experimental implementation preview; no supported implementation

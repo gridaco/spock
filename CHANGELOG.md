@@ -3,6 +3,35 @@
 All notable changes to Spock. Spock is a pre-1.0 prototype language; minor
 versions may break.
 
+## 0.5.2 — 2026-07-16
+
+This release includes explicit product-error declarations as an experimental
+RFD 0024 implementation preview, publishes the Spock website and language
+governance framework, and syncs the bundled Uhura revision.
+
+- **Explicit product errors.** Top-level `error name` declarations own a
+  reusable product-error code and optional documentation. Function `!` clauses
+  resolve against that registry, schema-derived errors, and function-applicable
+  protocol errors; E051-E053 diagnose duplicates, unknown names, and ownership
+  collisions.
+- **Compatibility.** Programs that relied on implicit refusal minting must add
+  one declaration per authored refusal. Authored refusals named `unauthorized`
+  or `conflict` must be renamed because those codes are storage-protocol-owned.
+  Wire envelopes, refusal status and rollback behavior remain unchanged.
+- **Contract and tooling.** Contract JSON adds an additive top-level `errors`
+  array. Generated TypeScript and Studio expose the registry, while the VS Code
+  grammar highlights declarations and old contract JSON remains readable.
+- **Uhura sync.** The pinned Uhura revision adds checked interaction-graph
+  projection, reconstructed nested surface hierarchy, frame-avoiding workflow
+  connectors, and explicit declarations in the canonical Instagram authority.
+- **Project surfaces.** The repository now carries the spock.sh site, public
+  Uhura skill, and contribution, governance, language-change, RFD, and
+  working-group processes and templates.
+
+RFD 0024 remains draft and non-normative. Its implementation preview is
+experimental and unstable in `0.5.2`; inclusion does not record language
+acceptance or a compatibility promise.
+
 ## 0.5.1 — 2026-07-15
 
 This maintenance release refreshes the framework example and editor tooling

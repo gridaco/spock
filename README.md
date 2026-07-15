@@ -104,14 +104,13 @@ provider once, then one command checks and serves the authority and client:
 ```sh
 corepack pnpm@10.11.0 -C uhura/web install --frozen-lockfile
 corepack pnpm@10.11.0 -C uhura/web build:provider
-cargo run --locked -p spock-cli -- start uhura/examples/instagram
+spock start uhura/examples/instagram
 ```
 
-On this experimental RFD 0024 branch, the final command uses the source
-toolchain because the backend fixture contains proposed `error` declarations.
-Supported `main` keeps this as a distribution smoke with the published npm
-CLI. The same project remains independently checkable as a Spock backend and
-an Uhura client.
+The `0.5.2` CLI includes the fixture's proposed `error` declarations as an
+experimental RFD 0024 implementation preview, so this remains a distribution
+smoke through the published npm CLI. The same project remains independently
+checkable as a Spock backend and an Uhura client.
 
 `spock dev` deliberately has asymmetric reload semantics today. Valid Uhura
 client saves publish live. Invalid saves retain the last good Play generation
@@ -402,10 +401,10 @@ nested, writes flow through it; computed fields are read-only by construction.
 Writability is provenance, derived per field
 (`docs/rfd/0003-write-through-views.md`).
 
-> **RFD 0024 branch prototype — experimental, unstable, and non-normative.**
-> The top-level `error` declaration below is proposed in draft RFD 0024, not
-> supported v0 syntax. This branch is evidence only, is not for merge, and asks
-> for no language adoption.
+> **RFD 0024 implementation preview — experimental, unstable, and
+> non-normative.** The `0.5.2` toolchain accepts the top-level `error`
+> declaration below as implementation evidence. RFD 0024 remains draft; this
+> inclusion is not language acceptance or a compatibility promise.
 
 ```spock
 // a value rule is an ordinary read fn; a `check` inline-expands it into a

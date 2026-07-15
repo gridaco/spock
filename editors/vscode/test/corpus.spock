@@ -1,8 +1,8 @@
-//! VS Code TextMate corpus for the RFD 0024 branch prototype.
+//! VS Code TextMate corpus for the RFD 0024 implementation preview.
 //!
-//! PROSPECTIVE, EXPERIMENTAL, UNSTABLE, AND NON-NORMATIVE: `error` is active
-//! only on this branch. This is a visual scope fixture and compiler input, not
-//! supported-v0 conformance.
+//! EXPERIMENTAL, UNSTABLE, AND NON-NORMATIVE: the `0.5.2` toolchain accepts
+//! `error` as implementation evidence. This is a visual scope fixture and
+//! compiler input, not accepted-v0 conformance.
 
 //// Four or more slashes are an ordinary comment, not documentation.
 // Ordinary comments use exactly the same line-comment delimiter.

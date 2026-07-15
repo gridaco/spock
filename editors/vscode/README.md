@@ -47,22 +47,24 @@ commands above.
 
 1. Open `editors/vscode` as a VS Code workspace.
 2. Run **Start Debugging** and choose **Run Spock TextMate Loader**.
-3. In the Extension Development Host, open `test/corpus.spock` or an accepted
-   repository example.
+3. In the Extension Development Host, open `test/corpus.spock` or a current
+   compiler smoke input.
 4. Run **Developer: Inspect Editor Tokens and Scopes** and place the cursor on
    representative tokens.
 5. Repeat with built-in light and dark themes. Theme selection is deliberately
    outside this grammar.
 
 The corpus covers the active lexical families and is also compiled by the Rust
-test suite. For larger manual smoke inputs, use:
+test suite. The corpus and both Instagram inputs include the experimental,
+non-normative RFD 0024 preview. For larger manual smoke inputs, use:
 
 - `examples/filter-lab/schema.spock`
 - `uhura/examples/instagram/backend/app.spock`
 - `examples/instagram/v0.spock`
 
 Do not use `examples/instagram/v1.spock` or `docs/rfd/0000-vision.spock` as
-accepted-language inputs; they intentionally contain speculative syntax.
+compiler smoke inputs; they intentionally contain speculative syntax that the
+current toolchain does not accept.
 
 ## Validate behavior
 

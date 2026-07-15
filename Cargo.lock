@@ -2069,7 +2069,7 @@ checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 
 [[package]]
 name = "spock-cli"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2093,7 +2093,7 @@ dependencies = [
 
 [[package]]
 name = "spock-host"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "axum",
  "cap-fs-ext",
@@ -2119,7 +2119,7 @@ dependencies = [
 
 [[package]]
 name = "spock-lang"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -2129,7 +2129,7 @@ dependencies = [
 
 [[package]]
 name = "spock-project"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "tempfile",
  "toml",
@@ -2138,7 +2138,7 @@ dependencies = [
 
 [[package]]
 name = "spock-runtime"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "async-graphql",
  "async-graphql-value",

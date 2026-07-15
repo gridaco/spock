@@ -1,8 +1,9 @@
-# Spock v0 Language Reference
+# Spock v0.5.2 Toolchain Language Reference
 
-Use this reference for current accepted syntax. Consult the
-[Spock v0.5.0 specification](https://github.com/gridaco/spock/blob/v0.5.0/docs/spec/v0.md)
-for complete semantics and diagnostic codes.
+Use this reference for syntax accepted by the `0.5.2` toolchain. Consult the
+[Spock v0.5.2 specification](https://github.com/gridaco/spock/blob/v0.5.2/docs/spec/v0.md)
+for complete semantics and diagnostic codes. Top-level `error` declarations
+are an experimental, unstable, non-normative RFD 0024 implementation preview.
 
 ## Lexical rules
 
@@ -16,14 +17,14 @@ for complete semantics and diagnostic codes.
 Active keywords:
 
 ```text
-table auth record fn mut key unique check seed on delete restrict cascade
+table auth record error fn mut key unique check seed on delete restrict cascade
 set null text int float bool timestamp uuid auto now me true false
 ```
 
 `unchecked` and `sql` are contextual in function bodies. `file` is soft syntax in seed values. Future-reserved words are not accepted as identifiers:
 
 ```text
-view role policy error state extern unsafe derived protected module enum
+view role policy state extern unsafe derived protected module enum
 expect transition upsert match with
 ```
 
@@ -138,9 +139,13 @@ Every body contains one or more `unchecked sql("...")` escapes. Each escape carr
 
 The final result columns must match the declared table or record field names. A scalar return requires one result column. Use `RETURNING` when the answering statement is DML.
 
-Mint a product refusal in the signature and raise it conditionally:
+In the experimental RFD 0024 preview, declare a product refusal once, list it
+in the function signature, and raise it conditionally:
 
 ```spock
+/// The actor cannot follow themselves.
+error cannot_follow_self
+
 mut fn follow_user(target: user) -> follow ! cannot_follow_self {
   unchecked sql("""
     SELECT spock_refuse('cannot_follow_self')

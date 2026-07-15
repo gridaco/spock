@@ -1,8 +1,8 @@
 //! Instagram — the v0 slice.
 //!
-//! PROSPECTIVE RFD 0024 BRANCH PROTOTYPE — EXPERIMENTAL, UNSTABLE, AND
-//! NON-NORMATIVE. The top-level `error` declarations in this file are branch
-//! evidence, not supported v0.
+//! RFD 0024 IMPLEMENTATION PREVIEW — EXPERIMENTAL, UNSTABLE, AND
+//! NON-NORMATIVE. The `0.5.2` toolchain accepts the top-level `error`
+//! declarations in this file as implementation evidence, not accepted v0.
 //!
 //! A working backend for the core Instagram experience: profiles and the
 //! follow graph (public follows, private-account requests, blocks and
@@ -14,10 +14,10 @@
 //! product surface layered over the auto-generated table CRUD — every
 //! mutation names the ways it can refuse.
 
-// Apart from the marked RFD 0024 declaration prototype, this file uses the
-// implemented v0 surface. Run it with the source toolchain on this branch:
+// Apart from the marked RFD 0024 declaration preview, this file uses the
+// implemented v0 surface. Run it with the installed 0.5.2-or-newer CLI:
 //
-//   cargo run --locked -p spock-cli -- run examples/instagram/v0.spock
+//   spock run examples/instagram/v0.spock
 //
 // It covers as much of PRD.md as today's language can say: the durable
 // entities, and a deliberate surface of fns over them. What it cannot say —

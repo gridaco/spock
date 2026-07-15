@@ -125,9 +125,9 @@ export class Overview extends Component {
             Product error declarations <Badge variant="outline">RFD 0024 prototype</Badge>
           </SectionLabel>
           <p className="text-sm text-muted-foreground -mt-1 mb-2">
-            Experimental, unstable, and non-normative on this branch. These are reusable authored
-            outcomes: a declaration creates metadata only, and functions opt in through their own
-            failure lists.
+            Experimental, unstable, and non-normative in the 0.5.2 toolchain. These are reusable
+            authored outcomes: a declaration creates metadata only, and functions opt in through
+            their own failure lists.
           </p>
           <Card className="overflow-hidden p-0">
             {(contract.errors ?? []).length ? (
