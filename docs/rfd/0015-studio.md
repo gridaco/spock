@@ -1,16 +1,16 @@
 # RFD 0015 — Studio: the human-developer layer
 
-Status: **discussion draft**. A stance is recommended here; four framing
-decisions were settled with the author before drafting (§2), and open questions
-for ratification are in §12. Studio is *ecosystem tooling* — a local web app
-over the introspectable contract — so it rides alongside the language roadmap
-(the filter RFD is still the immediate next language milestone), never competing
-for the differentiator slot. It proposes one small, already-designed backend
-addition (§6); the app itself is a pure consumer of a running `spock run`.
+Status: **accepted and implemented**. Four framing decisions were settled with
+the author before drafting (§2), and §12 records how implementation resolved
+the remaining choices. Studio is *ecosystem tooling* — a local web app over the
+introspectable contract — so it rides alongside the language roadmap, never
+competing for the differentiator slot. It added one small backend seam (§6);
+the app itself remains a pure consumer of an active Spock authority generation,
+whether served by `spock run`, `spock start`, or `spock dev`.
 
 The name "Studio" is provisional and fully reversible.
 
-**Implementation status (2026-07-12).** Shipped in the runtime: the two
+**Implementation status (2026-07-15).** Shipped in the runtime: the two
 endpoints (`/~personas`, `/~whoami`) and a working console at `/~studio`, a
 Supabase-shaped three-pane shell (rail · object list · work area) with a
 **neutral black/white palette** — the Actor persona selector sits where a DB
@@ -23,12 +23,15 @@ vendored, lucide icons) and **react-data-grid** for the table view
 `dist/.gitkeep` is committed so a clean checkout still compiles; a useful
 source-built Studio requires the SPA build before `cargo build`. It is served
 same-origin at `/~studio` (+ hashed assets under `/~studio/{*path}`) — the
-console stays fully offline (no CDN). This **reverses the "no bundler /
-cargo-only CI" call in Q1/Q6/§7**: studio is now a real front-end app with an
+console stays fully offline (no CDN). This **reversed the original "no bundler /
+cargo-only CI" call recorded in Q1/Q6/§7**: Studio is now a real front-end app with an
 authoring-time Node build
 (`pnpm build` → `cargo build`); the single-`spock`-binary + offline guarantees
-are preserved (the bundle and font embed into the binary). The MVP surface
-(§5.1) is complete; edit and filter stay deferred (§5.2).
+are preserved (the bundle and font embed into the binary). The original MVP
+surface (§5.1) is complete; the shipped Studio now also consumes RFD 0021's
+server-side filtering, ordering, and offset paging and can create rows through
+the compiled GraphQL contract. Updating or deleting existing rows remains
+deferred (§5.2).
 
 ---
 
@@ -38,7 +41,8 @@ Spock already publishes everything a human needs to *see* their prototype: the
 compiled contract as data (`/~contract`), open reads (`/rest/v1/{table}`), the
 deliberate surface (`/rest/v1/rpc/{fn}` + GraphQL), and — since the actor seam
 shipped in the runtime (RFD 0014) — a dev-time impersonation knob
-(`X-Spock-Actor`). What is missing is the *console*: a place a developer opens,
+(`X-Spock-Actor`). What was missing when this RFD was written was the *console*:
+a place a developer opens,
 sees the shape of the world
 they declared, and **plays it as maya, then as luis, then as nobody** — watching
 the same fn answer differently each time.
@@ -55,13 +59,12 @@ exactly where a language quietly grows a second source of truth. This RFD's job
 is to draw the walls that keep Studio a consumer, and to scope an MVP that proves
 the headline without waiting on unshipped language work.
 
-**Why now.** The actor seam just shipped in the runtime but is invisible to
-humans and unexercised — you reach it only by hand-setting `X-Spock-Actor` on a
-`curl`. A persona switcher is the cheapest way to make the just-built seam
-demonstrable and to pressure-test its resolution before the filter RFD and
-`policy` build on it. Studio does not outrank the filter RFD on the language
-track — it is not language work (§3); it rides alongside, and §7/§9 keep it
-honestly subordinate.
+**Why it landed.** The actor seam was invisible to humans and reachable only by
+hand-setting `X-Spock-Actor` on a `curl`. A persona switcher was the cheapest
+way to make that seam demonstrable and pressure-test its resolution before
+`policy` builds on it. Studio did not outrank the filter work on the language
+track — it is not language work (§3); RFD 0021 subsequently shipped, and Studio
+now consumes its query surface without owning a second filter grammar.
 
 ## 1. What already exists to build on
 
@@ -76,8 +79,9 @@ runtime, July 2026):
   `readonly`, `params`, `returns`, `errors[]`, `refusals[]`, and the raw
   statement bodies `sql[]`.
 - **`GET /~health`** — `{"ok": true}`.
-- **`GET /rest/v1/{table}`** (`?limit`, default 50 / max 200; envelope
-  `{"rows":[...]}`) and **`GET /rest/v1/{table}/{id}`** (single-key tables).
+- **`GET /rest/v1/{table}`** (PostgREST-shaped column predicates, `order`,
+  `limit`, and `offset`; default 50 / max 200; envelope `{"rows":[...]}`) and
+  **`GET /rest/v1/{table}/{id}`** (single-key tables).
 - **`POST /rest/v1/rpc/{fn}`** (JSON args) and **`GET /rest/v1/rpc/{fn}`** (read
   fns, query-string args; a `mut` fn → 405).
 - **`POST /graphql/v1`** and **`GET /graphql/v1`** (GraphiQL; note its assets
@@ -89,30 +93,31 @@ runtime, July 2026):
   (`default: {"kind":"actor"}`) are server-stamped and removed from the GraphQL
   insert/update surface.
 
-Studio adds **zero** new render sources. It adds two tiny *actor* endpoints (§6)
-that RFD 0014 §4.3 already specced (as part of the recommended seam) but left
-unimplemented when the seam's core shipped.
+Studio added **zero** new render sources. It added two tiny *actor* endpoints
+(§6) that RFD 0014 §4.3 had already specified as part of the recommended seam
+but left unimplemented when the seam's core shipped.
 
 ## 2. The four decisions, settled
 
 Before drafting, four open decisions were settled with the author:
 
 1. **Host.** Studio is **served by the `spock` binary at `/~studio`** — a
-   self-contained page embedded in the binary, served **same-origin** (exactly
-   as GraphiQL is served today). *As shipped* it is one no-bundler page
-   (`include_str!`); a Vite/`rust-embed` build is the growth path (§7).
+   Vite-built React SPA embedded with `rust-embed` and served **same-origin**
+   (exactly as GraphiQL is served today). It remains one runtime process and
+   requires no Node installation for an end user (§7).
    `spock run` → open `http://127.0.0.1:4000/~studio`. This makes the headline
-   feature ship *out of the box* and sidesteps the fact that the server sends no
-   CORS headers (§7).
+   feature ship *out of the box*; same-origin is the primary browser boundary
+   even though the standalone development router also permits local CORS (§7).
 2. **Name.** "Studio" is kept as the provisional working name.
-3. **Scope.** The MVP is **read + impersonate + run** (§5.1); inline row
-   **editing** and table **filtering** are deferred (§5.2), because both depend
-   on language work that has not shipped (REST writes; the filter RFD).
+3. **Scope.** The MVP is **read + impersonate + run** (§5.1). RFD 0021 later
+   supplied filtering, ordering, and offset paging, and Studio added
+   contract-derived row creation through GraphQL. Updating or deleting existing
+   rows remains deferred (§5.2).
 4. **Backend-first.** The two enabling endpoints (`/~personas`, `/~whoami`) ship
    **first**, server-side (§6). `/~whoami` is genuinely *authoritative* — it
    echoes the server's own key-type canonicalization, which a client cannot
    reliably replicate; `/~personas` is a canonical, DRY projection of the picker
-   (its live-vs-seed row source is open — §12 Q2).
+   from the anchor table's current rows (§12.2).
 
 A full design panel (as in RFD 0013 §2 / 0014 §2) was deliberately skipped: Wall
 3 scopes Studio too small to earn that budget, and the substantive trade-offs
@@ -202,15 +207,17 @@ yet have would be the exact dishonesty RFD 0004 §1 warns against. Studio's valu
 here is the opposite: it makes the ungoverned floor *visible* (§8), which
 correctly prioritizes closing it.
 
-## 5. Scope — MVP now, honest about what waits
+## 5. Scope — shipped surface, honest about what waits
 
-### 5.1 NOW (read + impersonate + run)
+### 5.1 SHIPPED (read + impersonate + run)
 
 1. **Schema / contract browser** — tables, fields, refs (as a graph), records,
    and fns, rendered from `/~contract`. Each fn shows its signature, its declared
    error set, and its refusals.
-2. **Table + row viewer** — `GET /rest/v1/{table}` with the `limit` control; a
-   single-row view via `/{id}` for single-key tables. Read-only.
+2. **Table + row viewer** — `GET /rest/v1/{table}` with server-side predicates,
+   multi-column ordering, `limit`, and bounded `offset` paging. The grid remains
+   read-only for existing rows; **Add row** derives a GraphQL insert form from
+   the compiled contract, including `= me`, references, and file fields.
 3. **Persona switcher — the differentiator.** A dropdown populated from
    `/~personas`; selecting a persona sets `X-Spock-Actor` on *every* subsequent
    request. An "anonymous" entry sends no header. `/~whoami` echoes the resulting
@@ -219,7 +226,7 @@ correctly prioritizes closing it.
    `GET /rest/v1/rpc/{fn}`, others `POST`; the response (and any derived error
    envelope, with its `code`/`kind`/`fields`/`message`) is rendered. Run the
    same fn under different personas and diff the outcomes.
-5. **Embedded GraphQL** — the existing GraphiQL, reachable from Studio (§1: its
+5. **GraphQL entry** — the existing GraphiQL is linked from Studio (§1: its
    assets load from a CDN — blank offline). Borrowed wholesale.
 6. **The surface ledger** — the v0 slice (§8): identity anchor, `= me`-stamped
    columns, per-op error/refusal sets, and the ungoverned-floor warning.
@@ -228,22 +235,24 @@ correctly prioritizes closing it.
 
 Five things wait — the canonical list, with what each blocks on, is §11:
 
-- **Inline row editing** — read-only until REST writes land; the writes that *do*
-  exist go through the fn runner / GraphQL (correct: the deliberate surface).
-- **Table filtering / sort / keyset paging** — `limit`-only until the filter RFD.
+- **Existing-row update/delete** — the grid stays read-only; creation goes
+  through the compiled GraphQL insert surface, while broader editing waits on a
+  deliberate write UX and protocol boundary.
+- **Exact counts and safe keyset cursors** — the shipped pager is bounded
+  `offset`, honestly labeled; it does not pretend to be a cursor.
 - **Authoring-time scaffold to `.spock`** — additive fast-follow (Wall 2).
 - **Live views / effect streams (WS/SSE)** — post-v0.
 - **Hostable / tunneled Studio** — local-only for MVP.
 
 Studio makes each gap *visible* rather than faking the capability.
 
-## 6. The two enabling endpoints (ship first)
+## 6. The two enabling endpoints
 
 Both are additive `~`-meta endpoints next to `/~contract` and `/~health`, and
-both come straight from RFD 0014 §4.3, which specced them as part of the
-recommended seam but shipped no implementation.
-They are the only backend change this RFD proposes — ~30 lines, no new concepts,
-read-only, and forward-compatible with the v1 GoTrue swap.
+both came straight from RFD 0014 §4.3, which specified them as part of the
+recommended seam but shipped no implementation. They are the only backend
+change this RFD introduced: read-only and forward-compatible with the v1 GoTrue
+swap.
 
 ### 6.1 `GET /~personas` — the picker
 
@@ -262,10 +271,10 @@ GET /~personas
   text column the label degrades to the raw key — the picker still lets you
   *select* a real actor rather than type one, but authors wanting recognizable
   labels should give the anchor a unique text column, as `user.username` does.
-- Rows come from the anchor table's current contents (proposed; live-rows vs
-  seed-projection is open — §12 Q2), which in v0 *are* the seed personas
-  (RFD 0014: "a persona in v0 is a seed row in the anchor table"). Cap the
-  projection (proposed: 100) so a large dev DB can't blow up the picker.
+- Rows come from the anchor table's current contents, which begin as the seed
+  personas in v0 and reflect later inserts in the active generation. The
+  projection is capped at 100 rows and ordered by the anchor key so a large dev
+  database cannot blow up the picker (§12.2–3).
 - **No `auth table`** → `[]`. Studio then shows "no identity table — impersonation
   unavailable" instead of an empty dropdown that looks broken.
 
@@ -301,7 +310,7 @@ GET /~whoami            (with or without X-Spock-Actor)
   as anonymous. It answers "am I sending the header right?" and "why does my guard
   match nothing?".
 
-### 6.3 Implementation sketch (for the milestone, not this RFD to fix)
+### 6.3 Implementation record
 
 - Register both routes in `router()` (`crates/spock-runtime/src/http.rs`).
 - `/~personas`: `app.contract.anchor()` gives the table; find its key and its
@@ -314,8 +323,9 @@ GET /~whoami            (with or without X-Spock-Actor)
   via the same `path_key_value`; a value that fails to parse → `anonymous: false,
   known: false`; a value that parses → `known = EXISTS(SELECT 1 FROM <anchor>
   WHERE <key> = ?)`.
-- No CORS needed — same-origin (§7). Both endpoints are read-only and touch no
-  write path.
+- Studio calls both endpoints same-origin (§7). The standalone development
+  router also permits cross-origin local clients; the combined host owns its
+  public transport policy. Both endpoints are read-only and touch no write path.
 
 **Forward-compat (RFD 0014 §9):** `/~whoami` becomes GoTrue's `GET /user` under
 v1 auth; `/~personas` becomes a dev-flag-gated seed-persona picker; the
@@ -324,41 +334,32 @@ which is stable across that swap.
 
 ## 7. Host & architecture
 
-**Served by the binary at `/~studio`, same-origin.** The `spock` binary already
-serves a same-origin browser UI (GraphiQL) from an in-binary HTML shell; Studio
-extends that posture. As shipped it is a **single self-contained page** (vanilla
-HTML/CSS/JS, no framework, no CDN — fully offline) at
-`crates/spock-runtime/studio/index.html`, embedded via `include_str!` and served
-at `/~studio`. A Vite/`rust-embed` build is the documented growth path if the
-page outgrows one file; a framework was deliberately deferred (Wall 3).
-Consequences:
+**Served by the binary at `/~studio`, same-origin.** Studio is a Vite + React +
+TypeScript SPA under `crates/spock-runtime/studio/`, styled with Tailwind and
+shadcn/ui and built to gitignored `dist/`. `rust-embed` places the built JS,
+CSS, and font in the native binary, which serves the SPA and its history
+fallback at `/~studio`; Node is an authoring/build dependency, never a runtime
+dependency. Consequences:
 
-- **Ships out of the box.** No `npm install`, no second process — `spock run` and
-  the console is there. That is what shipping the headline feature out of the box
-  demands. (One honest bound: the *borrowed* GraphiQL screen still fetches its
-  assets from a CDN, so "out of the box" means install-free and single-process,
-  not fully offline — vendoring GraphiQL's assets via `rust-embed` is a
-  fast-follow.)
-- **No CORS problem.** The server sends *no* `Access-Control-*` headers today,
-  and the custom `X-Spock-Actor` header plus JSON bodies both force an `OPTIONS`
-  preflight that would 404. Same-origin serving avoids the question entirely — and
-  avoids adding a security-shaped `CorsLayer` to the language runtime for the sake
-  of tooling (a Wall-3 smell).
-- **Dev loop.** Edit `crates/spock-runtime/studio/index.html` and rebuild — the
-  page is `include_str!`-embedded, so `cargo build` picks it up. No dev server is
-  required today; a future Vite build would proxy to `127.0.0.1:4000`
-  (server-side — no CORS).
-- **Cost, stated plainly.** As shipped there is **no new toolchain**: the page is
-  a committed `.html` embedded via `include_str!`, so CI stays cargo-only and the
-  binary stays single-file. This is the lightest realization of the host decision
-  and best-honors Wall 3. The Node/Vite cost only arrives *if* the page later
-  grows into a bundled SPA — a deliberate future choice, not a v0 commitment.
-- **Framework.** None (resolved). The console is ~6 views over `fetch` in vanilla
-  JS — small enough that a framework would be pure overhead. One can be adopted
-  later without changing the host decision. No GraphQL client beyond the borrowed
-  GraphiQL.
+- **Ships out of the box.** No runtime `npm install`, no second process — a
+  distributed `spock` binary already contains the console. The Studio assets
+  and vendored font are offline; the separately borrowed GraphiQL screen still
+  fetches its own assets from a CDN.
+- **CORS ownership stays explicit.** Studio itself uses same-origin requests.
+  The standalone language server applies permissive local-development CORS,
+  including `OPTIONS`, for browser clients on another local origin. The
+  listener-free authority router deliberately applies none because `spock-host`
+  owns the combined public listener and its transport policy.
+- **Dev loop.** `pnpm dev` runs Vite with HMR and proxies the Spock protocol to
+  `127.0.0.1:4000`; `pnpm build` regenerates `dist/`, and the following Cargo
+  build embeds it. Release CI performs and guards that sequence.
+- **Cost, stated plainly.** Studio contributors and release jobs need the pinned
+  Node/pnpm toolchain; users still receive a single native process with no Node
+  runtime dependency. The framework is justified by the shipped multi-view,
+  data-grid, filtering, paging, and contract-derived write surface; it does not
+  move authority into the client.
 
-`spock run` gains a startup-banner line advertising `/~studio`, matching the
+`spock run` prints a startup-banner line advertising `/~studio`, matching the
 existing banner style.
 
 ## 8. The surface ledger — the v0 slice
@@ -400,9 +401,9 @@ heuristic, never as contract truth. The authoritative signals are the anchor, th
 - **Not an access-control demo it can't back.** It does not gate row browsing by
   persona, because v0 doesn't (§4.1). It shows the floor is open, rather than
   pretending it's closed.
-- **Not a client library.** It does not squat the reserved `spock` npm name
-  (that's the future generic protocol client, RFD 0010) and does not ship a
-  data-layer package. It may *consume* `spock gen types`.
+- **Not a client library.** The `spock` npm name now belongs to the framework
+  CLI distribution; Studio does not create a second data-layer package or
+  claim authority over application data. It may *consume* `spock gen types`.
 - **Not a migration/ops tool.** No DB management, no seed regeneration UI (seed
   regeneration is a deliberate authoring-time act, RFD 0002 §2).
 - **Not on the language critical path.** If Studio and a language milestone
@@ -414,19 +415,24 @@ heuristic, never as contract truth. The authoritative signals are the anchor, th
 - The ledger widens automatically: when `role`/`view`/`policy` land, the same
   screen gains the role and via columns of RFD 0004 §5 — Studio renders whatever
   the contract grows, additively (RFD 0014 §8 keeps the contract additive).
-- When REST writes and the filter dialect land, the deferred edit/filter surfaces
-  (§5.2) unlock with no architectural change — the row viewer already speaks
-  `/rest/v1/{table}`.
+- RFD 0021's filter dialect already widened the row viewer without an
+  architectural change. Contract-derived creation now uses GraphQL; future
+  update/delete UX can consume a deliberate write boundary without changing
+  Studio's authority posture.
 - The `X-Spock-Actor` knob is stable; a v1 `Authorization: Bearer` path is a
   second, additive credential source Studio can offer alongside the dev header.
 
 ## 11. Deferrals — every one named
 
-1. Inline row **editing** — waits on REST writes (RFD 0009 track 5).
-2. Table **filter / sort / keyset paging** UI — waits on the filter RFD (track 3).
+1. Existing-row **update/delete** — creation is shipped through the compiled
+   GraphQL insert surface; the data grid itself remains read-only.
+2. **Exact counts and safe keyset cursors** — filtering, ordering, and bounded
+   offset paging are shipped; a deep offset is not presented as a stable cursor.
 3. **Authoring-time scaffold** to `.spock` — additive, Wall-2-bound, fast-follow.
 4. **Live views / effect streams** — post-v0.
-5. **Hostable / tunneled** Studio, and any **`CorsLayer`** — local-only for MVP.
+5. **Hostable / tunneled** Studio and framework-host cross-origin policy —
+   local-only for MVP. The standalone language server's permissive development
+   CORS does not turn Studio into a hosted surface.
 6. **`reads_actor`** authoritative bit — deferred by RFD 0014 §8; Studio uses a
    labeled heuristic meanwhile.
 7. **Role / policy / view** ledger columns — arrive with v1 governance.
@@ -437,36 +443,36 @@ heuristic, never as contract truth. The authoritative signals are the anchor, th
    implementation work (S2). Exact counts and safe keyset cursors remain the
    protocol findings already recorded in `examples/filter-lab/FEEDBACK.md`.
 
-## 12. Open questions (for ratification)
+## 12. Decisions resolved by implementation
 
-1. ~~**Framework.**~~ **Resolved:** the MVP shipped no-framework (vanilla,
-   `include_str!`-embedded) — the smallest, fastest, most Wall-3-aligned option.
-   Revisit only if the page outgrows a single file.
-2. **`/~personas` source — live rows vs seed projection.** Proposed: the anchor
-   table's *current* rows (reflects inserts during a session). Alternative: only
-   `contract.seed` rows (stable, but stale after inserts). (Lean: live rows, capped.)
-3. **`/~personas` cap and ordering.** Proposed cap 100; ordering by key. Is a
-   deterministic order (seed order) worth preserving?
-4. **Startup default.** Should `spock run` print/open `/~studio` by default, or
-   behind a `--studio` flag / a `spock studio` subcommand? (Lean: serve always,
-   advertise in the banner, never auto-open a browser.)
-5. **Heuristic actor-read hint.** Is the `fn.sql` substring scan (§8) worth
-   showing at all in v0, given RFD 0014 deliberately deferred `reads_actor` as
-   fragile? (Lean: show it, clearly labeled "heuristic," because the alternative
-   is the developer scanning bodies by hand.)
-6. ~~**CI posture for the Node build.**~~ **Moot as shipped:** there is no Node
-   build — the page is a committed `.html` embedded via `include_str!`, so CI
-   stays cargo-only. This returns only if a bundled SPA is later adopted.
+1. **Framework.** Vite + React + TypeScript, styled with Tailwind/shadcn and
+   embedded with `rust-embed`. This changed the authoring implementation, not
+   the one-process/offline runtime boundary.
+2. **`/~personas` source.** Current rows from the anchor table, so inserts in the
+   running generation are reflected.
+3. **`/~personas` cap and ordering.** At most 100 rows, ordered by the canonical
+   anchor key.
+4. **Startup default.** Always serve Studio and advertise it in the startup
+   banner; never open a browser automatically.
+5. **Heuristic actor-read hint.** Show a clearly non-authoritative scan for
+   `spock_actor(` in function SQL. The contract still does not claim a
+   `reads_actor` bit.
+6. **CI posture for the Node build.** The pinned Node/pnpm build is accepted and
+   required before the Rust build in release CI. The resulting assets embed in
+   the binary, so Node remains absent from the user runtime.
 
 ## 13. What ships, in one paragraph
 
-A `spock run` server gains two read-only `~`-endpoints — `/~personas` (the anchor
+A `spock run` server exposes two read-only `~`-endpoints — `/~personas` (the anchor
 table projected to `{actor, label}`) and `/~whoami` (`{actor, anonymous, known}`,
 never rejects) — and serves a same-origin SPA at `/~studio`. Studio is a pure
 consumer of `/~contract`: it browses the schema, inspects rows over
-`/rest/v1/{table}`, runs fns over `/rest/v1/rpc/{fn}`, embeds GraphiQL, and renders
-the v0 surface ledger. Its differentiator is a persona switcher that sets
+`/rest/v1/{table}` with server-side filters, ordering, and bounded offset paging,
+creates rows through the compiled GraphQL insert surface, runs fns over
+`/rest/v1/rpc/{fn}`, links GraphiQL, and renders the v0 surface ledger. Its
+differentiator is a persona switcher that sets
 `X-Spock-Actor` on every request, so fns and `= me` write-stamps re-answer as maya,
 luis, or anonymous — the executable PRD, played. It never edits schema, never
 gates what the floor doesn't gate, and never competes with the language roadmap:
-editing and filtering wait, visibly, on REST writes and the filter RFD.
+existing-row update/delete, exact counts, and keyset cursors remain explicit
+deferrals rather than invented capabilities.

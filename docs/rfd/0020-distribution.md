@@ -16,11 +16,9 @@ concrete constraint and marked inline. The maintainer decisions that remain
 genuinely open are in §10.
 
 Local framework acceptance assembles the exact 21-file package topology and
-sidecar inventory. With the current arm64 native build staged in each platform
-slot solely for that topology smoke, it packs to 16,911,083 bytes; release CI
-remains authoritative for the four real platform artifacts and rejects any
-package above 25 MiB. This local proof does not replace the still-pending first
-framework workflow dry run.
+sidecar inventory. Release CI remains authoritative for the four real platform
+artifacts and rejects any package above 25 MiB. This local proof does not
+replace the still-pending first framework workflow dry run.
 
 ## 0. Where this fits
 
@@ -83,10 +81,9 @@ forced by publishing. **npm Trusted Publishing (OIDC) is configured for the
 `spock` package only.** Each `@scope/spock-<plat>` package would need its own
 trusted-publisher config, which cannot be set until the package exists — a
 bootstrap that needs a one-time token. Bundling keeps v0 **tokenless** through
-the one already-trusted package. The current local framework binary is
-8,008,832 bytes uncompressed and the package-topology smoke is about 16.9 MB;
-the workflow's hard 25 MiB limit keeps the all-platform trade-off explicit.
-That remains cheap enough for v0 that simplicity wins.
+the one already-trusted package. The workflow's hard 25 MiB limit keeps the
+all-platform trade-off explicit and makes package growth fail visibly. That
+remains cheap enough for v0 that simplicity wins.
 `optionalDependencies` remains the documented end-state (§7), for when the
 platform packages are worth bootstrapping.
 
@@ -180,7 +177,7 @@ this has a single, simple answer: **every build job runs `pnpm build` before
    SPA.
 
 The SPA output is platform-independent, so building it once and fanning it out
-via `upload-artifact` would also work — but with only three jobs, the per-job
+via `upload-artifact` would also work — but with only four target jobs, the per-job
 build is simpler (no artifact plumbing) *and* it validates that `pnpm build`
 succeeds on macOS and Windows, which it has never been exercised on (the studio
 has only ever been built on one Mac). That validation is worth the few extra
@@ -370,8 +367,8 @@ legacy 2014 `spock` versions are
 layout (esbuild, `@swc/core`, `@biomejs/biome`, oxlint) is a thin `spock`
 wrapper listing one prebuilt-binary package per platform as exact-pinned
 `optionalDependencies` (each with `os`/`cpu`), so a user downloads only their
-platform's native binary (currently about 8 MB uncompressed) plus the shared
-sidecar instead of every platform binary. v0 does **not** use it: each
+platform's native binary plus the shared sidecar instead of every platform
+binary. v0 does **not** use it: each
 `@scope/spock-<plat>` package needs its own trusted-publisher config, which
 can't be set until the package exists — a bootstrap requiring a one-time token,
 against the tokenless goal. When the download-size saving is worth the
@@ -395,7 +392,7 @@ binary; the sidecar is runtime browser machinery, not a template dependency.
 | # | Decision | Recommendation | Trade-off |
 |---|---|---|---|
 | D1 | Orchestrator | **Hand-rolled `npm.yml`** for npm-only; adopt `dist` later when installers + brew are added | About 500 explicit lines including framework/package verification; `dist` re-enters when its currently unused outputs become wanted. |
-| D2 | npm layout | **Single package, all binaries bundled** (not `optionalDependencies`) | 16.9 MB local framework topology smoke and a hard 25 MiB release gate; tokenless through the one trusted `spock` package. `optionalDependencies` is deferred until worth a bootstrap token (§7). |
+| D2 | npm layout | **Single package, all binaries bundled** (not `optionalDependencies`) | Hard 25 MiB release gate; tokenless through the one trusted `spock` package. `optionalDependencies` is deferred until worth a bootstrap token (§7). |
 | D3 | Linux binary | **glibc for v0** (`ubuntu-22.04`); static-musl as the follow-up | glibc covers most hosts and isolates first-release CI variables; musl needs another target, linker toolchain, and runtime smoke. |
 | D4 | Studio prebuild | **plain `pnpm build` step per job + non-empty guard** | Rebuilds the SPA in each build job (cheap) and validates the mac/Windows build. |
 | D5 | Studio for crates.io | *(deferred)* `include = ["studio/dist/**"]` + check-only `build.rs` | Recorded so it isn't re-derived when crates.io is picked up. |
@@ -427,8 +424,8 @@ and stays tokenless.
 
 **P0 — `npm i -g spock` (or `npx spock`) and run it. _Done._**
 - [x] Housekeeping: `git rm now`; `studio/dist/.gitkeep` kept committed.
-- [x] Add the `[profile.release]` levers (§3); keep `opt-level = 3`. The original
-      binary was ~5 MB; the local framework build is 8,008,832 bytes.
+- [x] Add the `[profile.release]` levers (§3); keep `opt-level = 3` and enforce
+      the package-size budget in release CI.
 - [x] Trusted publishing configured for `spock` (OIDC; no token). _(maintainer)_
 - [x] Grow `npm/` into the `spock` package + `bin/spock.js` shim (§7).
 - [x] Write `.github/workflows/npm.yml`: the 4-target build matrix (pnpm build

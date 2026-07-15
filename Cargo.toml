@@ -36,6 +36,8 @@ predicates = "3"
 toml = "0.8"
 tempfile = "3"
 sha2 = "0.10"
+same-file = "1"
+unicode-normalization = "0.1"
 
 # Release binaries are distributed over npm (RFD 0020); trim size without
 # trading away SQLite throughput — keep opt-level at the default 3, since

@@ -18,10 +18,8 @@ use spock_project::{
 };
 use thiserror::Error;
 
-use crate::{
-    apply_write_plan, full_load_check, ApplyError, CheckSummary, FileProgram, ProgramLoadError,
-    RootPolicy,
-};
+use crate::write_plan::{apply_prepared_write_plan, PreparedWriteRoot, PreparedWriteTarget};
+use crate::{full_load_check, ApplyError, CheckSummary, FileProgram, ProgramLoadError};
 
 /// A successful polymorphic `spock check` result.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -243,7 +241,7 @@ pub struct NewProjectNameError {
     pub reason: String,
 }
 
-/// Failure while planning or atomically applying `spock new`/`spock init`.
+/// Failure while planning or safely applying `spock new`/`spock init`.
 #[derive(Debug, Error)]
 pub enum ProjectWriteError {
     #[error(transparent)]
@@ -275,14 +273,15 @@ pub fn create_project(
 ) -> Result<ProjectWriteSummary, ProjectWriteError> {
     validate_new_project_name(name)?;
     let cwd = canonical_directory(cwd, "working directory")?;
-    let destination = cwd.join(name);
+    let prepared_parent = prepare_write_root(&cwd, "working directory")?;
+    let destination = prepared_parent.path().join(name);
     let client = (!backend_only).then(minimal_uhura_client_template);
     let plan = scaffold_plan(&destination, name, client.as_ref())?;
-    let inventory = ProjectInventory::empty(destination);
+    let inventory = ProjectInventory::empty(destination.clone());
     plan.preflight(&inventory)?;
     apply_project_plan(
         &plan,
-        RootPolicy::NewDestination,
+        PreparedWriteTarget::new_child(prepared_parent, name),
         ProjectWriteOperation::New,
     )
 }
@@ -303,12 +302,21 @@ pub fn init_project(
         Some(path) => cwd.join(path),
         None => cwd,
     };
-    let inventory = ProjectInventory::scan(&selected)?;
+    let selected = canonical_directory(&selected, "adoption root")?;
+    let prepared_root = prepare_write_root(&selected, "adoption root")?;
+    let inventory = prepared_root.inventory()?;
+    prepared_root
+        .validate()
+        .map_err(|source| ProjectWriteError::ResolveDirectory {
+            role: "adoption root",
+            path: selected,
+            source,
+        })?;
     let plan = adoption_plan(&inventory, None)?;
     plan.preflight(&inventory)?;
     apply_project_plan(
         &plan,
-        RootPolicy::ExistingAdoptionRoot,
+        PreparedWriteTarget::existing(prepared_root),
         ProjectWriteOperation::Init,
     )
 }
@@ -348,9 +356,20 @@ fn canonical_directory(path: &Path, role: &'static str) -> Result<PathBuf, Proje
     Ok(canonical)
 }
 
+fn prepare_write_root(
+    path: &Path,
+    role: &'static str,
+) -> Result<PreparedWriteRoot, ProjectWriteError> {
+    PreparedWriteRoot::open(path).map_err(|source| ProjectWriteError::ResolveDirectory {
+        role,
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
 fn apply_project_plan(
     plan: &spock_project::WritePlan,
-    policy: RootPolicy,
+    target: PreparedWriteTarget,
     operation: ProjectWriteOperation,
 ) -> Result<ProjectWriteSummary, ProjectWriteError> {
     let manifest_write = plan
@@ -362,7 +381,7 @@ fn apply_project_plan(
     let project_name = manifest.project().as_str().to_string();
     let includes_client = manifest.client().is_some();
 
-    let applied = apply_write_plan(plan, policy)?;
+    let applied = apply_prepared_write_plan(plan, target)?;
     Ok(ProjectWriteSummary {
         operation,
         root: applied.root().to_path_buf(),
@@ -596,5 +615,21 @@ mod tests {
             Some(spock_project::DiagnosticCode::AmbiguousBackend),
         );
         assert!(!temporary.path().join(MANIFEST_FILE).exists());
+    }
+
+    #[test]
+    fn init_rejects_portable_manifest_alias_before_other_writes() {
+        let temporary = TestDirectory::new();
+        let aliased_manifest = temporary.path().join("SPOCK.TOML");
+        fs::write(&aliased_manifest, "owned-by-existing-project\n").unwrap();
+
+        let error = init_project(None, temporary.path()).unwrap_err();
+
+        assert!(matches!(error, ProjectWriteError::ProjectPlan(_)));
+        assert_eq!(
+            fs::read_to_string(aliased_manifest).unwrap(),
+            "owned-by-existing-project\n"
+        );
+        assert!(!temporary.path().join("backend").exists());
     }
 }

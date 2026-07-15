@@ -24,7 +24,8 @@ pub use manifest::{
 };
 pub use path::{resolve_contained, ContainedPath, NormalizedRelativePath, PathValidationError};
 pub use plan::{
-    adoption_plan, scaffold_plan, ClientTemplate, InventoryEntryKind, PlanKind, PlannedWrite,
-    ProjectInventory, TemplateFile, WritePlan, DEFAULT_BACKEND_SOURCE,
+    adoption_plan, is_ignored_inventory_directory, scaffold_plan, ClientTemplate,
+    InventoryEntryKind, PlanKind, PlannedWrite, ProjectInventory, TemplateFile, WritePlan,
+    DEFAULT_BACKEND_SOURCE,
 };
 pub use starter::minimal_uhura_client_template;

@@ -1,6 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use unicode_normalization::UnicodeNormalization;
 
 use crate::diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, ProjectResult};
 use crate::manifest::{ProjectManifest, MANIFEST_FILE};
@@ -10,6 +12,14 @@ pub const DEFAULT_BACKEND_SOURCE: &str =
     "// This project has no authority contract yet. Keep this file empty until it does.\n";
 
 const IGNORED_SCAN_DIRECTORIES: &[&str] = &[".git", ".spock", "node_modules", "target"];
+
+/// Whether a directory is operational noise rather than an adoption input.
+///
+/// Filesystem adapters outside this crate use the same policy when they walk
+/// from an already-pinned directory handle.
+pub fn is_ignored_inventory_directory(name: &str) -> bool {
+    IGNORED_SCAN_DIRECTORIES.contains(&name)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InventoryEntryKind {
@@ -38,14 +48,23 @@ impl ProjectInventory {
         entries: impl IntoIterator<Item = (NormalizedRelativePath, InventoryEntryKind)>,
     ) -> ProjectResult<Self> {
         let mut collected = BTreeMap::new();
+        let mut portable_names = BTreeMap::<String, NormalizedRelativePath>::new();
         let mut diagnostics = Diagnostics::new();
         for (path, kind) in entries {
-            if collected.insert(path.clone(), kind).is_some() {
-                diagnostics.push(Diagnostic::new(
-                    DiagnosticCode::PlanConflict,
-                    format!("inventory contains duplicate path `{path}`"),
-                ));
+            let key = portable_case_key(&path);
+            if let Some(existing) = portable_names.get(&key) {
+                let message = if existing == &path {
+                    format!("inventory contains duplicate path `{path}`")
+                } else {
+                    format!(
+                        "inventory contains `{existing}` and `{path}`, which name the same destination on supported case- or normalization-insensitive filesystems"
+                    )
+                };
+                diagnostics.push(Diagnostic::new(DiagnosticCode::PlanConflict, message));
+                continue;
             }
+            portable_names.insert(key, path.clone());
+            collected.insert(path, kind);
         }
         if !diagnostics.is_empty() {
             return Err(diagnostics);
@@ -79,10 +98,7 @@ impl ProjectInventory {
 
         let mut entries = BTreeMap::new();
         scan_directory(&canonical_root, &canonical_root, &mut entries)?;
-        Ok(Self {
-            root: canonical_root,
-            entries,
-        })
+        Self::from_entries(canonical_root, entries)
     }
 
     pub fn root(&self) -> &Path {
@@ -151,7 +167,7 @@ fn scan_directory(
         if kind == InventoryEntryKind::Directory
             && !relative
                 .file_name()
-                .is_some_and(|name| IGNORED_SCAN_DIRECTORIES.contains(&name))
+                .is_some_and(is_ignored_inventory_directory)
         {
             scan_directory(root, &path, entries)?;
         }
@@ -309,13 +325,20 @@ impl WritePlan {
         }
 
         let mut diagnostics = Diagnostics::new();
+        let portable_entries = inventory
+            .entries
+            .iter()
+            .map(|(path, kind)| (portable_case_key(path), (path, *kind)))
+            .collect::<BTreeMap<_, _>>();
         for write in &self.writes {
-            if let Some(kind) = inventory.kind(&write.relative_path) {
+            if let Some((existing, kind)) =
+                portable_entries.get(&portable_case_key(&write.relative_path))
+            {
                 diagnostics.push(Diagnostic::new(
                     DiagnosticCode::PlanConflict,
                     format!(
-                        "would overwrite existing {} `{}`",
-                        kind_name(kind),
+                        "would overwrite existing {} `{existing}` with planned path `{}`",
+                        kind_name(*kind),
                         write.relative_path
                     ),
                 ));
@@ -323,18 +346,22 @@ impl WritePlan {
             }
             let mut parent = write.relative_path.parent();
             while !parent.is_project_root() {
-                if let Some(kind @ (InventoryEntryKind::File | InventoryEntryKind::Symlink)) =
-                    inventory.kind(&parent)
-                {
-                    diagnostics.push(Diagnostic::new(
-                        DiagnosticCode::PlanConflict,
-                        format!(
-                            "cannot create `{}` because ancestor `{parent}` is an existing {}",
-                            write.relative_path,
-                            kind_name(kind)
-                        ),
-                    ));
-                    break;
+                if let Some((existing, kind)) = portable_entries.get(&portable_case_key(&parent)) {
+                    if *existing != &parent || *kind != InventoryEntryKind::Directory {
+                        let reason = if *existing != &parent {
+                            format!(
+                                "ancestor `{parent}` aliases existing {} `{existing}` on supported case- or normalization-insensitive filesystems",
+                                kind_name(*kind)
+                            )
+                        } else {
+                            format!("ancestor `{parent}` is an existing {}", kind_name(*kind))
+                        };
+                        diagnostics.push(Diagnostic::new(
+                            DiagnosticCode::PlanConflict,
+                            format!("cannot create `{}` because {reason}", write.relative_path),
+                        ));
+                        break;
+                    }
                 }
                 parent = parent.parent();
             }
@@ -539,20 +566,41 @@ fn finish_plan(
     mut writes: Vec<PlannedWrite>,
 ) -> ProjectResult<WritePlan> {
     writes.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
-    let mut seen = BTreeSet::new();
+    let mut seen = BTreeMap::<String, NormalizedRelativePath>::new();
     let mut diagnostics = Diagnostics::new();
     for write in &writes {
-        if !seen.insert(write.relative_path.clone()) {
-            diagnostics.push(Diagnostic::new(
-                DiagnosticCode::PlanConflict,
-                format!("plan writes `{}` more than once", write.relative_path),
-            ));
+        let key = portable_case_key(&write.relative_path);
+        if let Some(existing) = seen.get(&key) {
+            let message = if existing == &write.relative_path {
+                format!("plan writes `{}` more than once", write.relative_path)
+            } else {
+                format!(
+                    "plan writes `{existing}` and `{}`, which name the same destination on supported case- or normalization-insensitive filesystems",
+                    write.relative_path
+                )
+            };
+            diagnostics.push(Diagnostic::new(DiagnosticCode::PlanConflict, message));
+        } else {
+            seen.insert(key, write.relative_path.clone());
         }
     }
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
     Ok(WritePlan { kind, root, writes })
+}
+
+fn portable_case_key(path: &NormalizedRelativePath) -> String {
+    // Windows' ordinal case-insensitive comparison is based on uppercase
+    // mappings. Canonical decomposition also collapses the normalization
+    // aliases used by supported macOS filesystems. Applying both is
+    // deliberately conservative for portable planning (for example, both
+    // Greek sigma spellings map to Σ, and é aliases e + combining acute).
+    path.as_str()
+        .chars()
+        .flat_map(char::to_uppercase)
+        .nfd()
+        .collect()
 }
 
 #[cfg(test)]
@@ -601,6 +649,92 @@ mod tests {
         let manifest =
             std::str::from_utf8(plan.write("spock.toml").unwrap().contents.as_slice()).unwrap();
         assert!(manifest.contains("[client]"));
+    }
+
+    #[test]
+    fn write_plan_rejects_case_insensitive_destination_aliases() {
+        let diagnostics = finish_plan(
+            PlanKind::Scaffold,
+            PathBuf::from("/future/demo"),
+            vec![
+                planned("client/App/page.uhura", Vec::new()).unwrap(),
+                planned("client/app/PAGE.uhura", Vec::new()).unwrap(),
+            ],
+        )
+        .unwrap_err();
+
+        assert_eq!(diagnostics.len(), 1);
+        let diagnostic = diagnostics.into_vec().remove(0);
+        assert_eq!(diagnostic.code, DiagnosticCode::PlanConflict);
+        assert!(diagnostic.message.contains("client/App/page.uhura"));
+        assert!(diagnostic.message.contains("client/app/PAGE.uhura"));
+        assert!(diagnostic
+            .message
+            .contains("case- or normalization-insensitive filesystems"));
+    }
+
+    #[test]
+    fn portable_alias_checks_cover_inventory_and_unicode_uppercase_equivalence() {
+        let inventory_error = ProjectInventory::from_entries(
+            "/project",
+            [
+                entry("client/App/page.uhura", InventoryEntryKind::File),
+                entry("client/app/PAGE.uhura", InventoryEntryKind::File),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(inventory_error.len(), 1);
+        assert!(inventory_error.into_vec()[0]
+            .message
+            .contains("case- or normalization-insensitive filesystems"));
+
+        let unicode_error = finish_plan(
+            PlanKind::Scaffold,
+            PathBuf::from("/future/demo"),
+            vec![
+                planned("client/σ.uhura", Vec::new()).unwrap(),
+                planned("client/ς.uhura", Vec::new()).unwrap(),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(unicode_error.len(), 1);
+
+        let normalization_error = finish_plan(
+            PlanKind::Scaffold,
+            PathBuf::from("/future/demo"),
+            vec![
+                planned("client/café.uhura", Vec::new()).unwrap(),
+                planned("client/cafe\u{301}.uhura", Vec::new()).unwrap(),
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(normalization_error.len(), 1);
+    }
+
+    #[test]
+    fn preflight_rejects_existing_case_aliases_before_any_write() {
+        let root = PathBuf::from("/project");
+        let inventory = ProjectInventory::from_entries(
+            &root,
+            [
+                entry("SPOCK.TOML", InventoryEntryKind::File),
+                entry("Backend", InventoryEntryKind::Directory),
+            ],
+        )
+        .unwrap();
+        let plan = scaffold_plan(&root, "demo", None).unwrap();
+
+        let diagnostics = plan.preflight(&inventory).unwrap_err();
+
+        assert_eq!(diagnostics.len(), 2);
+        let messages = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.as_str())
+            .collect::<Vec<_>>();
+        assert!(messages
+            .iter()
+            .any(|message| message.contains("SPOCK.TOML")));
+        assert!(messages.iter().any(|message| message.contains("Backend")));
     }
 
     #[test]

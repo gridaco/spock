@@ -1,12 +1,14 @@
 #![forbid(unsafe_code)]
 
-//! Reusable implementation of Spock's file-oriented commands.
+//! Reusable implementation of Spock's project and standalone-language commands.
 //!
 //! This crate deliberately keeps argument parsing and terminal presentation in
-//! the `spock` binary. Consumers can load one `.spock` file, perform the same
-//! full-load proof as `spock check`, derive build/codegen artifacts, or prepare
-//! the historical standalone server without going through Clap or spawning a
-//! child process.
+//! the `spock` binary. It owns the command-layer workflows for discovering,
+//! checking, creating, and adopting framework projects, while retaining the
+//! language-level escape hatches that load one `.spock` file, derive
+//! build/codegen artifacts, or prepare the historical standalone server.
+//! Callers can reuse those workflows without going through Clap or spawning a
+//! child process; runtime generation and HTTP hosting remain in `spock-host`.
 
 mod project_commands;
 mod write_plan;

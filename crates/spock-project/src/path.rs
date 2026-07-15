@@ -98,6 +98,29 @@ impl NormalizedRelativePath {
                     "path contains a control character".to_string(),
                 ));
             }
+            if let Some(character) = segment
+                .chars()
+                .find(|character| matches!(character, '<' | '>' | ':' | '"' | '|' | '?' | '*'))
+            {
+                return Err(PathValidationError(format!(
+                    "path segment `{segment}` contains Windows-reserved character `{character}`"
+                )));
+            }
+            if segment.ends_with('.') {
+                return Err(PathValidationError(format!(
+                    "path segment `{segment}` must not end with `.`; Windows removes trailing dots"
+                )));
+            }
+            if segment.ends_with(' ') {
+                return Err(PathValidationError(format!(
+                    "path segment `{segment}` must not end with a space; Windows removes trailing spaces"
+                )));
+            }
+            if is_windows_device_name(segment) {
+                return Err(PathValidationError(format!(
+                    "path segment `{segment}` is a reserved Windows device name"
+                )));
+            }
         }
 
         Ok(Self(value.to_string()))
@@ -158,6 +181,50 @@ impl fmt::Display for NormalizedRelativePath {
 fn is_windows_drive_prefix(segment: &str) -> bool {
     let bytes = segment.as_bytes();
     bytes.len() == 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+fn is_windows_device_name(segment: &str) -> bool {
+    // Match the device-name guard used by the Windows capability adapter. The
+    // stem is the portion before the first dot, and Windows-compatible opens
+    // trim whitespace at the end of that stem before comparing it.
+    let stem = segment
+        .split_once('.')
+        .map_or(segment, |(stem, _)| stem)
+        .trim_end()
+        .to_uppercase();
+    matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM0"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "COM¹"
+            | "COM²"
+            | "COM³"
+            | "LPT0"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+            | "LPT¹"
+            | "LPT²"
+            | "LPT³"
+    )
 }
 
 /// One logical project-relative path and its canonical absolute resolution.
@@ -355,6 +422,52 @@ mod tests {
             );
         }
         assert!(NormalizedRelativePath::file(".").is_err());
+    }
+
+    #[test]
+    fn portable_paths_reject_windows_aliases_in_every_segment() {
+        for invalid in [
+            "schema:shadow/app.spock",
+            "schema/app.spock:shadow",
+            "schema./app.spock",
+            "schema/app.spock.",
+            "schema /app.spock",
+            "schema/app.spock ",
+            "schema/app<.spock",
+            "schema/app>.spock",
+            "schema/app\".spock",
+            "schema/app|.spock",
+            "schema/app?.spock",
+            "schema/app*.spock",
+            "schema/CON/app.spock",
+            "schema/prn.txt",
+            "schema/AUX",
+            "schema/nul.txt",
+            "schema/COM0",
+            "schema/COM1",
+            "schema/lpt0.log",
+            "schema/lpt9.log",
+            "schema/COM¹",
+            "schema/lpt².log",
+            "schema/CON .txt",
+            "schema/com³ .log",
+        ] {
+            assert!(
+                NormalizedRelativePath::file(invalid).is_err(),
+                "accepted Windows-ambiguous path {invalid:?}"
+            );
+        }
+
+        for valid in [
+            "app/home/page.examples.uhura",
+            "app/home/page.uhura",
+            "catalog/base.toml",
+            "fixtures/empty.toml",
+            "fixtures/scripts/empty.toml",
+            "uhura.toml",
+        ] {
+            assert_eq!(NormalizedRelativePath::file(valid).unwrap().as_str(), valid);
+        }
     }
 
     #[test]
