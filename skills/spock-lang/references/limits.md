@@ -45,7 +45,7 @@ Accepted smoke inputs:
 
 ```text
 examples/filter-lab/schema.spock
-examples/instagram-poc/app.spock
+uhura/examples/instagram/backend/app.spock
 examples/instagram/v0.spock
 ```
 

@@ -77,6 +77,20 @@ The manifest is required, as is its configured `.spock` entry. A project whose
 authority is not designed yet should keep that file empty; the client, health,
 status, contract metadata, Editor, and Play can still run.
 
+The repository's canonical full-stack example uses this exact shape at
+[`uhura/examples/instagram`](uhura/examples/instagram). Build its app-owned
+provider once, then one command checks and serves the authority and client:
+
+```sh
+corepack pnpm@10.11.0 -C uhura/web install --frozen-lockfile
+corepack pnpm@10.11.0 -C uhura/web build:provider
+npx --yes spock@0.5.0 start uhura/examples/instagram
+```
+
+This is also the distribution smoke: the second command runs the published npm
+CLI, not `target/debug/spock`. The same project remains independently checkable
+as a Spock backend and an Uhura client.
+
 `spock dev` deliberately has asymmetric reload semantics today. Valid Uhura
 client saves publish live. Invalid saves retain the last good Play generation
 when one exists; an initially invalid client is reported as `cold_invalid`
@@ -718,8 +732,8 @@ Cargo workspace deliberately excludes Uhura's own workspace, while
 source build of the framework requires an initialized recursive submodule;
 framework npm releases contain the resulting runtime and assets.
 
-For a source checkout, build the Uhura web and WebAssembly assets, then provide
-both roots together when running the framework host. Build Studio first too:
+For a source checkout, build the Uhura web and WebAssembly assets, then run the
+framework host against the project manifest. Build Studio first too:
 its `dist/` directory exists in a clean checkout but is intentionally empty
 until the SPA build runs.
 
@@ -731,11 +745,11 @@ corepack pnpm@10.11.0 -C uhura/web install --frozen-lockfile
 corepack pnpm@10.11.0 -C uhura/web check
 bash uhura/scripts/build-wasm.sh
 
-cargo run --locked -p spock-cli -- new demo
+cargo run --locked -p spock-cli -- check uhura/examples/instagram
 
 SPOCK_UHURA_WEB_DIST="$PWD/uhura/web/dist" \
 SPOCK_UHURA_WASM_DIST="$PWD/uhura/crates/uhura-wasm/pkg/web" \
-cargo run --locked -p spock-cli -- dev demo
+cargo run --locked -p spock-cli -- dev uhura/examples/instagram
 ```
 
 `build-wasm.sh` reports the lockfile-exact `wasm-bindgen-cli` install command

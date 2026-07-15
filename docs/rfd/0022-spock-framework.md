@@ -771,6 +771,9 @@ watcher convention.
   trailing-dot/space aliases, and case- or Unicode-normalization-equivalent
   duplicate destinations before filesystem mutation.
 - Empty-authority full-stack and backend-only projects check and start.
+- `uhura/examples/instagram` is the canonical non-empty full-stack proof: one
+  checked-in `spock.toml` composes its seeded Spock backend and complete Uhura
+  client without flattening either subsystem's configuration or asset plane.
 - For a full-stack project, one public port serves the configured Spock APIs,
   Studio, Uhura Editor, Play, status, environment, health, browser assets, and
   Wasm. Backend-only client routes return structured 404 responses.

@@ -309,7 +309,7 @@ mod tests {
 
     fn canonical_snapshot() -> ProjectSourceSnapshot {
         capture_project_snapshot(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../uhura/examples/instagram-uhura"),
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../uhura/examples/instagram/client"),
         )
     }
 
