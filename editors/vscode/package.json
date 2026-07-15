@@ -4,6 +4,11 @@
   "description": "Minimal local VS Code loader for the canonical Spock v0 TextMate grammar.",
   "version": "0.0.1",
   "license": "MIT",
+  "files": [
+    "LICENSE",
+    "language-configuration.json",
+    "syntaxes/**"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/gridaco/spock"
