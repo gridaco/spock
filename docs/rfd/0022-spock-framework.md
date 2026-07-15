@@ -748,8 +748,11 @@ watcher convention.
 - Real-browser acceptance covers Editor, Play navigation, hard-reloaded Play,
   and Studio with no console warnings or errors.
 - Root and independently runnable Uhura Rust gates, plus the Uhura
-  browser/provider gate, pass in their respective workspaces. The npm release
-  dry-run remains the authoritative four-platform integration proof.
+  browser/provider gate, pass in their respective workspaces. The first `0.5.0`
+  npm release dry run passed its four-target build and macOS/Linux/Windows
+  installed-package verification on 2026-07-15
+  ([Actions run 29379605382](https://github.com/gridaco/spock/actions/runs/29379605382));
+  that workflow remains the authoritative full-matrix integration proof.
 - The local package-topology smoke contains exactly 21 files and the release
   workflow rejects a packed artifact above 25 MiB. Release CI remains
   authoritative for the four real platform binaries.

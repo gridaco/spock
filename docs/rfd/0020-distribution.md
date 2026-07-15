@@ -2,13 +2,15 @@
 
 Status: **accepted**. The original npm-only binary pipeline was implemented and
 verified on `main` (2026-07-13); the RFD 0022 framework-sidecar extension is
-implemented in the release workflow and awaits its first release dry run. v0
-delivery remains **npm-only** — every other channel is deferred behind it (§2). The
-pipeline (`.github/workflows/npm.yml`) builds four platform binaries and one
-shared framework asset sidecar, publishes the single `spock` package
+implemented in the release workflow, and its first `0.5.0` full-matrix dry run
+passed on 2026-07-15
+([Actions run 29379605382](https://github.com/gridaco/spock/actions/runs/29379605382)).
+v0 delivery remains **npm-only** — every other channel is deferred behind it
+(§2). The pipeline (`.github/workflows/npm.yml`) builds four platform binaries
+and one shared framework asset sidecar, publishes the single `spock` package
 tokenlessly via OIDC trusted publishing, and verifies install-and-run on
-macOS/Linux/Windows — `npx spock` works. First
-published version: **`0.1.3`**. Three v0 simplifications departed from the
+macOS/Linux/Windows — `npx spock` works. First published version:
+**`0.1.3`**. Three v0 simplifications departed from the
 original draft — a single bundling package instead of `optionalDependencies`,
 glibc instead of musl on Linux, and provenance attestation left off (it
 intermittently races the large tarball's publish, §5) — each forced by a
@@ -17,8 +19,10 @@ genuinely open are in §10.
 
 Local framework acceptance assembles the exact 21-file package topology and
 sidecar inventory. Release CI remains authoritative for the four real platform
-artifacts and rejects any package above 25 MiB. This local proof does not
-replace the still-pending first framework workflow dry run.
+artifacts and rejects any package above 25 MiB. The `0.5.0` dry run installed
+and exercised that exact guarded tarball on macOS, Linux, and Windows after all
+four native targets built successfully; verification against the first real
+framework publish remains pending.
 
 ## 0. Where this fits
 
@@ -441,9 +445,14 @@ and stays tokenless.
 - [x] Write `CHANGELOG.md`.
 - [x] Extend the package with one shared Uhura web/Wasm sidecar; build it once,
       record commits/protocols/hashes/sizes, and enforce the 25 MiB packed gate.
-- [ ] Run the first framework release dry run, which now installs the exact
-      guarded tarball and verifies framework routes plus the sidecar on all
-      supported operating systems; then repeat against the first real publish.
+- [x] Run the first framework release dry run: the exact guarded `0.5.0`
+      tarball passed the four-target build and macOS/Linux/Windows
+      installed-package verification, including framework routes and sidecar
+      ([run 29379605382](https://github.com/gridaco/spock/actions/runs/29379605382)).
+
+**Framework release follow-through.**
+- [ ] Repeat the full-matrix verification against the first real framework
+      publish.
 
 **P1 — smoother first run.**
 - [ ] Re-enable provenance once the tarball is smaller (optionalDependencies)
