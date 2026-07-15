@@ -57,6 +57,22 @@ spock run app.spock              # materialize + serve GraphQL, REST, and Studio
 spock gen types app.spock        # emit TypeScript types
 ```
 
+### VS Code
+
+The Spock syntax extension is not published yet, but it can be packaged from
+this checkout and installed into the current VS Code user profile:
+
+```sh
+cd editors/vscode
+npx --yes @vscode/vsce package --out spock-textmate-loader.vsix
+code --install-extension ./spock-textmate-loader.vsix --force
+```
+
+Reload VS Code after installation. The grammar will then apply to `*.spock`
+files in every workspace that uses that profile, not only this repository. See
+the [VS Code grammar README](editors/vscode/README.md) for profile, graphical
+installation, update, and development-host details.
+
 ## Framework projects
 
 `spock new NAME` creates this canonical topology; `--backend-only` omits the
@@ -119,8 +135,9 @@ Studio and its client routes return structured 404 responses.
 backend restart is required.
 
 The canonical TextMate grammar and minimal local VS Code loader for `*.spock`
-files live in [`editors/vscode`](editors/vscode). The compiler remains the
-source of diagnostics and validation.
+files live in [`editors/vscode`](editors/vscode). It can be installed
+persistently from a local VSIX, while the compiler remains the source of
+diagnostics and validation.
 
 ## The picture
 

@@ -7,3 +7,6 @@
 
 # Framework web/Wasm sidecar assembled once during npm release (RFD 0022).
 /npm/share/
+
+# Locally packaged VS Code extension.
+/editors/vscode/*.vsix

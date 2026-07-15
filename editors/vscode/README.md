@@ -16,8 +16,32 @@ It associates `*.spock` files with language ID `spock` and provides:
 - comment toggling, pairs, indentation, word selection, and folding markers.
 
 There is no runtime JavaScript or TypeScript, dependency, lockfile, generated
-grammar source, packaging workflow, custom theme, or language server here. The
-Rust compiler remains the source of diagnostics and semantic validation.
+grammar source, automated packaging workflow, custom theme, or language server
+here. The Rust compiler remains the source of diagnostics and semantic
+validation.
+
+## Install for everyday use
+
+The loader is not published, but VS Code can install it persistently from a
+local VSIX. From the repository root:
+
+```sh
+cd editors/vscode
+npx --yes @vscode/vsce package --out spock-textmate-loader.vsix
+code --install-extension ./spock-textmate-loader.vsix --force
+```
+
+Reload VS Code after installation. This installs the grammar into the current
+VS Code user profile, so `*.spock` highlighting works in every local workspace
+that uses that profile rather than only inside this checkout. If you use
+multiple profiles, find **Spock TextMate Grammar (Local)** in the Extensions
+view and choose **Apply Extension to all Profiles**.
+
+If the `code` command is unavailable, run **Extensions: Install from VSIX**
+from the Command Palette and select the generated
+`spock-textmate-loader.vsix` file. A locally installed VSIX does not update
+automatically; after the grammar changes, pull the new source and rerun the two
+commands above.
 
 ## Load and inspect it locally
 
