@@ -1,0 +1,38 @@
+# Bootstrap ownership for Spock's governed surfaces.
+# @softmarshmallow is the verified repository administrator and sole interim
+# committee member documented by GOVERNANCE.md. This file names that account in
+# its bootstrap ownership capacity; replace or extend it with a Language Design
+# Committee team once that team exists and has explicit repository write access.
+
+# Community rules and contribution gates
+/CODE_OF_CONDUCT.md @softmarshmallow
+/CONTRIBUTING.md @softmarshmallow
+/GOVERNANCE.md @softmarshmallow
+/.github/CODEOWNERS @softmarshmallow
+/.github/pull_request_template.md @softmarshmallow
+/.github/ISSUE_TEMPLATE/ @softmarshmallow
+
+# Doctrine, governance, decisions, and the normative specification
+/README.md @softmarshmallow
+/docs/README.md @softmarshmallow
+/docs/governance/ @softmarshmallow
+/docs/rfd/ @softmarshmallow
+/docs/spec/ @softmarshmallow
+/docs/working-groups/README.md @softmarshmallow
+/docs/working-groups/0000-template/ @softmarshmallow
+/docs/working-groups/*/CHARTER.md @softmarshmallow
+/docs/working-groups/*/FINAL-REPORT.md @softmarshmallow
+
+# Implementations and mirrors of the public language contract
+/crates/spock-lang/ @softmarshmallow
+/crates/spock-runtime/Cargo.toml @softmarshmallow
+/crates/spock-runtime/src/ @softmarshmallow
+/crates/spock-runtime/tests/ @softmarshmallow
+/editors/vscode/language-configuration.json @softmarshmallow
+/editors/vscode/syntaxes/ @softmarshmallow
+/skills/spock-lang/ @softmarshmallow
+
+# Future numbered working-group studies and meeting notes are intentionally not
+# listed. Their research is non-normative and does not acquire language
+# authority from CODEOWNERS. The process, templates, official charters, and
+# final reports above remain governed.

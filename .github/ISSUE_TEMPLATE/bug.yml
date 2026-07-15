@@ -1,0 +1,103 @@
+name: Bug report
+description: Report behavior that contradicts Spock's current specified or shipped behavior.
+title: "[Bug]: "
+labels:
+  - bug
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping make Spock more reliable. Use this form for behavior that is broken relative to the current implementation, specification, or documentation.
+
+        If the expected result would introduce or redefine language syntax or semantics, open a **Language problem** instead. Remove credentials, personal data, and other secrets from every reproduction and log.
+
+  - type: checkboxes
+    id: existing-report
+    attributes:
+      label: Existing reports
+      options:
+        - label: I searched open and closed issues and did not find this bug already reported.
+          required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Spock version or revision
+      description: Give the released version, or the branch and commit for a source checkout.
+      placeholder: "0.5.1, or main at abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Language parser or checker
+        - Runtime, REST, GraphQL, or storage
+        - CLI or framework host
+        - Project discovery or scaffolding
+        - VS Code integration
+        - npm package or installation
+        - Documentation or examples
+        - Other or unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Provide the smallest program, project, command sequence, or repository that reliably demonstrates the bug.
+      placeholder: |
+        1. Create ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: input
+    attributes:
+      label: Relevant source or configuration
+      description: Include the smallest relevant .spock source, spock.toml, request, or other input. Remove secrets.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: State exactly what happened, including complete diagnostics or response details where useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Cite the current specification, documentation, or prior shipped behavior that establishes the expectation when possible. An accepted RFD alone does not define current behavior.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics and logs
+      description: Paste relevant output. Remove tokens, credentials, personal data, and unrelated logs.
+      render: shell
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, architecture, installation method, and relevant tool versions.
+      placeholder: "macOS 15 arm64; npm; Node 24"
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add anything else that helps distinguish or prioritize the failure.

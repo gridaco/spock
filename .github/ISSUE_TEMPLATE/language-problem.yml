@@ -1,0 +1,94 @@
+name: Language problem
+description: Bring a concrete language limitation for study; design sketches are welcome after the problem is clear.
+title: "[Language problem]: "
+labels:
+  - enhancement
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Spock is pre-1.0, and competing ideas are welcome. Begin with real use cases and a limitation in current Spock. Candidate syntax, designs, and prototypes may be included as exploratory evidence after the problem is clear.
+
+        This issue records exploration, not a design decision. The Language Design Committee may classify it as a bug, duplicate, covered by a current adoption default, outside Spock's direction, individual research, working-group study, or a candidate for a sponsored RFD. Exploration needs no sponsor; graduation into supported or default language behavior requires an accepted RFD.
+
+        Read the [language change process](https://github.com/gridaco/spock/blob/main/docs/governance/language-change-process.md), [design principles](https://github.com/gridaco/spock/blob/main/docs/governance/design-principles.md), and [current adoption defaults](https://github.com/gridaco/spock/blob/main/docs/governance/commonly-declined.md) first.
+
+  - type: checkboxes
+    id: preparation
+    attributes:
+      label: Helpful preparation (optional)
+      options:
+        - label: I checked the relevant specification, process, and current adoption material I could find.
+        - label: I searched related issues and RFDs as far as practical.
+
+  - type: input
+    id: problem-summary
+    attributes:
+      label: Problem summary
+      description: State the limitation in one sentence. Candidate syntax can be discussed in the optional design section below.
+      placeholder: "Authors cannot express ... when ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-cases
+    attributes:
+      label: Concrete use cases
+      description: Give realistic programs, product rules, or workflows blocked or distorted by the current language. Explain who encounters them and how often.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-behavior
+    attributes:
+      label: Current Spock behavior
+      description: Show what current Spock accepts, rejects, or forces the author to do. Include minimal source and diagnostics where useful.
+    validations:
+      required: true
+
+  - type: textarea
+    id: existing-mechanisms
+    attributes:
+      label: Why existing mechanisms are insufficient
+      description: Optional. Explain workarounds you tried, or say that you are unsure whether an existing mechanism already addresses the problem.
+
+  - type: textarea
+    id: principles
+    attributes:
+      label: Relationship to Spock's design principles
+      description: Optional at intake. Share any principles you think support studying this problem or that it may put in tension.
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and prior art you already know
+      description: Optional at intake. Cite useful examples, experiments, other languages, papers, or operational evidence without attempting a complete survey.
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Known requirements, constraints, and non-goals
+      description: Optional at intake. Describe what a satisfactory outcome should preserve and what this issue is not asking Spock to become.
+
+  - type: textarea
+    id: interactions
+    attributes:
+      label: Compatibility and feature interactions you already know
+      description: Optional at intake. Note likely effects you can already identify; a working group or RFD is responsible for a complete analysis.
+
+  - type: textarea
+    id: design-ideas
+    attributes:
+      label: Optional design ideas
+      description: After establishing the problem, share competing sketches, prototypes, branches, or alternatives worth studying. These are welcome as non-normative evidence, not proposed consensus.
+
+  - type: checkboxes
+    id: acknowledgement
+    attributes:
+      label: Process acknowledgement
+      options:
+        - label: I understand that this issue and any linked experiment record exploration, not an accepted language decision.
+          required: true
+        - label: If an experiment should become supported or default language behavior, it will follow the RFD process before graduation.
+          required: true

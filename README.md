@@ -780,6 +780,28 @@ overrides are an explicit unanchored source/test trust boundary.
 `spock start` and `spock dev` are the only umbrella lifecycle: one project,
 listener, origin, and coordinated shutdown.
 
+## Contributing and language evolution
+
+Spock welcomes implementation, documentation, testing, research, and competing
+pre-1.0 experiments. Sketches and isolated prototypes do not need prior design
+approval when they are clearly non-normative. A syntax, semantic,
+public-contract, or normative-specification change must be authorized by an
+accepted RFD before it becomes supported language behavior.
+
+- [Code of Conduct](CODE_OF_CONDUCT.md) defines how participants treat one
+  another in every Spock space, including working-group meetings.
+- [Contributing](CONTRIBUTING.md) routes usage questions, bugs, implementation
+  work, language problems, governance requests, and pull requests.
+- [Governance](GOVERNANCE.md) defines the Language Design Committee and its
+  authority.
+- [Language change process](docs/governance/language-change-process.md) defines
+  how a problem advances through study, review, decision, implementation, and
+  specification.
+
+Anyone may raise a language problem or test a competing approach. Experiments
+are evidence, not precedent: opening a pull request does not grant design
+authority or make the experiment part of Spock's supported language contract.
+
 ## Repository Layout
 
 - `crates/spock-lang/` parses and checks the Spock language and contract IR.
@@ -788,6 +810,14 @@ listener, origin, and coordinated shutdown.
 - `crates/spock-host/` coordinates combined generations, routes, and assets.
 - `crates/spock-cli/` exposes framework, project, and language commands as the
   single `spock` binary.
+- `docs/spec/` defines the normative language and protocol implemented today.
+- `docs/rfd/` preserves legacy design history and, prospectively, sponsored
+  proposals and durable design decisions.
+- `docs/working-groups/` contains non-normative, problem-focused study.
+- `docs/governance/` contains the language-change process, design principles,
+  committee records, and current adoption defaults for recurring questions.
+- `examples/` contains product requirements, current-valid language slices, and
+  dogfood evidence; examples are not the specification.
 - `npm/` is the real four-platform distribution package and shared sidecar.
 - `uhura/` is the wired Uhura client-language submodule with its own workspace.
 

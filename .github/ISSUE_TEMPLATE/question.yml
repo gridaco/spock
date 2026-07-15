@@ -1,0 +1,43 @@
+name: Usage question
+description: Ask for help with current Spock behavior, tooling, or documentation.
+title: "[Question]: "
+labels:
+  - question
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for help with Spock as it exists today. If the question reveals a reproducible bug, maintainers may reclassify it. If it reveals a language-design question, maintainers may route it to language-problem intake for further exploration.
+
+  - type: input
+    id: summary
+    attributes:
+      label: Question
+      description: Ask one specific question.
+      placeholder: "How do I ...?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and minimal example
+      description: Show the smallest Spock source, command, or workflow that makes the question concrete.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Spock version or commit
+      placeholder: "v0.3.0 or commit SHA"
+    validations:
+      required: true
+
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Link documentation you read and explain what remains unclear.

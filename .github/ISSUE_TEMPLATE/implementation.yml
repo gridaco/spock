@@ -1,0 +1,107 @@
+name: Implementation or tooling work
+description: Propose contract-preserving work, an isolated experiment, or implementation authorized by an accepted RFD.
+title: "[Implementation]: "
+labels:
+  - enhancement
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for engineering work that preserves Spock's current specified language contract, an isolated pre-1.0 experiment, or a language change already authorized by an accepted RFD. This includes language and runtime implementation, developer tooling, distribution, tests, and documentation alignment.
+
+        If a desired language change does not yet have an accepted RFD, open a **Language problem**. A prototype may accompany it as non-normative evidence when it is unstable, opt-in, and unable to change default behavior or the specification. It does not become supported language behavior without an accepted RFD.
+
+  - type: checkboxes
+    id: intake-gate
+    attributes:
+      label: Intake gate
+      options:
+        - label: I searched existing issues and RFDs for this work.
+          required: true
+        - label: I understand that an experiment creates no precedent or compatibility promise and cannot become supported or default language behavior without an accepted RFD.
+          required: true
+
+  - type: dropdown
+    id: authority-path
+    attributes:
+      label: Work path
+      description: Choose the single path that describes why this work is eligible for project review.
+      options:
+        - Preserves the current specified language contract
+        - Isolated, opt-in, non-normative pre-1.0 experiment
+        - Implements a language change authorized by an accepted RFD
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Compiler or checker internals
+        - Runtime or protocol internals
+        - CLI or developer tooling
+        - Framework host
+        - Project discovery or scaffolding
+        - Editor integration
+        - Packaging, distribution, or release
+        - Documentation or examples
+        - Build, tests, or CI
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Engineering problem
+      description: Describe the concrete maintenance, reliability, usability, performance, tooling, or research question. A possible patch or prototype may be outlined below.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: State observable success criteria and who benefits.
+    validations:
+      required: true
+
+  - type: textarea
+    id: authority-evidence
+    attributes:
+      label: Basis and boundary evidence
+      description: For contract-preserving work, explain why the specified contract remains unchanged. For an experiment, identify its question, off-by-default entry point and warning, isolated tests/docs/surfaces, unchanged normal validation, owner, and review date. For an authorized language change, link the accepted RFD and tracking issue and identify the exact scope.
+    validations:
+      required: true
+
+  - type: textarea
+    id: approach
+    attributes:
+      label: Possible approach
+      description: Optional. Outline an implementation direction, relevant code, or alternatives already considered.
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and non-goals
+      description: Identify affected components and what this work deliberately will not change.
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification plan
+      description: List focused tests, fixtures, benchmarks, compatibility checks, or manual evidence that would demonstrate completion.
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and tradeoffs
+      description: Note migration, security, performance, compatibility, or maintenance consequences. Write "None known" only after considering them.
+    validations:
+      required: true

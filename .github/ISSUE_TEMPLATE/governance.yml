@@ -1,0 +1,67 @@
+name: Governance request
+description: Nominate a committee member, appeal a technical decision, or propose a governance-process change.
+title: "[Governance]: "
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this public form for Language Design Committee nominations, technical or process appeals, proposed governance amendments, and corrections to official governance records. An issue may propose an amendment; adoption still requires the public pull request, 10-day review, and committee decision in [GOVERNANCE.md](https://github.com/gridaco/spock/blob/main/GOVERNANCE.md#changing-this-governance).
+
+        Do **not** use it for a conduct report or conduct appeal. Those may contain private information and must follow the private route in the [Code of Conduct](https://github.com/gridaco/spock/blob/main/CODE_OF_CONDUCT.md).
+
+  - type: dropdown
+    id: request-type
+    attributes:
+      label: Request type
+      options:
+        - Committee membership nomination
+        - Technical or process appeal
+        - Proposed governance amendment or process concern
+        - Official record correction
+        - Other governance request
+    validations:
+      required: true
+
+  - type: input
+    id: governing-record
+    attributes:
+      label: Governing record
+      description: Link the decision, issue, RFD, meeting record, or governance section this request concerns. For a new nomination, link relevant public work instead.
+      placeholder: "https://github.com/gridaco/spock/..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: request
+    attributes:
+      label: Request and requested outcome
+      description: State the concrete action requested. For a nomination, name the candidate, relevant judgment and work, expected availability, and proposed term.
+    validations:
+      required: true
+
+  - type: textarea
+    id: grounds
+    attributes:
+      label: Grounds and evidence
+      description: For an appeal, identify new evidence, a material factual error, an unaddressed conflict, or a specific process failure. For another request, explain the evidence and process rationale.
+    validations:
+      required: true
+
+  - type: textarea
+    id: conflicts
+    attributes:
+      label: Conflicts and disclosures
+      description: Disclose relevant financial, employment, organizational, close personal, authorship, or other interests. Write "None known" only after considering them.
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: acknowledgement
+    attributes:
+      label: Public-process acknowledgement
+      options:
+        - label: This request contains no private conduct report, reporter identity, security secret, personal contact information, or other material unsafe for a public issue.
+          required: true
+        - label: I understand that an appeal must satisfy the published grounds; repeating a preference or counting supporters is not an appeal.
+          required: true
