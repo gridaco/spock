@@ -17,13 +17,12 @@ unit of work. The Spock–Uhura composition proof had a different unit:
 3. composition knowledge then carried by a shell script, two process
    lifecycles, and duplicated port configuration.
 
-The proof is real: [`scripts/spock-uhura.sh`](../../scripts/spock-uhura.sh)
-builds and runs both runtimes against the Instagram example. It is also the
-clearest inventory of what a framework host must replace. The script accepts
-one `.spock` program and one Uhura project root, builds two binaries, builds
-the Uhura web application, verifies that separately built Uhura Wasm artifacts
-exist, binds two ports, waits for health, and coordinates shutdown. The Uhura
-provider repeats the Spock port in `uhura.toml`.
+The temporary two-process proof ran both runtimes against the Instagram
+example and made the framework host's replacement inventory concrete. It
+accepted one `.spock` program and one Uhura project root, built two binaries
+and the Uhura web application, required separately built Uhura Wasm artifacts,
+bound two ports, waited for health, and coordinated shutdown. The Uhura
+provider repeated the Spock port in `uhura.toml`.
 
 “Spock as a framework” should mean:
 
@@ -382,7 +381,8 @@ One origin gives the product:
 The standalone Uhura command still owns a `tiny_http` listener. The framework
 instead consumes listener-free `uhura-host` routing through `spock-host`'s Axum
 fallback, so the public framework process now binds one Axum listener. The
-historical two-process runner remains only a transition and comparison oracle.
+temporary two-process proof was retired once the combined lifecycle became the
+canonical contributor path.
 
 The combined host emits no cross-origin CORS grant by default. Its own Studio,
 Editor, Play, and provider traffic is same-origin; the contributor Vite loop

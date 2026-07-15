@@ -777,10 +777,8 @@ executable, verifies the executable-bound manifest identity and its file
 inventory, and needs neither override nor a Node process at runtime. The paired
 overrides are an explicit unanchored source/test trust boundary.
 
-The historical `scripts/spock-uhura.sh` two-process runner remains a transition
-and comparison oracle for examples whose backend and client still live in
-separate roots. It is not the canonical framework topology; `spock start` and
-`spock dev` own one project, listener, origin, and lifecycle.
+`spock start` and `spock dev` are the only umbrella lifecycle: one project,
+listener, origin, and coordinated shutdown.
 
 ## Repository Layout
 
@@ -792,8 +790,6 @@ separate roots. It is not the canonical framework topology; `spock start` and
   single `spock` binary.
 - `npm/` is the real four-platform distribution package and shared sidecar.
 - `uhura/` is the wired Uhura client-language submodule with its own workspace.
-- `scripts/` retains transition and comparison tooling, not a second canonical
-  runtime topology.
 
 ## References and prior work
 
