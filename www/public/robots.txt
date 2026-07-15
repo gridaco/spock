@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://spock.sh/sitemap-index.xml

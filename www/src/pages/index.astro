@@ -1,0 +1,362 @@
+---
+import ExperienceTrace from '../components/marketing/experience-trace.astro';
+import SpaceShader from '../components/marketing/space-shader.astro';
+import SpockCode from '../components/marketing/spock-code.astro';
+import MarketingLayout from '../layouts/marketing-layout.astro';
+
+const title = 'Spock — Build the app before the stack.';
+const description =
+  'Spock turns a compact application model into a working backend, admin, and Uhura experience.';
+
+const manifestCode = [
+  'version = 1',
+  '',
+  '[project]',
+  'name = "demo"',
+  '',
+  '[backend]',
+  'root = "backend"',
+  'entry = "app.spock"',
+  '',
+  '[client]',
+  'root = "client"',
+].join('\n');
+
+const authorityCode = [
+  'auth table user {',
+  '  key id: uuid = auto',
+  '  username: text unique',
+  '  full_name: text?',
+  '  private: bool = false',
+  '  joined_at: timestamp = now',
+  '}',
+].join('\n');
+
+const frameworkLayers = [
+  {
+    label: 'language',
+    title: 'Spock language',
+    copy: 'Describe data, constraints, and operations in one compact model.',
+  },
+  {
+    label: 'framework',
+    title: 'One project',
+    copy: 'Check and run the backend, Studio, Editor, and experience together.',
+  },
+  {
+    label: 'experience',
+    title: 'Uhura language',
+    copy: 'Model interface states, transitions, and presentation.',
+  },
+];
+
+const roles = [
+  {
+    title: 'Teams stay aligned',
+    copy: 'Everyone reviews the same running prototype instead of reconciling decks, schemas, and mock APIs.',
+  },
+  {
+    title: 'Designers test the edges',
+    copy: 'Explore loading, empty, optimistic, accepted, and refused states before the production UI is built.',
+  },
+  {
+    title: 'Developers learn early',
+    copy: 'Test data, permissions, storage, and external boundaries before those decisions become expensive.',
+  },
+];
+---
+
+<MarketingLayout title={title} description={description}>
+  <main id="content">
+    <section class="bg-canvas" aria-labelledby="hero-title">
+      <div
+        class="mx-auto grid max-w-[1280px] border-x border-line lg:min-h-[700px] lg:grid-cols-[0.9fr_1.1fr]"
+      >
+        <div class="flex flex-col justify-center px-6 py-16 sm:px-10 sm:py-20 lg:px-16 lg:py-22">
+          <p
+            class="mb-6 font-mono text-[0.68rem] font-semibold tracking-[0.08em] text-accent"
+          >
+            spock framework
+          </p>
+          <h1
+            id="hero-title"
+            class="max-w-[680px] font-sans text-[clamp(3.2rem,5.2vw,5.4rem)] font-medium leading-[0.92] tracking-[-0.065em] text-ink"
+          >
+            Build the app before the stack.
+          </h1>
+          <p class="mt-8 max-w-[640px] text-[1.08rem] leading-7 text-muted sm:text-xl sm:leading-8">
+            Describe the product in one small project. Spock checks it and runs
+            the backend, admin, Editor, and working experience together, so the
+            team can test the product before committing to production
+            architecture.
+          </p>
+
+          <div class="mt-9 flex flex-wrap gap-3">
+            <a
+              class="inline-flex min-h-12 items-center justify-center rounded-md bg-ink px-5 text-sm font-semibold text-white outline-none transition-colors hover:bg-code-line focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
+              href="/docs/"
+            >
+              <span>get started</span>
+            </a>
+          </div>
+
+          <div class="hero-command mt-9" aria-label="Install the Spock CLI">
+            <span class="select-none text-code-muted">$</span>
+            <code>npm i -g spock</code>
+          </div>
+
+        </div>
+
+        <div
+          class="marketing-grid celestial-field flex min-w-0 flex-col justify-center border-t border-line bg-paper px-5 py-12 sm:px-10 sm:py-16 lg:border-l lg:border-t-0 lg:px-12"
+        >
+          <SpaceShader />
+          <div class="framework-artifact">
+            <SpockCode
+              code={manifestCode}
+              language="toml"
+              label="spock.toml"
+              meta="one command"
+            />
+            <div class="framework-routes" aria-label="Framework surfaces">
+              <span><code>/</code> Editor</span>
+              <span><code>/play</code> experience</span>
+              <span><code>/~studio</code> admin</span>
+              <span><code>/~project/status</code> project status</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="bg-paper" aria-label="Framework responsibility layers">
+      <div class="mx-auto grid max-w-[1280px] border-x border-t border-line md:grid-cols-3">
+        {
+          frameworkLayers.map((layer, index) => (
+            <article
+              class:list={[
+                'px-6 py-6 sm:px-8',
+                index < frameworkLayers.length - 1 &&
+                  'border-b border-line md:border-b-0 md:border-r',
+              ]}
+            >
+              <p class="font-mono text-[0.62rem] tracking-[0.05em] text-faint">{layer.label}</p>
+              <h2 class="mt-2 text-base font-semibold tracking-[-0.02em] text-ink">{layer.title}</h2>
+              <p class="mt-1 text-sm leading-6 text-muted">{layer.copy}</p>
+            </article>
+          ))
+        }
+      </div>
+    </section>
+
+    <section class="bg-canvas" aria-labelledby="authority-title">
+      <div class="mx-auto max-w-[1280px] border-x border-t border-line px-6 py-20 sm:px-10 sm:py-24 lg:px-16 lg:py-28">
+        <div
+          class="grid gap-8 lg:grid-cols-[minmax(0,1.35fr)_minmax(18rem,0.65fr)] lg:items-end"
+        >
+          <div>
+            <p
+              class="mb-5 font-mono text-[0.68rem] font-semibold tracking-[0.08em] text-accent"
+            >
+              the spock language
+            </p>
+            <h2
+              id="authority-title"
+              class="max-w-[48rem] font-sans text-[clamp(2.65rem,4.3vw,4.25rem)] font-medium leading-[1.04] tracking-[-0.04em] text-ink"
+            >
+              A language agents can write with confidence.
+            </h2>
+          </div>
+          <p class="max-w-xl text-base leading-7 text-muted lg:justify-self-end">
+            Spock keeps the model compact on purpose. People can review the
+            whole contract, while AI agents work with explicit types, checks,
+            defaults, and operations instead of guessing across a stack.
+          </p>
+        </div>
+
+        <div class="mt-14 grid overflow-hidden rounded-xl border border-line bg-paper lg:grid-cols-2">
+          <article class="flex min-w-0 flex-col border-b border-line p-6 sm:p-8 lg:border-b-0 lg:border-r lg:p-10">
+            <p class="font-mono text-[0.63rem] tracking-[0.05em] text-accent">spock language</p>
+            <h3 class="mt-4 max-w-lg text-3xl font-medium tracking-[-0.045em] text-ink">
+              Keep the whole model in view.
+            </h3>
+            <p class="mt-4 max-w-lg text-base leading-7 text-muted">
+              Describe entities, relationships, and the operations that change
+              them in one file. The result is readable to people and precise
+              enough for tools.
+            </p>
+            <SpockCode
+              code={authorityCode}
+              label="backend/app.spock"
+              meta="authority"
+              class="mt-8 w-full"
+            />
+          </article>
+
+          <article class="flex min-w-0 flex-col p-6 sm:p-8 lg:p-10">
+            <p class="font-mono text-[0.63rem] tracking-[0.05em] text-moss">spock studio</p>
+            <h3 class="mt-4 max-w-lg text-3xl font-medium tracking-[-0.045em] text-ink">
+              Write the model. The admin is ready.
+            </h3>
+            <p class="mt-4 max-w-lg text-base leading-7 text-muted">
+              Studio is generated from the running contract. Browse and edit
+              rows, inspect storage, and test identities without maintaining a
+              separate admin app.
+            </p>
+            <figure class="product-shot mt-8">
+              <img
+                src="/images/spock-studio.webp"
+                alt="Spock Studio showing the post table and the generated form for adding a row from the compiled contract."
+                width="3670"
+                height="2396"
+                loading="lazy"
+              />
+            </figure>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="night-sky text-white" aria-labelledby="uhura-title">
+      <SpaceShader stars />
+      <div class="mx-auto max-w-[1280px] border-x border-white/15 px-6 py-20 sm:px-10 sm:py-24 lg:px-16 lg:py-28">
+        <div class="grid gap-8 lg:grid-cols-[1fr_0.72fr] lg:items-end">
+          <div>
+            <p
+              class="mb-5 font-mono text-[0.68rem] font-semibold tracking-[0.08em] text-[#ffab63]"
+            >
+              the uhura language
+            </p>
+            <h2
+              id="uhura-title"
+              class="max-w-4xl font-sans text-[clamp(3rem,6vw,6rem)] font-medium leading-[0.92] tracking-[-0.07em]"
+            >
+              Design every state, not just the happy path.
+            </h2>
+          </div>
+          <p class="max-w-xl text-lg leading-8 text-white/68 lg:justify-self-end">
+            Uhura models interface states and transitions. Its Editor puts
+            loading, empty, optimistic, accepted, and refused states side by
+            side, so the flow can be reviewed before the production UI is
+            built.
+          </p>
+        </div>
+
+        <figure class="uhura-shot mt-14">
+          <div class="uhura-editor-shell">
+            <aside class="uhura-editor-sidebar" aria-hidden="true">
+              <div class="uhura-editor-sidebar-head">
+                <span>uhura editor</span>
+              </div>
+
+              <div class="uhura-editor-search">
+                <svg viewBox="0 0 20 20" aria-hidden="true">
+                  <circle cx="8.5" cy="8.5" r="4.75"></circle>
+                  <path d="m12 12 4 4"></path>
+                </svg>
+                <span>search previews</span>
+              </div>
+
+              <div class="uhura-editor-items">
+                <span>feed</span>
+                <span class="is-active">post</span>
+                <span>profile</span>
+                <span>followers</span>
+              </div>
+            </aside>
+
+            <div class="uhura-editor-canvas">
+              <img
+                src="/images/uhura-editor.webp"
+                alt="Uhura Editor canvas showing checked Instagram page states, transitions, and preview provenance."
+                width="3042"
+                height="2358"
+                loading="lazy"
+              />
+            </div>
+          </div>
+        </figure>
+
+        <div class="mt-18 grid gap-8 border-t border-white/15 pt-14 lg:grid-cols-[0.68fr_1.32fr] lg:gap-14">
+          <div>
+            <p class="font-mono text-[0.63rem] tracking-[0.05em] text-[#ffab63]">one interaction, end to end</p>
+            <h3 class="mt-4 text-3xl font-medium tracking-[-0.045em] sm:text-4xl">
+              The UI moves first. The server still decides what is true.
+            </h3>
+            <p class="mt-5 max-w-xl text-base leading-8 text-white/65">
+              Choose a state to follow one event through its optimistic result,
+              acceptance, or rollback. Uhura handles the temporary UI state;
+              the server remains the source of truth.
+            </p>
+          </div>
+          <ExperienceTrace />
+        </div>
+      </div>
+    </section>
+
+    <section class="bg-canvas" aria-labelledby="cycle-title">
+      <div class="mx-auto max-w-[1280px] border-x border-t border-line px-6 py-20 sm:px-10 sm:py-24 lg:px-16 lg:py-28">
+        <div class="grid gap-10 lg:grid-cols-[0.88fr_1.12fr] lg:items-end">
+          <div>
+            <p
+              class="mb-5 font-mono text-[0.68rem] font-semibold tracking-[0.08em] text-accent"
+            >
+              where spock fits
+            </p>
+            <h2
+              id="cycle-title"
+              class="max-w-3xl font-sans text-[clamp(2.8rem,5.2vw,5.2rem)] font-medium leading-[0.94] tracking-[-0.065em] text-ink"
+            >
+              Prototype the product, not the production stack.
+            </h2>
+          </div>
+          <p class="max-w-2xl text-lg leading-8 text-muted lg:justify-self-end">
+            Spock replaces the temporary tools teams assemble to answer product
+            questions: mock APIs, seed scripts, throwaway admin panels, and
+            disconnected click-throughs. Once the model holds together, move
+            on to the production implementation.
+          </p>
+        </div>
+
+        <div class="cycle-track mt-14" aria-label="Spock in the development cycle">
+          <div class="cycle-stage">
+            <span>before</span>
+            <strong>Idea and requirements</strong>
+          </div>
+          <div class="cycle-arrow" aria-hidden="true">→</div>
+          <div class="cycle-stage cycle-stage-active">
+            <span>spock</span>
+            <strong>Working application prototype</strong>
+          </div>
+          <div class="cycle-arrow" aria-hidden="true">→</div>
+          <div class="cycle-stage">
+            <span>after</span>
+            <strong>Production implementation</strong>
+          </div>
+        </div>
+
+        <div class="mt-8 grid overflow-hidden rounded-xl border border-line bg-paper md:grid-cols-3">
+          {
+            roles.map((role, index) => (
+              <article
+                class:list={[
+                  'min-h-48 p-7 sm:p-8',
+                  index < roles.length - 1 && 'border-b border-line md:border-b-0 md:border-r',
+                ]}
+              >
+                <h3 class="text-xl font-semibold tracking-[-0.035em] text-ink">{role.title}</h3>
+                <p class="mt-4 text-sm leading-7 text-muted">{role.copy}</p>
+              </article>
+            ))
+          }
+        </div>
+
+        <p class="mt-8 max-w-3xl text-sm leading-7 text-muted">
+          Spock is for local prototyping. It does not deploy or operate the
+          production system; it helps the team learn what that system needs to
+          be.
+        </p>
+      </div>
+    </section>
+  </main>
+</MarketingLayout>

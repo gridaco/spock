@@ -1,0 +1,97 @@
+---
+import { readFileSync } from 'node:fs';
+import { Code } from 'astro:components';
+
+interface Props {
+  code: string;
+  label?: string;
+  meta?: string;
+  language?: 'spock' | 'toml';
+  class?: string;
+}
+
+const {
+  code,
+  label = 'app.spock',
+  meta = 'current v0 syntax',
+  language = 'spock',
+  class: className,
+} = Astro.props;
+
+const sourceGrammar = JSON.parse(
+  readFileSync(
+    new URL(
+      '../../../../editors/vscode/syntaxes/spock.tmLanguage.json',
+      import.meta.url,
+    ),
+    'utf8',
+  ),
+);
+
+const spockGrammar = { ...sourceGrammar, name: 'spock' };
+const codeLanguage = language === 'toml' ? 'toml' : spockGrammar;
+
+const spockTheme = {
+  name: 'spock-dark',
+  type: 'dark' as const,
+  colors: {
+    'editor.background': '#121316',
+    'editor.foreground': '#e7e9ee',
+  },
+  settings: [
+    {
+      scope: ['comment', 'punctuation.definition.comment'],
+      settings: { foreground: '#7f8794' },
+    },
+    {
+      scope: ['keyword', 'storage.type', 'storage.modifier'],
+      settings: { foreground: '#ffad66' },
+    },
+    {
+      scope: ['entity.name', 'entity.name.function', 'support.function'],
+      settings: { foreground: '#8bd5ca' },
+    },
+    {
+      scope: ['support.type', 'entity.name.type', 'storage.type.primitive'],
+      settings: { foreground: '#ffd29a' },
+    },
+    {
+      scope: ['string', 'punctuation.definition.string'],
+      settings: { foreground: '#a6da95' },
+    },
+    {
+      scope: ['constant', 'constant.numeric', 'constant.language'],
+      settings: { foreground: '#ff8a4c' },
+    },
+    {
+      scope: ['variable', 'variable.parameter'],
+      settings: { foreground: '#cad3f5' },
+    },
+    {
+      scope: ['punctuation', 'meta.brace'],
+      settings: { foreground: '#6e738d' },
+    },
+  ],
+};
+---
+
+<div
+  class:list={[
+    'spock-code overflow-hidden rounded-xl border border-code-line bg-code shadow-[0_24px_70px_rgb(27_28_25_/_16%)]',
+    className,
+  ]}
+>
+  <div
+    class="flex min-h-11 items-center justify-between gap-4 border-b border-code-line px-4 font-mono text-[0.65rem] tracking-[0.04em] text-code-muted sm:px-5"
+  >
+    <span class="text-white">{label}</span>
+    <span>{meta}</span>
+  </div>
+  <Code
+    code={code}
+    lang={codeLanguage}
+    theme={spockTheme}
+    wrap={false}
+    aria-label={label + ' source'}
+  />
+</div>

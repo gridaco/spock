@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Spock documentation
+    url: https://spock.sh/docs/
+    about: Read the current language, framework, and project documentation.
   - name: Language change process
     url: https://github.com/gridaco/spock/blob/main/docs/governance/language-change-process.md
     about: Read how pre-1.0 exploration can graduate through working groups, RFDs, decisions, and supported implementation.

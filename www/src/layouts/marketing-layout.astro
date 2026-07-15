@@ -1,0 +1,46 @@
+---
+import Header from '../components/marketing/header.astro';
+import Footer from '../components/marketing/footer.astro';
+import '../styles/marketing.css';
+
+interface Props {
+  title: string;
+  description: string;
+}
+
+const { title, description } = Astro.props;
+const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url);
+---
+
+<!doctype html>
+<html lang="en" class="font-sans antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="theme-color" content="#f1f3f5" />
+    <meta name="color-scheme" content="light" />
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Spock" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta name="twitter:card" content="summary" />
+
+    <title>{title}</title>
+  </head>
+  <body>
+    <a
+      class="fixed left-4 top-4 z-50 -translate-y-24 rounded-md bg-ink px-4 py-2 text-sm font-semibold text-white outline-none transition-transform focus:translate-y-0 focus:ring-2 focus:ring-accent focus:ring-offset-2"
+      href="#content"
+    >
+      Skip to content
+    </a>
+    <Header />
+    <slot />
+    <Footer />
+  </body>
+</html>

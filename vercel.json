@@ -1,0 +1,7 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "astro",
+  "installCommand": "corepack pnpm@10.11.0 -C www install --frozen-lockfile",
+  "buildCommand": "corepack pnpm@10.11.0 -C www build",
+  "outputDirectory": "www/dist"
+}

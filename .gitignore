@@ -10,3 +10,10 @@
 
 # Locally packaged VS Code extension.
 /editors/vscode/*.vsix
+
+# Static documentation website.
+/www/.astro/
+/www/.vercel/
+/www/dist/
+/www/node_modules/
+.vercel
