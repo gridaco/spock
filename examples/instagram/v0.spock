@@ -1,5 +1,9 @@
 //! Instagram — the v0 slice.
 //!
+//! PROSPECTIVE RFD 0024 BRANCH PROTOTYPE — EXPERIMENTAL, UNSTABLE, AND
+//! NON-NORMATIVE. The top-level `error` declarations in this file are branch
+//! evidence, not supported v0.
+//!
 //! A working backend for the core Instagram experience: profiles and the
 //! follow graph (public follows, private-account requests, blocks and
 //! restrictions), posts and their media carousels, likes, comments, saves
@@ -10,10 +14,10 @@
 //! product surface layered over the auto-generated table CRUD — every
 //! mutation names the ways it can refuse.
 
-// This file uses only the implemented v0 surface (docs/spec/v0.md) and runs
-// on the toolchain in crates/:
+// Apart from the marked RFD 0024 declaration prototype, this file uses the
+// implemented v0 surface. Run it with the source toolchain on this branch:
 //
-//   spock run examples/instagram/v0.spock
+//   cargo run --locked -p spock-cli -- run examples/instagram/v0.spock
 //
 // It covers as much of PRD.md as today's language can say: the durable
 // entities, and a deliberate surface of fns over them. What it cannot say —
@@ -42,6 +46,34 @@
 //   - an add-media-tag fn — tag *permissions* (PRD) need the permission
 //     fields above; until then `insert_media_tag_one` on the floor is
 //     the same contract
+
+// ---------------------------------------------------------------------------
+// errors — authored product refusals
+// ---------------------------------------------------------------------------
+
+/// The action is unavailable because one user has blocked the other.
+error blocked
+
+/// The action is unavailable because the target account is private.
+error account_private
+
+/// A follow request is unnecessary because the target account is public.
+error account_public
+
+/// A denied follow request must be requested again before it can be approved.
+error request_denied
+
+/// An approved follow request cannot subsequently be denied.
+error request_approved
+
+/// A reply's parent comment does not exist or belongs to a different post.
+error parent_mismatch
+
+/// The collection does not belong to the acting user.
+error not_owner
+
+/// The post must be saved before it can be added to a collection.
+error not_saved
 
 // ---------------------------------------------------------------------------
 // rules — value validators (RFD 0013)

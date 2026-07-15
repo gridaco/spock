@@ -2613,6 +2613,7 @@ dependencies = [
 name = "uhura-editor-model"
 version = "0.0.0"
 dependencies = [
+ "serde",
  "serde_json",
  "uhura-base",
  "uhura-check",

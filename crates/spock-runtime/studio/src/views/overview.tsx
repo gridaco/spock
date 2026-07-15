@@ -121,9 +121,43 @@ export class Overview extends Component {
             </div>
           ) : null}
 
+          <SectionLabel>
+            Product error declarations <Badge variant="outline">RFD 0024 prototype</Badge>
+          </SectionLabel>
+          <p className="text-sm text-muted-foreground -mt-1 mb-2">
+            Experimental, unstable, and non-normative on this branch. These are reusable authored
+            outcomes: a declaration creates metadata only, and functions opt in through their own
+            failure lists.
+          </p>
+          <Card className="overflow-hidden p-0">
+            {(contract.errors ?? []).length ? (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b text-xs uppercase tracking-wide text-muted-foreground">
+                    <th className="text-left font-medium px-3 py-2">Code</th>
+                    <th className="text-left font-medium px-3 py-2">Documentation</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(contract.errors ?? []).map((error) => (
+                    <tr key={error.code} className="border-b last:border-0 align-top">
+                      <td className="px-3 py-2 font-mono">{error.code}</td>
+                      <td className="px-3 py-2">
+                        <Doc text={error.doc} className="text-sm" />
+                        {!error.doc ? <span className="text-muted-foreground">—</span> : null}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className="px-3 py-3 text-sm text-muted-foreground">none</div>
+            )}
+          </Card>
+
           <SectionLabel>Per-operation outcomes</SectionLabel>
           <p className="text-sm text-muted-foreground -mt-1 mb-2">
-            Every failure each operation can return. Explicit refusals are marked with ✦.
+            Every failure each operation can return. Product refusals are marked with ✦.
           </p>
           <Card className="overflow-hidden p-0">
             <table className="w-full text-sm">

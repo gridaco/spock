@@ -20,6 +20,11 @@ pub struct Contract {
     /// Additive under `spock: "v0"`; absent when undocumented.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
+    /// Authored product-error vocabulary. Declaring a code does not make any
+    /// function raise it; a function opts in through its `!` clause.
+    /// Additive under `spock: "v0"`.
+    #[serde(default)]
+    pub errors: Vec<ErrorDef>,
     pub tables: Vec<Table>,
     /// Named wire shapes (fn returns). Additive under `spock: "v0"` —
     /// `default` keeps pre-record contract JSON deserializable.
@@ -30,6 +35,15 @@ pub struct Contract {
     #[serde(default)]
     pub fns: Vec<FnDef>,
     pub seed: Vec<SeedRow>,
+}
+
+/// An explicitly declared, contract-global product-error symbol.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ErrorDef {
+    pub code: String,
+    /// The `///` docs preceding the declaration. Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -236,13 +250,13 @@ pub struct FnDef {
     pub readonly: bool,
     pub params: Vec<FnParam>,
     pub returns: FnReturn,
-    /// Declared error codes (`! a | b`) — metadata for introspection and
+    /// Error codes named by `! a | b` — metadata for introspection and
     /// clients; the runtime surfaces undeclared errors truthfully too.
     /// Refusals (see below) are included: `errors` is the full declared
     /// failure surface.
     pub errors: Vec<String>,
-    /// The subset of `errors` this fn *mints* (RFD 0012 §2.3): codes
-    /// backed by no constraint, raised from the body via
+    /// The subset of `errors` that are explicitly declared product errors:
+    /// codes backed by no constraint, raised from the body via
     /// `spock_refuse('<code>')` and routed only if declared here. Pre-v2
     /// JSON has no field; empty is correct — nothing was minted.
     #[serde(default)]
@@ -307,15 +321,38 @@ impl FnReturn {
     }
 }
 
-/// The reserved non-derived error codes (§6.1) — protocol-owned, frozen
-/// for v0.x. The one home: the checker's `!`-clause vocabulary and the
-/// TS emission both read from here, so the set cannot drift per crate.
-pub const RESERVED_CODES: [&str; 5] = [
-    "not_found",
-    "type_mismatch",
-    "unknown_field",
-    "bad_request",
-    "internal",
+/// The reserved non-derived error codes (§6.1, §8.3) — protocol-owned, frozen
+/// for v0.x. The one home: the checker, emitters, and runtime constructors all
+/// read these constants, so spellings cannot drift per crate.
+pub const NOT_FOUND_CODE: &str = "not_found";
+pub const TYPE_MISMATCH_CODE: &str = "type_mismatch";
+pub const UNKNOWN_FIELD_CODE: &str = "unknown_field";
+pub const BAD_REQUEST_CODE: &str = "bad_request";
+pub const INTERNAL_CODE: &str = "internal";
+pub const UNAUTHORIZED_CODE: &str = "unauthorized";
+pub const CONFLICT_CODE: &str = "conflict";
+
+pub const RESERVED_CODES: [&str; 7] = [
+    NOT_FOUND_CODE,
+    TYPE_MISMATCH_CODE,
+    UNKNOWN_FIELD_CODE,
+    BAD_REQUEST_CODE,
+    INTERNAL_CODE,
+    UNAUTHORIZED_CODE,
+    CONFLICT_CODE,
+];
+
+/// Protocol-owned codes that may appear on a function's declared failure
+/// surface. `unauthorized` and `conflict` are owned exclusively by the
+/// storage plane, so accepting them in `fn !` would silently reinterpret old
+/// product refusals while giving the function no mechanism that can emit
+/// them.
+pub const FN_RESERVED_CODES: [&str; 5] = [
+    NOT_FOUND_CODE,
+    TYPE_MISMATCH_CODE,
+    UNKNOWN_FIELD_CODE,
+    BAD_REQUEST_CODE,
+    INTERNAL_CODE,
 ];
 
 /// Resolve a builtin scalar type name (as `FnReturn::of` carries it).
@@ -510,6 +547,16 @@ mod tests {
         let contract = Contract {
             spock: "v0".into(),
             doc: Some("the whole contract".into()),
+            errors: vec![
+                ErrorDef {
+                    code: "account_private".into(),
+                    doc: Some("The account is not visible to this actor.".into()),
+                },
+                ErrorDef {
+                    code: "follow_self".into(),
+                    doc: None,
+                },
+            ],
             tables: vec![Table {
                 name: "user".into(),
                 doc: Some("a person".into()),
@@ -618,6 +665,11 @@ mod tests {
         assert!(json.contains("\"doc\": \"the whole contract\""));
         assert!(json.contains("\"doc\": \"a person\""));
         assert!(json.contains("\"doc\": \"rename a user\""));
+        assert!(json.contains("\"code\": \"account_private\""));
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["errors"][0]["code"], "account_private");
+        assert_eq!(value["errors"][1]["code"], "follow_self");
+        assert!(value["errors"][1].get("doc").is_none());
 
         let back: Contract = serde_json::from_str(&json).unwrap();
         assert_eq!(back.tables[0].name, "user");
@@ -631,6 +683,11 @@ mod tests {
         assert_eq!(back.fns[0].doc.as_deref(), Some("rename a user"));
         assert_eq!(back.fns[0].params[1].doc.as_deref(), Some("the new handle"));
         assert_eq!(back.fns[0].errors, vec!["user_username_taken"]);
+        assert_eq!(back.errors[0].code, "account_private");
+        assert_eq!(
+            back.errors[0].doc.as_deref(),
+            Some("The account is not visible to this actor.")
+        );
         assert_eq!(back.records[0].fields[0].name, "posts");
         assert!(matches!(
             back.seed[0].fields.get("invited_by"),
@@ -663,6 +720,7 @@ mod tests {
         let contract: Contract = serde_json::from_str(legacy).unwrap();
         assert!(contract.fns.is_empty());
         assert!(contract.records.is_empty());
+        assert!(contract.errors.is_empty());
         // a pre-doc contract has no `doc` (RFD 0016 additive under `spock: "v0"`)
         assert!(contract.doc.is_none());
 

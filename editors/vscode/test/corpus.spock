@@ -1,9 +1,14 @@
-//! VS Code TextMate corpus for the implemented Spock v0 language.
+//! VS Code TextMate corpus for the RFD 0024 branch prototype.
 //!
-//! This is both a visual scope fixture and an accepted compiler input.
+//! PROSPECTIVE, EXPERIMENTAL, UNSTABLE, AND NON-NORMATIVE: `error` is active
+//! only on this branch. This is a visual scope fixture and compiler input, not
+//! supported-v0 conformance.
 
 //// Four or more slashes are an ordinary comment, not documentation.
 // Ordinary comments use exactly the same line-comment delimiter.
+
+/// The caller is not allowed to rename the asset.
+error not_allowed
 
 /// Validates the field-level `check` used below.
 fn nonempty(
@@ -67,7 +72,7 @@ fn assets_by_owner(owner: user?) -> [asset] {
   """)
 }
 
-/// A mutation with two declared refusal codes.
+/// A mutation with two named error codes.
 mut fn rename_asset(
   asset_id: uuid,
   title: text,

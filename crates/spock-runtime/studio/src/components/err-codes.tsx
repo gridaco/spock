@@ -7,7 +7,7 @@ export interface ErrCode {
 }
 
 // Presentational only (no state) — the declared failure surface: errors[] with
-// the minted refusals[] subset marked (✦). Refusals get a stronger neutral
+// the product refusals[] subset marked (✦). Refusals get a stronger neutral
 // border; nothing is colored but genuine errors elsewhere.
 export function ErrCodes({ codes }: { codes: ErrCode[] }) {
   if (!codes.length) return <span className="text-muted-foreground">—</span>

@@ -195,6 +195,16 @@ the earlier record. Rejected and superseded RFDs remain in this directory.
 WG notes, prototypes, and examples remain non-normative even when cited by an
 RFD.
 
+## Prospective RFD index
+
+Entries in this table use the current two-axis process. A draft records a
+proposal under development, not an adopted language feature; implementation
+status tracks supported adoption and excludes branch experiments.
+
+| RFD | Title | Decision | Implementation |
+| --- | --- | --- | --- |
+| [0024](0024-error-declarations.md) | Nominal product-error declarations | Draft | Unplanned |
+
 ## Legacy RFD index
 
 Every entry below is a **legacy record**. “Recorded legacy status” closely

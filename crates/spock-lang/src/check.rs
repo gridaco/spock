@@ -221,13 +221,19 @@ impl Checker {
         // are the duplicate-name error (E001), not a second collision.
         self.check_derived_uniqueness(&tables, &spans);
 
+        // Authored product-error vocabulary. This runs only after derived
+        // errors exist so declarations can be checked against every runtime
+        // routing code, while remaining order-independent in source.
+        let errors = self.check_error_defs(file, &tables);
+
         // Seed (§4 E020–E028), against the lowered tables.
         let seed = self.check_seed(file, &tables);
 
-        // Phase C: records and fns (§4 E030–E039). Runs after derived
-        // errors are attached — the `!` clause validates against them.
+        // Phase C: records and fns (§4 E030–E039, E052). Runs after derived
+        // and authored errors are attached — the `!` clause validates against
+        // the complete contract-global vocabulary.
         let records = self.check_records(file, &table_names);
-        let fns = self.check_fns(file, &tables, &records, &table_names);
+        let fns = self.check_fns(file, &tables, &records, &table_names, &errors);
 
         // Phase D: validator-fn `check` references (RFD 0013 E041/E042).
         // Runs after fns exist and ref-key types are resolved (L-M).
@@ -236,11 +242,77 @@ impl Checker {
         Contract {
             spock: "v0".into(),
             doc: file.doc.clone(),
+            errors,
             tables,
             records,
             fns,
             seed,
         }
+    }
+
+    /// Lower the explicitly declared product-error vocabulary. Declarations
+    /// own names only: a fn must still list a product error in its `!` clause
+    /// before the runtime may route `spock_refuse()` to it.
+    fn check_error_defs(&mut self, file: &ast::File, tables: &[Table]) -> Vec<ErrorDef> {
+        let derived: HashMap<&str, (&str, &DerivedError)> = tables
+            .iter()
+            .flat_map(|table| {
+                table
+                    .errors
+                    .iter()
+                    .map(|error| (error.code.as_str(), (table.name.as_str(), error)))
+            })
+            .collect();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut errors = Vec::new();
+
+        for decl in &file.errors {
+            let code = decl.name.name.as_str();
+            if !seen.insert(code) {
+                self.error(
+                    "E051",
+                    format!("duplicate error declaration `{code}`"),
+                    decl.name.span,
+                );
+                continue;
+            }
+
+            if RESERVED_CODES.contains(&code) {
+                self.error(
+                    "E053",
+                    format!(
+                        "error declaration `{code}` collides with protocol-reserved code `{code}`; choose a distinct product-error name"
+                    ),
+                    decl.name.span,
+                );
+                continue;
+            }
+            if let Some((table, error)) = derived.get(code) {
+                let owner = if error.fields.is_empty() {
+                    format!("table `{table}`")
+                } else {
+                    format!(
+                        "table `{table}` over field(s) `{}`",
+                        error.fields.join("`, `")
+                    )
+                };
+                self.error(
+                    "E053",
+                    format!(
+                        "error declaration `{code}` collides with derived code `{code}` owned by {owner}; choose a distinct product-error name"
+                    ),
+                    decl.name.span,
+                );
+                continue;
+            }
+
+            errors.push(ErrorDef {
+                code: decl.name.name.clone(),
+                doc: decl.doc.clone(),
+            });
+        }
+
+        errors
     }
 
     /// Records (§3): named wire shapes. Scalar fields only; table-only
@@ -407,13 +479,22 @@ impl Checker {
         tables: &[Table],
         records: &[Record],
         table_names: &HashSet<&str>,
+        product_errors: &[ErrorDef],
     ) -> Vec<FnDef> {
-        // the `!` clause vocabulary: every derived code + the reserved five
+        // The `!` clause vocabulary: every derived code, every protocol-owned
+        // code a fn invocation can emit, and every explicitly declared
+        // product error. Storage-only reserved codes remain globally owned but
+        // are deliberately not valid on a fn surface.
         let mut vocabulary: HashSet<&str> = tables
             .iter()
             .flat_map(|t| t.errors.iter().map(|e| e.code.as_str()))
             .collect();
-        vocabulary.extend(RESERVED_CODES);
+        vocabulary.extend(FN_RESERVED_CODES);
+        let product_codes: HashSet<&str> = product_errors
+            .iter()
+            .map(|error| error.code.as_str())
+            .collect();
+        vocabulary.extend(product_codes.iter().copied());
         let record_names: HashSet<&str> = records.iter().map(|r| r.name.as_str()).collect();
 
         let mut names: HashMap<&str, Span> = HashMap::new();
@@ -528,13 +609,10 @@ impl Checker {
                 }
             };
 
-            // the `!` clause has two populations (RFD 0012 §2.3): a code
-            // in the vocabulary is a *reference* to a derived or reserved
-            // code; a code in neither is a *refusal minted by this fn* —
-            // raised from the body via spock_refuse(), routed at runtime.
-            // (The cost: a misspelled derived code now mints instead of
-            // erroring — dead metadata, never wrong behavior, since the
-            // real constraint still routes to the true code.)
+            // The `!` clause has three populations: references to derived
+            // codes, references to reserved protocol codes, and explicitly
+            // declared product refusals. Anything else is a typo, not an
+            // implicit declaration.
             let mut errors: Vec<String> = Vec::new();
             let mut refusals: Vec<String> = Vec::new();
             for code in &decl.errors {
@@ -547,6 +625,19 @@ impl Checker {
                     continue;
                 }
                 if !vocabulary.contains(code.name.as_str()) {
+                    let message = if RESERVED_CODES.contains(&code.name.as_str()) {
+                        format!(
+                            "protocol-reserved error code `{}` is not available on a function `!` surface; rename the product refusal and declare the new name at top level",
+                            code.name
+                        )
+                    } else {
+                        format!(
+                            "unknown error code `{}` in the `!` clause; declare it at top level with `error {}`",
+                            code.name, code.name
+                        )
+                    };
+                    self.error("E052", message, code.span);
+                } else if product_codes.contains(code.name.as_str()) {
                     refusals.push(code.name.clone());
                 }
                 errors.push(code.name.clone());
@@ -2672,20 +2763,134 @@ mod tests {
     }
 
     #[test]
-    fn unknown_error_codes_mint_refusals() {
-        // RFD 0012 §2.3: a code in the vocabulary is a reference; a code
-        // in neither population is a refusal minted by this fn
+    fn declared_product_errors_are_order_independent_refusals() {
         let contract = compile(&format!(
-            "{USER}fn f(name: text) -> user ! account_private | user_username_taken | not_found {{ unchecked sql(\"SELECT * FROM user WHERE username = :name\") }}"
+            "{USER}\
+             fn f(name: text) -> user ! account_private | user_username_taken | not_found {{ unchecked sql(\"SELECT * FROM user WHERE username = :name\") }}\n\
+             fn g() -> user? ! account_private {{ unchecked sql(\"SELECT * FROM user LIMIT 1\") }}\n\
+             /// The account is not visible to this actor.\n\
+             error account_private\n\
+             error unused_product_error"
         ))
-        .expect("mints, not errors");
+        .expect("declarations resolve regardless of source order");
+        assert_eq!(contract.errors.len(), 2);
+        assert_eq!(contract.errors[0].code, "account_private");
+        assert_eq!(
+            contract.errors[0].doc.as_deref(),
+            Some("The account is not visible to this actor.")
+        );
+        assert_eq!(contract.errors[1].code, "unused_product_error");
+        assert!(contract.errors[1].doc.is_none());
         let f = &contract.fns[0];
         assert_eq!(
             f.errors,
             vec!["account_private", "user_username_taken", "not_found"]
         );
-        // only the unbacked code is minted — references are not refusals
+        // Only the explicitly declared product code is a refusal; derived and
+        // reserved codes remain references.
         assert_eq!(f.refusals, vec!["account_private"]);
+        assert_eq!(contract.fns[1].refusals, vec!["account_private"]);
+    }
+
+    #[test]
+    fn declarations_alone_do_not_grant_raising() {
+        let contract = compile(&format!(
+            "{USER}error account_private\n\
+             fn f() -> user {{ unchecked sql(\"S\") }}"
+        ))
+        .unwrap();
+        assert_eq!(contract.errors[0].code, "account_private");
+        assert!(contract.fns[0].errors.is_empty());
+        assert!(contract.fns[0].refusals.is_empty());
+    }
+
+    #[test]
+    fn e051_duplicate_error_declaration() {
+        assert_eq!(
+            codes("error account_private\nerror account_private"),
+            vec!["E051"]
+        );
+    }
+
+    #[test]
+    fn e052_unknown_error_code_in_fn_clause() {
+        assert_eq!(
+            codes(&format!(
+                "{USER}fn f() -> user ! account_private {{ unchecked sql(\"S\") }}"
+            )),
+            vec!["E052"]
+        );
+    }
+
+    #[test]
+    fn e052_storage_only_reserved_code_in_fn_clause() {
+        for code in [UNAUTHORIZED_CODE, CONFLICT_CODE] {
+            let diagnostics = compile(&format!(
+                "{USER}fn f() -> user ! {code} {{ unchecked sql(\"S\") }}"
+            ))
+            .unwrap_err();
+            assert_eq!(
+                diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+                vec!["E052"],
+                "{code}"
+            );
+            assert!(
+                diagnostics[0]
+                    .message
+                    .contains("is not available on a function `!` surface"),
+                "{}",
+                diagnostics[0].message
+            );
+        }
+    }
+
+    #[test]
+    fn e053_error_declaration_collision() {
+        for code in RESERVED_CODES {
+            assert_eq!(codes(&format!("error {code}")), vec!["E053"], "{code}");
+        }
+
+        let all_derived_kinds = "table account { key id: uuid = auto\n\
+                                   slug: text unique\n\
+                                   mode: \"open\" | \"closed\" }\n\
+                                 table entry { key id: uuid = auto\n\
+                                   account: account }\n";
+        for code in [
+            "account_already_exists",
+            "account_slug_taken",
+            "account_slug_required",
+            "entry_account_not_found",
+            "account_restricted",
+            "account_mode_invalid",
+        ] {
+            assert_eq!(
+                codes(&format!("{all_derived_kinds}error {code}")),
+                vec!["E053"],
+                "{code}"
+            );
+        }
+
+        let diagnostics = compile(&format!("{USER}error user_username_taken")).unwrap_err();
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("owned by table `user` over field(s) `username`"),
+            "{}",
+            diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn product_error_namespace_is_separate_from_types_and_fns() {
+        let contract = compile(
+            "table account_private { key id: uuid = auto }\n\
+             fn account_private() -> bool { unchecked sql(\"SELECT true\") }\n\
+             error account_private",
+        )
+        .unwrap();
+        assert_eq!(contract.errors[0].code, "account_private");
+        assert!(contract.table("account_private").is_some());
+        assert!(contract.fn_def("account_private").is_some());
     }
 
     // --- file() seed assets (RFD 0018) ---

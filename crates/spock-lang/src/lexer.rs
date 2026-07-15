@@ -38,6 +38,7 @@ pub enum TokenKind {
     KwTable,
     KwAuth,
     KwRecord,
+    KwError,
     KwFn,
     KwMut,
     KwKey,
@@ -102,6 +103,7 @@ pub(crate) const ACTIVE_KEYWORDS: &[(&str, TokenKind)] = &[
     ("table", TokenKind::KwTable),
     ("auth", TokenKind::KwAuth),
     ("record", TokenKind::KwRecord),
+    ("error", TokenKind::KwError),
     ("fn", TokenKind::KwFn),
     ("mut", TokenKind::KwMut),
     ("key", TokenKind::KwKey),
@@ -141,7 +143,6 @@ pub(crate) const RESERVED_KEYWORDS: &[&str] = &[
     "view",
     "role",
     "policy",
-    "error",
     "state",
     "extern",
     "unsafe",
@@ -593,12 +594,13 @@ mod tests {
     }
 
     #[test]
-    fn fn_and_record_are_active_keywords() {
+    fn fn_record_and_error_are_active_keywords() {
         assert_eq!(
-            kinds("fn record mut"),
+            kinds("fn record error mut"),
             vec![
                 TokenKind::KwFn,
                 TokenKind::KwRecord,
+                TokenKind::KwError,
                 TokenKind::KwMut,
                 TokenKind::Eof
             ]
