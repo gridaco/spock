@@ -23,11 +23,11 @@ the spec.
 
 Spock ships as a single npm package with prebuilt binaries for macOS arm64/x64,
 GNU-libc Linux x64, and Windows x64 — no build step, no toolchain. Alpine and
-other musl-based Linux distributions are not supported yet. The framework
-package is implemented here but has not been published yet; the current npm
-release (`0.4.0`) still exposes only the standalone language commands.
+other musl-based Linux distributions are not supported yet. Framework commands
+begin with `0.5.0`; registry releases through `0.4.0` expose only the standalone
+language commands.
 
-With the first framework npm release:
+With the `0.5.0` framework npm release:
 
 ```sh
 npx spock new demo
@@ -35,13 +35,13 @@ cd demo
 npx spock dev
 ```
 
-Until then, the registry package remains useful for standalone programs:
+Standalone programs keep the same entry points:
 
 ```sh
 npx spock check app.spock
 npx spock run app.spock
 
-# or install the current release globally
+# or install globally
 npm i -g spock
 ```
 
@@ -689,10 +689,10 @@ derived error codes as literal unions — and `spock gen graphql-schema`
 prints the SDL for offline schema tooling.
 
 The package source under `npm/` is the primary no-checkout distribution path.
-The first framework npm release will carry all four native binaries plus one
+Starting with `0.5.0`, it carries all four native binaries plus one
 platform-independent Uhura Editor/Play and WebAssembly sidecar; the small Node
-shim only selects and owns the matching native process. The current registry
-release (`0.4.0`) predates that framework package and remains standalone-only.
+shim only selects and owns the matching native process. Releases through
+`0.4.0` predate that framework package and remain standalone-only.
 
 ## Uhura, the client language
 
@@ -709,7 +709,7 @@ own repository and is included here as a git submodule at `uhura/`. The root
 Cargo workspace deliberately excludes Uhura's own workspace, while
 `spock-host` consumes `uhura-host` through a path dependency. Consequently a
 source build of the framework requires an initialized recursive submodule;
-a framework npm release will already contain the resulting runtime and assets.
+framework npm releases contain the resulting runtime and assets.
 
 For a source checkout, build the Uhura web and WebAssembly assets, then provide
 both roots together when running the framework host. Build Studio first too:

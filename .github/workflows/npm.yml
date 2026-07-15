@@ -460,8 +460,9 @@ jobs:
             echo "::error::expected exactly one guarded npm tarball; found ${#packages[@]}"
             exit 1
           fi
-          npm install -g "${packages[0]}"
-          echo "installed ${packages[0]}"
+          package_path="$(pwd)/${packages[0]}"
+          npm install -g "$package_path"
+          echo "installed $package_path"
 
       - name: install spock from npm registry
         if: needs.publish.outputs.dry_run != 'true'
