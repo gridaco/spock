@@ -1,0 +1,96 @@
+//! VS Code TextMate corpus for the implemented Spock v0 language.
+//!
+//! This is both a visual scope fixture and an accepted compiler input.
+
+//// Four or more slashes are an ordinary comment, not documentation.
+// Ordinary comments use exactly the same line-comment delimiter.
+
+/// Validates the field-level `check` used below.
+fn nonempty(
+  /// The candidate text.
+  value: text,
+) -> bool {
+  unchecked sql("SELECT length(trim(:value)) > 0")
+}
+
+/// The development identity anchor.
+auth table user {
+  key id: uuid = auto
+  handle: text unique
+}
+
+/// An asset covering scalar, reference, closed-set, storage, and default forms.
+table asset {
+  key id: uuid = auto
+  owner: user = me on delete cascade
+  title: text check nonempty
+  rank: int = -42
+  score: float = -1.25
+  featured: bool = false
+  created_at: timestamp = now
+  kind: "image" | "video" = "image"
+  blob: storage_object?
+  unique (owner, title)
+}
+
+/// Optional and restrictive references exercise the remaining delete actions.
+table note {
+  key id: uuid = auto
+  asset: asset? on delete set null
+  author: user on delete restrict
+  body: text
+}
+
+/// Composite-key punctuation is intentionally present in the visual corpus.
+table grant {
+  user: user on delete cascade
+  asset: asset on delete cascade
+  key (user, asset)
+}
+
+/// Named return shape containing every scalar type.
+record asset_card {
+  id: uuid
+  title: text
+  rank: int
+  score: float
+  featured: bool
+  created_at: timestamp
+}
+
+/// A read function with an optional named parameter and many-row return.
+fn assets_by_owner(owner: user?) -> [asset] {
+  unchecked sql("""
+    SELECT * FROM asset
+    WHERE :owner IS NULL OR owner = :owner
+    ORDER BY created_at DESC
+  """)
+}
+
+/// A mutation with two declared refusal codes.
+mut fn rename_asset(
+  asset_id: uuid,
+  title: text,
+) -> asset ! not_found | not_allowed {
+  unchecked sql("""
+    UPDATE asset SET title = :title
+    WHERE id = :asset_id
+    RETURNING *
+  """)
+}
+
+seed {
+  ada = user { handle: "ada" }
+  sample = asset {
+    owner: ada,
+    title: "quote: \" slash: \\ newline: \n tab: \t",
+    blob: file("./corpus.spock"),
+  }
+  note {
+    asset: sample,
+    author: ada,
+    body: """A multiline raw string.
+Backslashes stay raw: \n \t.""",
+  }
+  grant { user: ada, asset: sample }
+}

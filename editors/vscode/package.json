@@ -1,0 +1,36 @@
+{
+  "name": "spock-textmate-loader",
+  "displayName": "Spock TextMate Grammar (Local)",
+  "description": "Minimal local VS Code loader for the canonical Spock v0 TextMate grammar.",
+  "version": "0.0.1",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gridaco/spock"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "spock",
+        "aliases": [
+          "Spock",
+          "spock"
+        ],
+        "extensions": [
+          ".spock"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "spock",
+        "scopeName": "source.spock",
+        "path": "./syntaxes/spock.tmLanguage.json"
+      }
+    ]
+  }
+}

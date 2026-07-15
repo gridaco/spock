@@ -104,6 +104,10 @@ Studio and its client routes return structured 404 responses.
 `/~health` remains ready-but-degraded when a client candidate is rejected or a
 backend restart is required.
 
+The canonical TextMate grammar and minimal local VS Code loader for `*.spock`
+files live in [`editors/vscode`](editors/vscode). The compiler remains the
+source of diagnostics and validation.
+
 ## The picture
 
 Today, one product rule — say, *"a member may publish a draft post"* — is

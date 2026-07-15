@@ -3,7 +3,7 @@
 
 use crate::ast::*;
 use crate::diag::Diagnostic;
-use crate::lexer::{Token, TokenKind};
+use crate::lexer::{Token, TokenKind, CONTEXTUAL_KEYWORDS, SOFT_KEYWORDS};
 use crate::span::Span;
 
 pub fn parse(tokens: Vec<Token>) -> Result<File, Diagnostic> {
@@ -384,14 +384,14 @@ impl Parser {
     // language marks its own limits (RFD 0011).
     fn sql_escape(&mut self) -> Result<SqlEscape, Diagnostic> {
         let marker = self.ident("`unchecked`")?;
-        if marker.name == "sql" {
+        if marker.name == CONTEXTUAL_KEYWORDS[1] {
             return Err(Diagnostic::new(
                 "L010",
                 "a fn body must acknowledge the escape: write `unchecked sql(\"...\")` — the checker cannot verify SQL (RFD 0011)",
                 marker.span,
             ));
         }
-        if marker.name != "unchecked" {
+        if marker.name != CONTEXTUAL_KEYWORDS[0] {
             return Err(Diagnostic::new(
                 "L010",
                 format!(
@@ -402,7 +402,7 @@ impl Parser {
             ));
         }
         let escape = self.ident("`sql`")?;
-        if escape.name != "sql" {
+        if escape.name != CONTEXTUAL_KEYWORDS[1] {
             return Err(Diagnostic::new(
                 "L010",
                 format!(
@@ -841,7 +841,7 @@ impl Parser {
         // `file` is only special immediately before `(`, so a binding or field
         // named `file` is unaffected.
         if let TokenKind::Ident(name) = &tok.kind {
-            if name == "file" && matches!(self.peek2().kind, TokenKind::LParen) {
+            if name == SOFT_KEYWORDS[0] && matches!(self.peek2().kind, TokenKind::LParen) {
                 return self.seed_file(tok.span);
             }
         }

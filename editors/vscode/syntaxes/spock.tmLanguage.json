@@ -1,0 +1,258 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Spock",
+  "scopeName": "source.spock",
+  "fileTypes": [
+    "spock"
+  ],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#declarations" },
+    { "include": "#contextual-forms" },
+    { "include": "#reserved-keywords" },
+    { "include": "#members" },
+    { "include": "#active-keywords" },
+    { "include": "#numbers" },
+    { "include": "#invalid-identifiers" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.spock",
+          "match": "////.*$"
+        },
+        {
+          "name": "comment.line.documentation.inner.spock",
+          "match": "//!.*$"
+        },
+        {
+          "name": "comment.line.documentation.outer.spock",
+          "match": "///(?!/).*$"
+        },
+        {
+          "name": "comment.line.double-slash.spock",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.triple.spock",
+          "begin": "\"\"\"",
+          "end": "\"\"\""
+        },
+        {
+          "name": "string.quoted.double.spock",
+          "begin": "\"",
+          "end": "\"|$",
+          "patterns": [
+            {
+              "name": "constant.character.escape.spock",
+              "match": "\\\\(?:[\"\\\\nt])"
+            },
+            {
+              "name": "invalid.illegal.escape.spock",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(auth)(\\s+)(table)(\\s+)([a-z_][a-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.modifier.spock" },
+            "3": { "name": "keyword.declaration.table.spock" },
+            "5": { "name": "entity.name.type.table.spock" }
+          }
+        },
+        {
+          "match": "\\b(table)(\\s+)([a-z_][a-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.table.spock" },
+            "3": { "name": "entity.name.type.table.spock" }
+          }
+        },
+        {
+          "match": "\\b(record)(\\s+)([a-z_][a-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.record.spock" },
+            "3": { "name": "entity.name.type.record.spock" }
+          }
+        },
+        {
+          "name": "meta.function.signature.spock",
+          "begin": "\\b(?:(mut)(\\s+))?(fn)(\\s+)([a-z_][a-z0-9_]*)(?=\\s*\\()",
+          "beginCaptures": {
+            "1": { "name": "storage.modifier.spock" },
+            "3": { "name": "keyword.declaration.function.spock" },
+            "5": { "name": "entity.name.function.spock" }
+          },
+          "end": "(?=\\{)",
+          "patterns": [
+            { "include": "#comments" },
+            {
+              "match": "\\b([a-z_][a-z0-9_]*)(\\s*)(:)",
+              "captures": {
+                "1": { "name": "variable.parameter.spock" },
+                "3": { "name": "punctuation.separator.type.spock" }
+              }
+            },
+            {
+              "match": "([!|])(\\s*)([a-z_][a-z0-9_]*)",
+              "captures": {
+                "1": { "name": "keyword.operator.error.spock" },
+                "3": { "name": "constant.other.error.spock" }
+              }
+            },
+            { "include": "#reserved-keywords" },
+            { "include": "#active-keywords" },
+            { "include": "#operators" },
+            {
+              "name": "entity.name.type.spock",
+              "match": "\\b[a-z_][a-z0-9_]*\\b"
+            }
+          ]
+        }
+      ]
+    },
+    "contextual-forms": {
+      "patterns": [
+        {
+          "match": "\\b(unchecked)(\\s+)(sql)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "keyword.other.escape.spock" },
+            "3": { "name": "support.function.builtin.sql.spock" }
+          }
+        },
+        {
+          "name": "support.function.builtin.file.spock",
+          "match": "\\bfile(?=\\s*\\()"
+        }
+      ]
+    },
+    "reserved-keywords": {
+      "patterns": [
+        {
+          "name": "invalid.illegal.reserved.spock",
+          "match": "\\b(?:view|role|policy|error|state|extern|unsafe|derived|protected|module|enum|expect|transition|upsert|match|with)\\b"
+        }
+      ]
+    },
+    "active-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.declaration.spock",
+          "match": "\\b(?:table|auth|record|fn|mut|seed)\\b"
+        },
+        {
+          "name": "keyword.other.constraint.spock",
+          "match": "\\b(?:key|unique|check|on|delete|restrict|cascade|set)\\b"
+        },
+        {
+          "name": "storage.type.spock",
+          "match": "\\b(?:text|int|float|bool|timestamp|uuid)\\b"
+        },
+        {
+          "name": "constant.language.spock",
+          "match": "\\b(?:null|auto|now|me|true|false)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.spock",
+          "match": "(?<![a-zA-Z0-9_.])-?[0-9]+\\.[0-9]+(?![a-zA-Z0-9_.])"
+        },
+        {
+          "name": "constant.numeric.integer.spock",
+          "match": "(?<![a-zA-Z0-9_.])-?[0-9]+(?![a-zA-Z0-9_.])"
+        }
+      ]
+    },
+    "members": {
+      "patterns": [
+        {
+          "match": "(:)(\\s*)((?!(?:text|int|float|bool|timestamp|uuid)\\b|file(?=\\s*\\())[a-z_][a-z0-9_]*)",
+          "captures": {
+            "1": { "name": "punctuation.separator.type.spock" },
+            "3": { "name": "entity.name.type.spock" }
+          }
+        },
+        {
+          "match": "\\b(check)(\\s+)([a-z_][a-z0-9_]*)(?!\\s*\\()",
+          "captures": {
+            "1": { "name": "keyword.other.constraint.spock" },
+            "3": { "name": "entity.name.function.validator.spock" }
+          }
+        },
+        {
+          "match": "(\\))(\\s+)([a-z_][a-z0-9_]*)(?=\\s*(?:[a-z_}]|$))",
+          "captures": {
+            "1": { "name": "punctuation.section.parens.end.spock" },
+            "3": { "name": "entity.name.function.validator.spock" }
+          }
+        },
+        {
+          "name": "variable.other.member.spock",
+          "match": "\\b[a-z_][a-z0-9_]*(?=\\s*:)"
+        },
+        {
+          "name": "variable.other.binding.spock",
+          "match": "\\b[a-z_][a-z0-9_]*(?=\\s*=\\s*[a-z_][a-z0-9_]*\\s*\\{)"
+        },
+        {
+          "name": "entity.name.type.seed.spock",
+          "match": "\\b(?!seed\\b)[a-z_][a-z0-9_]*(?=\\s*\\{)"
+        }
+      ]
+    },
+    "invalid-identifiers": {
+      "patterns": [
+        {
+          "name": "invalid.illegal.identifier.spock",
+          "match": "\\b(?=[A-Za-z0-9_]*[A-Z])[A-Za-z_][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.spock",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.assignment.spock",
+          "match": "="
+        },
+        {
+          "name": "keyword.operator.optional.spock",
+          "match": "\\?"
+        },
+        {
+          "name": "keyword.operator.union.spock",
+          "match": "\\|"
+        },
+        {
+          "name": "keyword.operator.error.spock",
+          "match": "!"
+        },
+        {
+          "name": "punctuation.separator.spock",
+          "match": "[:,]"
+        },
+        {
+          "name": "punctuation.section.spock",
+          "match": "[{}()\\[\\]]"
+        }
+      ]
+    }
+  }
+}
