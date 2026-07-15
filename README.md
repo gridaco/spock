@@ -1,6 +1,10 @@
+![Spock cover](.github/assets/spock-cover.webp)
+
 # 🖖 spock
 
 > It's only logical.
+
+[Website](https://spock.sh) · [Documentation](https://spock.sh/docs/)
 
 Spock is an early meta-framework for prototyping an application as one small,
 inspectable source of truth: a Spock authority backend plus an optional Uhura
