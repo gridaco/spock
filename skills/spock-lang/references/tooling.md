@@ -91,23 +91,26 @@ Signed URLs and stored objects are local to one run. Do not persist or expose th
 
 ## Spock and Uhura together
 
-For the checked-in Instagram proof of concept, run both processes with the repository launcher:
+For the canonical checked-in Instagram framework project, build its provider
+and run one process:
 
 ```sh
-./scripts/spock-uhura.sh \
-  examples/instagram-poc/app.spock \
-  uhura/examples/instagram-uhura
+corepack pnpm@10.11.0 -C uhura/web install --frozen-lockfile
+corepack pnpm@10.11.0 -C uhura/web build:provider
+spock dev uhura/examples/instagram
 ```
 
 Then verify:
 
 ```text
-http://127.0.0.1:8787/          Uhura Editor
-http://127.0.0.1:8787/play      live Uhura Play
+http://127.0.0.1:4000/          Uhura Editor
+http://127.0.0.1:4000/play      live Uhura Play
 http://127.0.0.1:4000/~studio   Spock Studio
 ```
 
-Stop old servers before using the default ports. If only the Uhura port is occupied, pass `--uhura-port`; changing the Spock port also requires matching provider configuration.
+All routes follow the framework `--port`. The legacy
+`scripts/spock-uhura.sh` runner is useful only when explicitly comparing two
+separate roots.
 
 ## Completion checklist
 

@@ -7,7 +7,10 @@ description: Build, inspect, validate, run, debug, and modify current Spock v0 b
 
 Treat the user's request as an executable engineering task. Produce or modify the program, run the relevant Spock commands, fix failures within scope, and finish with concrete verification evidence.
 
-Work against the implemented Spock v0 surface, not proposed syntax. Never invent a `spock init` command, multi-file module system, or future language construct. A new v0 project may be a directory containing a single `app.spock` program.
+Work against the implemented Spock v0 surface, not proposed syntax. `spock init`
+and `spock new` are framework-project commands; they do not introduce a
+multi-file language module system or future language constructs. A backend may
+still be a directory containing one `app.spock` program.
 
 ## Establish the environment
 
@@ -19,7 +22,7 @@ Work against the implemented Spock v0 surface, not proposed syntax. Never invent
 ## Select the source of truth
 
 - In the Spock source checkout, read `docs/spec/v0.md` when exact syntax or semantics matter and inspect `crates/spock-lang` when diagnosing the implementation.
-- In that checkout, use `examples/filter-lab/schema.spock`, `examples/instagram-poc/app.spock`, and `examples/instagram/v0.spock` as accepted-language examples.
+- In that checkout, use `examples/filter-lab/schema.spock`, `uhura/examples/instagram/backend/app.spock`, and `examples/instagram/v0.spock` as accepted-language examples.
 - Do not copy syntax from `examples/instagram/v1.spock`, `docs/rfd/0000-vision.spock`, or other paper programs. They explain design direction but do not override the current compiler.
 - In a consumer project, treat the selected CLI plus the bundled references as the usable contract. Record the CLI version when behavior differs from the references.
 - Run the toolchain instead of guessing whether a construct is accepted.

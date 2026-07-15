@@ -39,6 +39,8 @@ jobs:
         run: cargo test --locked --workspace
       - name: check the example
         run: cargo run --locked -p spock-cli -- check examples/instagram/v0.spock
+      - name: check the canonical framework example
+        run: cargo run --locked -p spock-cli -- check uhura/examples/instagram
 
   uhura:
     runs-on: ubuntu-latest
@@ -78,6 +80,6 @@ jobs:
         run: cargo test --locked --workspace --all-targets
       - name: check the canonical Uhura project
         run: |
-          cargo run --locked -p uhura-cli -- fmt --check examples/instagram-uhura
-          cargo run --locked -p uhura-cli -- check examples/instagram-uhura --deny-warnings
-          cargo run --locked -p uhura-cli -- trace examples/instagram-uhura --script=demo >/dev/null
+          cargo run --locked -p uhura-cli -- fmt --check examples/instagram/client
+          cargo run --locked -p uhura-cli -- check examples/instagram/client --deny-warnings
+          cargo run --locked -p uhura-cli -- trace examples/instagram/client --script=demo >/dev/null

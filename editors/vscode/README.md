@@ -34,7 +34,7 @@ The corpus covers the active lexical families and is also compiled by the Rust
 test suite. For larger manual smoke inputs, use:
 
 - `examples/filter-lab/schema.spock`
-- `examples/instagram-poc/app.spock`
+- `uhura/examples/instagram/backend/app.spock`
 - `examples/instagram/v0.spock`
 
 Do not use `examples/instagram/v1.spock` or `docs/rfd/0000-vision.spock` as

@@ -2,6 +2,13 @@
 
 This directory is for example application domains.
 
+The canonical combined-framework example lives at
+[`uhura/examples/instagram`](../uhura/examples/instagram). It keeps the same
+Instagram product domain but adds the authoritative backend, complete Uhura
+client, and `spock.toml` topology required by `spock start` and `spock dev`.
+This directory retains the product requirements, answer sheets, runnable
+language slices, generated clients, and future-facing language drafts.
+
 Each domain may start with a `PRD.md` that describes the product requirements
 without caring about Spock. The Spock language should fit the requirements, not
 the other way around.
