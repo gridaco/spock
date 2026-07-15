@@ -3,6 +3,31 @@
 All notable changes to Spock. Spock is a pre-1.0 prototype language; minor
 versions may break.
 
+## 0.5.0 — 2026-07-15
+
+This feature release makes the installed `spock` command the project-level
+host for a Spock authority and an optional Uhura client while preserving every
+standalone `.spock` language command.
+
+- **Framework projects.** `spock new` creates the canonical project shape;
+  `spock init` adopts existing sources without moving or overwriting them; and
+  project-wide `check`, `start`, and `dev` compose both language subsystems.
+- **One host.** Spock Studio, Uhura Editor and Play, framework status, and the
+  authority protocols share one process, port, and origin.
+- **Honest development reload.** Client generations hot-reload last-known-good.
+  Backend source, seed assets, and topology changes are detected and reported
+  as restart-required; they never migrate, reseed, or replace the active world.
+- **Distribution.** The npm package adds a verified Uhura web/WebAssembly
+  sidecar beside the four prebuilt native binaries and exercises the exact
+  guarded tarball on macOS, Linux, and Windows before release.
+- **Safety.** Project creation is capability-pinned, create-new-only, portable
+  across supported filesystems, and conservative under rollback and concurrent
+  replacement.
+
+Spock remains authoritative for durable facts, policy, and mutations. Uhura
+owns presentation, experience behavior, and non-authoritative UI-session state;
+composition does not make any fact authoritative in both languages.
+
 ## 0.4.0 — 2026-07-15
 
 This feature release turns the derived data floor into a practical query and
