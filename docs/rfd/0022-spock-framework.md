@@ -384,6 +384,12 @@ instead consumes listener-free `uhura-host` routing through `spock-host`'s Axum
 fallback, so the public framework process now binds one Axum listener. The
 historical two-process runner remains only a transition and comparison oracle.
 
+The combined host emits no cross-origin CORS grant by default. Its own Studio,
+Editor, Play, and provider traffic is same-origin; the contributor Vite loop
+uses a proxy. The standalone language server retains its explicitly permissive
+local-development CORS behavior. Any future framework allowlist is an explicit
+host configuration decision, not an ambient wildcard.
+
 ## 8. Both web products remain
 
 The web playgrounds are not a reason to avoid the framework. They are separate
@@ -399,17 +405,21 @@ They should be mounted separately, not collapsed into a single frontend or
 renamed as though they did the same work. Each subsystem retains ownership of
 its web source and browser-facing protocol.
 
-The distributed build now builds both web products and Uhura Wasm before
-assembling the `spock` package. RFD 0020's release workflow verifies each asset
-family, its exact sidecar inventory, and installed Editor/Play/Wasm routes on
-all supported operating systems. Node and Vite remain build-time dependencies;
-neither running server needs a Node process.
+The distributed build now builds the shared Uhura sidecar first, derives the
+exact raw manifest SHA-256, and compiles that identity into every native binary;
+Spock Studio remains a per-target embedded build. RFD 0020's release workflow
+verifies each asset family, the executable-to-sidecar binding and exact
+inventory, and installed Editor/Play/Wasm routes on all supported operating
+systems. Node and Vite remain build-time dependencies; neither running server
+needs a Node process.
 
-The release and source-build policy is also settled: building the public
-framework binary from source requires the initialized Uhura submodule. The npm
-package carries the already-built, verified sidecar; a source build fails
-clearly when its required submodule is absent rather than silently shipping an
-empty Editor or Play.
+The release and source-build policy is also settled: building the framework
+assets from source requires the initialized Uhura submodule. The npm package
+carries the already-built sidecar whose manifest identity is compiled into its
+binaries. An ordinary source binary has no packaged identity and therefore
+fails closed if an executable-relative sidecar appears; source and test runs
+must opt into their local trust boundary with both explicit asset-root
+overrides. A missing submodule cannot silently produce an empty Editor or Play.
 
 ## 9. Configuration and linker ownership
 
@@ -564,6 +574,19 @@ require a valid backend before binding. A configured invalid client also makes
 diagnostics with Play unavailable, and the first valid client save activates
 Play.
 
+Before named-state ownership or database opening, preparation re-resolves the
+project topology and recaptures backend and client fingerprints. Any content
+change, capture instability, or safe in-project root-symlink retarget makes the
+whole attempt unstable; `start` never binds a snapshot assembled across saves.
+
+Once a client attempt becomes observable as `building`, its lifecycle always
+finishes it as published or rejected and then invalidates project status. A
+newer project observation rejects a now-ineligible build immediately, including
+when the new topology removes the client. The coordinator transition is proven
+off to the side before Uhura installation, so a publication error leaves the
+last-good client untouched and cannot strand the status machine waiting for
+another filesystem event.
+
 ### 12.2 Routes and empty authority
 
 The stable route ownership is:
@@ -586,7 +609,8 @@ The stable route ownership is:
 /~health                  aggregate host readiness
 ```
 
-The framework owns final fallback, CORS, body limits, and collision checks.
+The framework owns final fallback, cross-origin policy, body limits, and
+collision checks; the accepted same-origin default installs no CORS grant.
 Unknown protocol paths return protocol 404/method responses, never SPA HTML.
 An empty or comment-only backend is valid. It serves contract metadata and the
 configured client, but `/graphql/v1` is absent with a structured 404 because
@@ -622,10 +646,16 @@ pin, not a lower MSRV promise.
 
 The npm package carries one shared, platform-independent Uhura web/Wasm sidecar
 tree plus a versioned manifest of protocol versions, commits, hashes, and
-sizes. It is resolved relative to the installed executable, with an explicit
-test/source override; `uhura-host` never searches a source tree at runtime.
-Spock Studio stays embedded initially. Canonical scaffold bytes are embedded
-in `spock-project`, so `spock new` does not need a checkout.
+sizes. The release asset job hashes the exact manifest bytes before the native
+matrix runs; every distribution executable captures that SHA-256 and rejects a
+different executable-relative manifest before parsing it. The manifest then
+provides per-file integrity and compatibility checks over the immutable served
+snapshot. This authenticates the sidecar only relative to a trusted executable:
+it does not sign the package, protect replacement of both artifacts, or cover a
+compromised release workflow. The explicit paired test/source override is
+deliberately unanchored local input; `uhura-host` never searches a source tree at
+runtime. Spock Studio stays embedded initially. Canonical scaffold bytes are
+embedded in `spock-project`, so `spock new` does not need a checkout.
 
 Integrated Play receives framework-owned facts from
 `/~project/environment` using protocol `spock-host-environment/1`:
@@ -661,10 +691,12 @@ merge or rewrite arbitrary provider JSON.
 the mode and observed revision/fingerprint; active project, backend, and client
 generation IDs; active and observed backend fingerprints; backend freshness
 (`active` or `restart_required`); client state (`absent`, `building`, `active`,
-or `rejected_last_good`); the latest client attempt separately from the
-generation serving bytes; Editor freshness; changed input paths; diagnostics;
-and aggregate readiness/degradation. IDs are monotonic within one host session
-and are not presented as durable identities across restart.
+`cold_invalid`, or `rejected_last_good`); the latest client attempt separately
+from the generation serving bytes; Editor freshness; changed input paths;
+diagnostics; and aggregate readiness/degradation. An active client's
+`source_fingerprint` identifies the exact captured Uhura source snapshot, not a
+digest of toolchain-derived browser artifacts. IDs are monotonic within one
+host session and are not presented as durable identities across restart.
 
 `/~project/events` uses SSE event protocol `spock-project-event/1`. Events are
 monotonic invalidations containing the session event ID and authoritative
@@ -672,13 +704,15 @@ status URL; publication updates artifacts and status before broadcasting. The
 host does not promise unbounded event replay. On initial connection, reconnect,
 an unknown `Last-Event-ID`, or a detected gap, the client fetches the current
 status snapshot. Project, Editor, and Play event hubs belong to the host
-session and survive client-generation swaps.
+session and survive client-generation swaps. One four-stream admission budget
+covers all three event surfaces. Saturation returns 503 with `Retry-After: 1`;
+disconnect, shutdown, or stream completion returns its permit.
 
 `/~health` returns 200 once the listener and backend generation are active.
-Restart-required and retained-last-good client failures are reported as
-degraded but ready; they do not make working APIs unready. Before backend
-activation it returns 503. Fixed `start` never binds with an invalid configured
-component.
+Restart-required, cold-invalid client state, and retained-last-good client
+failures are reported as degraded but ready; they do not make working APIs
+unready. Before backend activation it returns 503. Fixed `start` never binds
+with an invalid configured component.
 
 ### 12.6 Scaffolding and budgets
 

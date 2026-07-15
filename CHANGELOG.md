@@ -17,9 +17,9 @@ standalone `.spock` language command.
 - **Honest development reload.** Client generations hot-reload last-known-good.
   Backend source, seed assets, and topology changes are detected and reported
   as restart-required; they never migrate, reseed, or replace the active world.
-- **Distribution.** The npm package adds a verified Uhura web/WebAssembly
-  sidecar beside the four prebuilt native binaries and exercises the exact
-  guarded tarball on macOS, Linux, and Windows before release.
+- **Distribution.** The npm package adds an executable-bound Uhura
+  web/WebAssembly sidecar beside the four prebuilt native binaries and exercises
+  the exact guarded tarball on macOS, Linux, and Windows before release.
 - **Safety.** Project creation is capability-pinned, create-new-only, portable
   across supported filesystems, and conservative under rollback and concurrent
   replacement.

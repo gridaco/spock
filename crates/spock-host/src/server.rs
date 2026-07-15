@@ -13,8 +13,9 @@ use uhura_host::ProjectSourceSnapshot;
 use crate::project::{capture_stable_client, prepare_project, PreparedProject};
 use crate::{
     client_source_fingerprint, observe_backend, topology_fingerprint, BackendFreshness,
-    BackendObservation, Fingerprint, HostError, HostMode, Observation, ObservationDisposition,
-    UhuraAssetRoots,
+    BackendObservation, ClientAttemptState, ClientHost, ClientHostError, ClientPublication,
+    Fingerprint, FrameworkSession, HostError, HostMode, Observation, ObservationDisposition,
+    ObservedRevision, PreparedClient, UhuraAssetRoots,
 };
 
 const COHERENT_FRAME_ATTEMPTS: usize = 4;
@@ -177,10 +178,12 @@ where
 
     observer_stop.store(true, Ordering::Release);
     prepared.session.shutdown_streams();
-    if let Some(observer) = observer {
-        observer.await?;
-    }
+    let observer_result = match observer {
+        Some(observer) => observer.await,
+        None => Ok(()),
+    };
     lifecycle.shutdown().await;
+    observer_result?;
     server_result?;
 
     // `prepared` deliberately remains alive through listener, observer, SSE,
@@ -334,8 +337,6 @@ fn spawn_observer(
                 };
                 client.prepare(snapshot, observed_revision)
             };
-            let summary = candidate.summary();
-            let source_fingerprint = candidate.source_fingerprint().clone();
             let diagnostics = prepared_client_diagnostics(&candidate);
 
             // The build may have overlapped another save. Re-observe every
@@ -371,45 +372,11 @@ fn spawn_observer(
                 continue;
             }
 
-            let publication_result = {
-                // Client artifact installation and status mutation share one
-                // writer lock. Readers see entirely the old or new
-                // publication; the invalidation is sent only after release.
-                let publication_state = session.publication();
-                let mut publication = publication_state.write().expect("project publication lock");
-                let result = publication
-                    .client
-                    .as_mut()
-                    .expect("configured client host")
-                    .publish(candidate, newest_revision);
-                match result.map_err(|error| error.to_string()) {
-                    Ok(client_publication) => {
-                        if summary.editor_current && summary.play_ok {
-                            publication
-                                .coordinator
-                                .publish_client(
-                                    newest_revision,
-                                    client_publication.report.source_revision,
-                                    source_fingerprint,
-                                    diagnostics.clone(),
-                                )
-                                .map(|_| client_publication)
-                                .map_err(|error| error.to_string())
-                        } else {
-                            publication
-                                .coordinator
-                                .reject_client(newest_revision, diagnostics.clone())
-                                .map(|()| client_publication)
-                                .map_err(|error| error.to_string())
-                        }
-                    }
-                    Err(error) => Err(error),
-                }
-            };
+            let publication_result =
+                publish_client_candidate(&session, candidate, newest_revision, diagnostics.clone());
 
             match publication_result {
-                Ok(publication) => {
-                    session.events().publish();
+                ClientPublicationAttempt::Completed(publication) => {
                     if publication.report.editor_current && publication.report.play_ok {
                         notices.emit(HostNotice::ClientPublished {
                             observed_revision: newest_revision.get(),
@@ -424,18 +391,130 @@ fn spawn_observer(
                         });
                     }
                 }
-                Err(error) => {
-                    notices.emit(HostNotice::ObserverError {
-                        message: error.to_string(),
+                ClientPublicationAttempt::Failed {
+                    message,
+                    diagnostics,
+                    serving_last_good,
+                } => {
+                    notices.emit(HostNotice::ClientRejected {
+                        observed_revision: newest_revision.get(),
+                        diagnostics,
+                        serving_last_good,
                     });
-                    // Publication is deterministic and revision-consuming.
-                    // Retrying this same observation can only repeat an
-                    // invariant failure (or violate ClientHost ordering); a
-                    // later filesystem observation supplies a new attempt.
+                    notices.emit(HostNotice::ObserverError { message });
                 }
             }
         }
     })
+}
+
+enum ClientPublicationAttempt {
+    Completed(ClientPublication),
+    Failed {
+        message: String,
+        diagnostics: Vec<String>,
+        serving_last_good: bool,
+    },
+}
+
+fn publish_client_candidate(
+    session: &FrameworkSession,
+    candidate: PreparedClient,
+    newest_revision: ObservedRevision,
+    diagnostics: Vec<String>,
+) -> ClientPublicationAttempt {
+    publish_client_candidate_with(
+        session,
+        candidate,
+        newest_revision,
+        diagnostics,
+        ClientHost::publish,
+    )
+}
+
+fn publish_client_candidate_with(
+    session: &FrameworkSession,
+    candidate: PreparedClient,
+    newest_revision: ObservedRevision,
+    diagnostics: Vec<String>,
+    publish: impl FnOnce(
+        &mut ClientHost,
+        PreparedClient,
+        ObservedRevision,
+    ) -> Result<ClientPublication, ClientHostError>,
+) -> ClientPublicationAttempt {
+    // Client publication and status mutation share one writer lock. Readers
+    // see entirely the old or new publication; invalidate only after release.
+    let outcome = {
+        let publication_state = session.publication();
+        let mut publication = publication_state.write().expect("project publication lock");
+        publish_client_candidate_locked_with(
+            &mut publication,
+            candidate,
+            newest_revision,
+            diagnostics,
+            publish,
+        )
+    };
+    session.events().publish();
+    outcome
+}
+
+fn publish_client_candidate_locked_with(
+    publication: &mut crate::http::PublicationState,
+    candidate: PreparedClient,
+    newest_revision: ObservedRevision,
+    diagnostics: Vec<String>,
+    publish: impl FnOnce(
+        &mut ClientHost,
+        PreparedClient,
+        ObservedRevision,
+    ) -> Result<ClientPublication, ClientHostError>,
+) -> ClientPublicationAttempt {
+    let summary = candidate.summary();
+    let source_revision = candidate.source_revision();
+    let source_fingerprint = candidate.source_fingerprint().clone();
+
+    // Prove the coordinator transition on a clone before changing the Uhura
+    // host. Once Uhura accepts the candidate, installing this already-validated
+    // coordinator is infallible and both become visible under the same lock.
+    let mut completed_coordinator = publication.coordinator.clone();
+    if summary.editor_current && summary.play_ok {
+        completed_coordinator
+            .publish_client(
+                newest_revision,
+                source_revision,
+                source_fingerprint,
+                diagnostics.clone(),
+            )
+            .expect("the current client attempt was validated before publication");
+    } else {
+        completed_coordinator
+            .reject_client(newest_revision, diagnostics.clone())
+            .expect("the current client attempt was validated before publication");
+    }
+
+    let client = publication.client.as_mut().expect("configured client host");
+    match publish(client, candidate, newest_revision) {
+        Ok(client_publication) => {
+            publication.coordinator = completed_coordinator;
+            ClientPublicationAttempt::Completed(client_publication)
+        }
+        Err(error) => {
+            let message = error.to_string();
+            let mut failure_diagnostics = diagnostics;
+            failure_diagnostics.push(format!("client publication failed: {message}"));
+            publication
+                .coordinator
+                .reject_client(newest_revision, failure_diagnostics.clone())
+                .expect("prevalidated current attempt remains eligible after publication failure");
+            ClientPublicationAttempt::Failed {
+                message,
+                diagnostics: failure_diagnostics,
+                serving_last_good: publication.coordinator.status().client.active.is_some(),
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -601,10 +680,11 @@ fn apply_frame(
     backend_diagnostics.dedup();
     let client = frame.client.as_ref().map(ClientObservation::fingerprint);
 
-    let (before, disposition, after) = {
+    let (before, disposition, after, superseded_client) = {
         let publication_state = session.publication();
         let mut publication = publication_state.write().expect("project publication lock");
-        let before = publication.coordinator.status().backend.freshness;
+        let before_status = publication.coordinator.status();
+        let before = before_status.backend.freshness;
         let disposition = publication.coordinator.observe(Observation {
             topology: frame.topology.clone(),
             backend: frame.backend.fingerprint().clone(),
@@ -612,8 +692,26 @@ fn apply_frame(
             changed_backend_inputs: changed_inputs,
             backend_diagnostics: backend_diagnostics.clone(),
         });
-        let after = publication.coordinator.status().backend.freshness;
-        (before, disposition, after)
+        let after_status = publication.coordinator.status();
+        let after = after_status.backend.freshness;
+        let superseded_client = match (
+            before_status.client.latest_attempt,
+            after_status.client.latest_attempt.as_ref(),
+        ) {
+            (Some(before_attempt), Some(after_attempt))
+                if before_attempt.state == ClientAttemptState::Building
+                    && after_attempt.state == ClientAttemptState::Rejected
+                    && before_attempt.observed_revision == after_attempt.observed_revision =>
+            {
+                Some((
+                    after_attempt.observed_revision,
+                    after_attempt.diagnostics.clone(),
+                    after_status.client.active.is_some(),
+                ))
+            }
+            _ => None,
+        };
+        (before, disposition, after, superseded_client)
     };
 
     if !matches!(disposition, ObservationDisposition::NoChange) {
@@ -631,6 +729,13 @@ fn apply_frame(
             notices.emit(HostNotice::BackendReverted);
         }
         _ => {}
+    }
+    if let Some((observed_revision, diagnostics, serving_last_good)) = superseded_client {
+        notices.emit(HostNotice::ClientRejected {
+            observed_revision: observed_revision.get(),
+            diagnostics,
+            serving_last_good,
+        });
     }
     disposition
 }
@@ -659,7 +764,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::{ClientFreshness, ProjectStatus};
+    use crate::{ClientAttemptState, ClientFreshness, ProjectStatus};
 
     const NETWORK_TEST_DEADLINE: Duration = Duration::from_secs(7);
     const NETWORK_TEST_POLL: Duration = Duration::from_millis(25);
@@ -762,6 +867,249 @@ mod tests {
             .unwrap_or_else(|error| panic!("GET {path} failed: {error}"));
         assert_eq!(response.status(), reqwest::StatusCode::OK, "GET {path}");
         response.bytes().await.unwrap().to_vec()
+    }
+
+    #[test]
+    fn publication_failure_terminalizes_status_preserves_last_good_and_invalidates() {
+        let project = tempdir().unwrap();
+        let assets = tempdir().unwrap();
+        let layout = full_stack_project(project.path());
+        let prepared = prepare_project(
+            layout,
+            HostMode::Dev,
+            None,
+            Some(dummy_uhura_assets(assets.path())),
+        )
+        .unwrap();
+        let session = Arc::clone(&prepared.session);
+        let initial_status = session.status();
+        let initial_client = session
+            .publication()
+            .read()
+            .unwrap()
+            .client
+            .as_ref()
+            .unwrap()
+            .latest_publication()
+            .clone();
+        let snapshot =
+            capture_stable_client(prepared.layout.client.as_ref().unwrap().root.absolute())
+                .unwrap();
+        let (revision, candidate) = {
+            let publication_state = session.publication();
+            let mut publication = publication_state.write().unwrap();
+            let status = publication.coordinator.status();
+            publication.coordinator.observe(Observation {
+                topology: status.observed.topology_fingerprint,
+                backend: status.observed.backend_fingerprint,
+                client: Some(Fingerprint::new("injected-client-change")),
+                changed_backend_inputs: Vec::new(),
+                backend_diagnostics: Vec::new(),
+            });
+            let revision = publication.coordinator.observed_revision();
+            publication
+                .coordinator
+                .begin_client_attempt(revision)
+                .unwrap();
+            let candidate = publication
+                .client
+                .as_ref()
+                .unwrap()
+                .prepare(&snapshot, revision);
+            (revision, candidate)
+        };
+        let event_before = session.events().current_id();
+
+        let outcome = publish_client_candidate_with(
+            &session,
+            candidate,
+            revision,
+            Vec::new(),
+            |_client, _candidate, _revision| {
+                Err(ClientHostError::Uhura(
+                    "injected publication failure".to_owned(),
+                ))
+            },
+        );
+
+        match outcome {
+            ClientPublicationAttempt::Failed {
+                message,
+                diagnostics,
+                serving_last_good,
+            } => {
+                assert!(message.contains("injected publication failure"));
+                assert!(diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.contains("client publication failed")));
+                assert!(serving_last_good);
+            }
+            ClientPublicationAttempt::Completed(_) => panic!("injected failure published"),
+        }
+        assert_eq!(session.events().current_id(), event_before + 1);
+        let status = session.status();
+        assert_eq!(status.client.freshness, ClientFreshness::RejectedLastGood);
+        assert_eq!(
+            status.client.active.unwrap().generation_id,
+            initial_status.client.active.unwrap().generation_id
+        );
+        assert_eq!(
+            status.client.latest_attempt.unwrap().state,
+            ClientAttemptState::Rejected
+        );
+        assert_eq!(
+            session
+                .publication()
+                .read()
+                .unwrap()
+                .client
+                .as_ref()
+                .unwrap()
+                .latest_publication(),
+            &initial_client
+        );
+    }
+
+    #[test]
+    fn removing_client_topology_terminalizes_a_superseded_in_flight_build() {
+        let project = tempdir().unwrap();
+        let assets = tempdir().unwrap();
+        let layout = full_stack_project(project.path());
+        let prepared = prepare_project(
+            layout,
+            HostMode::Dev,
+            None,
+            Some(dummy_uhura_assets(assets.path())),
+        )
+        .unwrap();
+        let session = Arc::clone(&prepared.session);
+        let initial_status = session.status();
+        let initial_client = session
+            .publication()
+            .read()
+            .unwrap()
+            .client
+            .as_ref()
+            .unwrap()
+            .latest_publication()
+            .clone();
+
+        let page = project.path().join("client/app/home/page.uhura");
+        let original = fs::read_to_string(&page).unwrap();
+        let edited = original.replace("Your app is running.", "A client build is in flight.");
+        assert_ne!(edited, original);
+        fs::write(&page, edited).unwrap();
+        let changed_frame = capture_frame(&prepared.layout).unwrap();
+        let changed = apply_frame(
+            &session,
+            &prepared.active_backend,
+            &prepared.active_topology,
+            &changed_frame,
+            &HostNoticeSink::default(),
+        );
+        let observed_revision = match changed {
+            ObservationDisposition::Changed {
+                revision,
+                client_changed: true,
+                ..
+            } => revision,
+            other => panic!("expected a changed client observation, got {other:?}"),
+        };
+        let snapshot = changed_frame
+            .client
+            .as_ref()
+            .and_then(ClientObservation::snapshot)
+            .expect("changed client snapshot");
+        let candidate = {
+            let publication_state = session.publication();
+            let mut publication = publication_state.write().unwrap();
+            publication
+                .coordinator
+                .begin_client_attempt(observed_revision)
+                .unwrap();
+            publication
+                .client
+                .as_ref()
+                .unwrap()
+                .prepare(snapshot, observed_revision)
+        };
+        session.events().publish();
+        assert_eq!(candidate.observed_revision(), observed_revision);
+        assert_eq!(session.status().client.freshness, ClientFreshness::Building);
+
+        fs::write(
+            project.path().join("spock.toml"),
+            ProjectManifest::new("demo", "backend", "app.spock", None)
+                .unwrap()
+                .to_toml_string(),
+        )
+        .unwrap();
+        let removed_frame = capture_frame(&prepared.layout).unwrap();
+        assert!(removed_frame.client.is_none());
+        let captured_notices = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let notices_for_sink = Arc::clone(&captured_notices);
+        let notices = HostNoticeSink::new(move |notice| {
+            notices_for_sink.lock().unwrap().push(notice);
+        });
+        let event_before = session.events().current_id();
+
+        let removed = apply_frame(
+            &session,
+            &prepared.active_backend,
+            &prepared.active_topology,
+            &removed_frame,
+            &notices,
+        );
+
+        assert!(matches!(
+            removed,
+            ObservationDisposition::Changed {
+                client_changed: true,
+                ..
+            }
+        ));
+        assert_eq!(session.events().current_id(), event_before + 1);
+        let status = session.status();
+        assert_eq!(status.backend.freshness, BackendFreshness::RestartRequired);
+        assert_eq!(status.client.freshness, ClientFreshness::RejectedLastGood);
+        assert_eq!(
+            status.client.active.as_ref().unwrap().generation_id,
+            initial_status.client.active.as_ref().unwrap().generation_id
+        );
+        let attempt = status.client.latest_attempt.as_ref().unwrap();
+        assert_eq!(attempt.observed_revision, observed_revision);
+        assert_eq!(attempt.state, ClientAttemptState::Rejected);
+        assert!(attempt
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("superseded by newer project observation")));
+        assert_eq!(
+            session
+                .publication()
+                .read()
+                .unwrap()
+                .client
+                .as_ref()
+                .unwrap()
+                .latest_publication(),
+            &initial_client
+        );
+        assert!(captured_notices.lock().unwrap().iter().any(|notice| {
+            match notice {
+                HostNotice::ClientRejected {
+                    observed_revision: rejected_revision,
+                    diagnostics,
+                    serving_last_good,
+                } => {
+                    *rejected_revision == observed_revision.get()
+                        && *serving_last_good
+                        && diagnostics.iter().any(|diagnostic| {
+                            diagnostic.contains("superseded by newer project observation")
+                        })
+                }
+                _ => false,
+            }
+        }));
     }
 
     #[tokio::test]
@@ -879,6 +1227,65 @@ mod tests {
             address
         );
         drop(events);
+        let rebound = tokio::net::TcpListener::bind(address).await.unwrap();
+        drop(rebound);
+    }
+
+    #[tokio::test]
+    async fn observer_panic_is_reported_only_after_server_and_backend_shutdown() {
+        let temp = tempdir().unwrap();
+        let layout = backend_project(temp.path());
+        let options = ServeOptions {
+            bind: "127.0.0.1:0".parse().unwrap(),
+            poll_interval: NETWORK_TEST_POLL,
+            ..ServeOptions::default()
+        };
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let ready_tx = std::sync::Mutex::new(Some(ready_tx));
+        let observer_panicked = Arc::new(AtomicBool::new(false));
+        let observer_panicked_for_notice = Arc::clone(&observer_panicked);
+        let notices = HostNoticeSink::new(move |notice| match notice {
+            HostNotice::Listening { address, .. } => {
+                if let Some(sender) = ready_tx.lock().unwrap().take() {
+                    let _ = sender.send(address);
+                }
+            }
+            HostNotice::BackendRestartRequired { .. } => {
+                observer_panicked_for_notice.store(true, Ordering::Release);
+                panic!("injected observer panic");
+            }
+            _ => {}
+        });
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(serve_project(
+            layout,
+            HostMode::Dev,
+            options,
+            notices,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        ));
+        let address = ready_rx.await.unwrap();
+        fs::write(
+            temp.path().join("backend/app.spock"),
+            "// make the backend restart-required\n",
+        )
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !observer_panicked.load(Ordering::Acquire) {
+                tokio::time::sleep(NETWORK_TEST_POLL).await;
+            }
+        })
+        .await
+        .expect("observer did not reach injected panic");
+
+        shutdown_tx.send(()).unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("server did not shut down after observer panic")
+            .expect("serve task itself must not panic");
+        assert!(matches!(result, Err(ServeError::Observer(_))));
         let rebound = tokio::net::TcpListener::bind(address).await.unwrap();
         drop(rebound);
     }

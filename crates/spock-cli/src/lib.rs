@@ -20,8 +20,7 @@ pub use project_commands::{
 };
 
 pub use write_plan::{
-    apply_write_plan, ApplyError, ApplyStage, ApplySummary, CreatedPathKind, RollbackReport,
-    RollbackResidual, RootPolicy,
+    ApplyError, ApplyStage, ApplySummary, CreatedPathKind, RollbackReport, RollbackResidual,
 };
 
 use std::fmt;

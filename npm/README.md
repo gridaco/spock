@@ -55,16 +55,19 @@ placeholder field.
 
 For a project with a configured client, `spock start` and `spock dev` serve the
 Uhura Editor at `/` and integrated Play at `/play`. Both modes serve Spock
-Studio and the framework protocols on the same origin. A backend-only project
-redirects `/` to Studio and returns structured 404 responses for client routes.
-The framework package's shared sidecar provides the browser and WebAssembly
-assets offline.
+Studio and the framework protocols on the same origin, with no cross-origin
+CORS grant by default. A backend-only project redirects `/` to Studio and
+returns structured 404 responses for client routes.
+The framework package's executable-bound shared sidecar provides the browser
+and WebAssembly assets offline.
 
-In `spock dev`, valid client saves publish live while invalid saves keep the
-last good client generation. Backend inputs—including the `.spock` source and
-referenced seed assets—and topology-affecting `spock.toml` saves are noticed
-and reported as restart-required, but never migrate, reseed, or replace the
-running database. Restarting the command reconstructs backend state from seed.
+In `spock dev`, valid client saves publish live. Invalid saves keep the last
+good client generation when one exists; an initially invalid client is reported
+as `cold_invalid` while Editor diagnostics remain available. Backend
+inputs—including the `.spock` source and referenced seed assets—and
+topology-affecting `spock.toml` saves are noticed and reported as
+restart-required, but never migrate, reseed, or replace the running database.
+Restarting the command reconstructs backend state from seed.
 
 The one-command host does not merge language ownership. Spock remains the
 authority for durable facts, policy, and mutations; Uhura owns the client

@@ -49,6 +49,8 @@ jobs:
     name: build shared framework assets
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    outputs:
+      manifest_sha256: ${{ steps.sidecar.outputs.manifest_sha256 }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -101,6 +103,7 @@ jobs:
         run: WASM_BINDGEN="$GITHUB_WORKSPACE/uhura/target/tools/bin/wasm-bindgen" bash uhura/scripts/build-wasm.sh
 
       - name: assemble and guard shared sidecar
+        id: sidecar
         run: |
           node npm/scripts/sidecar.mjs assemble \
             --web-dir uhura/web/dist \
@@ -109,6 +112,13 @@ jobs:
             --spock-commit "$(git rev-parse HEAD)" \
             --uhura-commit "$(git -C uhura rev-parse HEAD)"
           node npm/scripts/sidecar.mjs verify --root npm/share/spock/uhura
+          manifest_sha256="$(sha256sum npm/share/spock/uhura/manifest.json | awk '{print $1}')"
+          if [[ ! "$manifest_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::could not derive the sidecar manifest SHA-256"
+            exit 1
+          fi
+          printf 'manifest_sha256=%s\n' "$manifest_sha256" >> "$GITHUB_OUTPUT"
+          echo "sidecar manifest SHA-256: $manifest_sha256"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -119,6 +129,7 @@ jobs:
 
   build:
     name: build ${{ matrix.key }}
+    needs: assets
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -163,7 +174,14 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: cargo build --release
-        run: cargo build --locked --release -p spock-cli --target ${{ matrix.target }}
+        env:
+          SPOCK_PACKAGED_UHURA_MANIFEST_SHA256: ${{ needs.assets.outputs.manifest_sha256 }}
+        run: |
+          if [[ ! "$SPOCK_PACKAGED_UHURA_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::missing or malformed executable-bound sidecar manifest identity"
+            exit 1
+          fi
+          cargo build --locked --release -p spock-cli --target ${{ matrix.target }}
 
       - name: smoke test (native arch only)
         if: matrix.smoke

@@ -2096,7 +2096,10 @@ name = "spock-host"
 version = "0.5.0"
 dependencies = [
  "axum",
+ "cap-fs-ext",
+ "cap-std",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2108,9 +2111,10 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tower",
- "tower-http",
  "uhura-host",
+ "unicode-normalization",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

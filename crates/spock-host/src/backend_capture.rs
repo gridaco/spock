@@ -8,9 +8,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
+use std::io::{self, Read};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+use cap_fs_ext::{DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _, OpenOptionsSyncExt as _};
 use spock_lang::ir::SeedValue;
 use spock_project::ProjectLayout;
 use spock_runtime::generation::CapturedBackend;
@@ -417,6 +419,214 @@ fn stable_sample(mut sample: impl FnMut() -> BackendSample) -> BackendSample {
     previous
 }
 
+#[derive(Debug)]
+enum ConfinedReadError {
+    Io(io::Error),
+    WrongEntryKind,
+}
+
+/// A retained directory capability used to open every backend input.
+///
+/// Callers first canonicalize for the existing user-facing containment policy,
+/// then traverse that canonical relative path without following any component.
+/// This preserves in-root symlink spellings while preventing an ancestor
+/// symlink or reparse-point swap from redirecting reads outside the validated
+/// root.
+#[derive(Debug)]
+struct ConfinedDirectory {
+    directory: cap_std::fs::Dir,
+}
+
+impl ConfinedDirectory {
+    fn open_ambient_nofollow(path: &Path) -> io::Result<Self> {
+        let file = open_directory_path_nofollow(path)?;
+        let directory = cap_std::fs::Dir::from_std_file(file);
+        if !directory.dir_metadata()?.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "confined root is not a real directory",
+            ));
+        }
+        Ok(Self { directory })
+    }
+
+    fn open_directory(&self, relative: &Path) -> io::Result<Self> {
+        let mut current = self.directory.try_clone()?;
+        for component in relative.components() {
+            let std::path::Component::Normal(segment) = component else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "confined directory path is not normalized and relative",
+                ));
+            };
+            current = current.open_dir_nofollow(segment)?;
+        }
+        Ok(Self { directory: current })
+    }
+
+    fn read_regular_file(&self, relative: &Path) -> Result<Vec<u8>, ConfinedReadError> {
+        let file_name = relative.file_name().ok_or_else(|| {
+            ConfinedReadError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "confined file path has no file name",
+            ))
+        })?;
+        let parent = self
+            .open_directory(relative.parent().unwrap_or_else(|| Path::new("")))
+            .map_err(ConfinedReadError::Io)?;
+        let initial_metadata = parent
+            .directory
+            .symlink_metadata(file_name)
+            .map_err(ConfinedReadError::Io)?;
+        if !initial_metadata.is_file() && !initial_metadata.file_type().is_symlink() {
+            return Err(ConfinedReadError::WrongEntryKind);
+        }
+        let mut options = cap_std::fs::OpenOptions::new();
+        options
+            .read(true)
+            .follow(FollowSymlinks::No)
+            // A special entry installed after the metadata probe must not turn
+            // capture into a blocking FIFO/device open. The returned handle is
+            // still the authority for the regular-file check below.
+            .nonblock(true);
+        let mut file = match parent.directory.open_with(file_name, &options) {
+            Ok(file) => file,
+            Err(error) => {
+                if parent
+                    .directory
+                    .symlink_metadata(file_name)
+                    .is_ok_and(|metadata| !metadata.is_file() && !metadata.file_type().is_symlink())
+                {
+                    return Err(ConfinedReadError::WrongEntryKind);
+                }
+                return Err(ConfinedReadError::Io(error));
+            }
+        };
+        let metadata = file.metadata().map_err(ConfinedReadError::Io)?;
+        if !metadata.is_file() {
+            return Err(ConfinedReadError::WrongEntryKind);
+        }
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(ConfinedReadError::Io)?;
+        Ok(bytes)
+    }
+}
+
+#[cfg(unix)]
+fn open_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "confined root path is not absolute",
+        ));
+    }
+    let descriptor = rustix::fs::openat(
+        rustix::fs::CWD,
+        Path::new("/"),
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )?;
+    let mut current = cap_std::fs::Dir::from_std_file(fs::File::from(descriptor));
+    for component in path.components() {
+        match component {
+            std::path::Component::RootDir => {}
+            std::path::Component::Normal(segment) => {
+                current = current.open_dir_nofollow(segment)?;
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "confined root path is not canonical",
+                ));
+            }
+        }
+    }
+    Ok(current.into_std_file())
+}
+
+#[cfg(windows)]
+fn open_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let mut components = path.components();
+    let Some(std::path::Component::Prefix(prefix)) = components.next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "confined root path has no volume prefix",
+        ));
+    };
+    if !matches!(components.next(), Some(std::path::Component::RootDir)) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "confined root path is not absolute",
+        ));
+    }
+    let mut volume_root = PathBuf::from(prefix.as_os_str());
+    volume_root.push(Path::new(r"\"));
+    let file = fs::OpenOptions::new()
+        .read(true)
+        // Denying delete sharing keeps each retained directory from being
+        // renamed while the next child is resolved through it.
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(&volume_root)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "confined root is not a real directory",
+        ));
+    }
+    let mut current = cap_std::fs::Dir::from_std_file(file);
+    for component in components {
+        let std::path::Component::Normal(segment) = component else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "confined root path is not canonical",
+            ));
+        };
+        current = current.open_dir_nofollow(segment)?;
+    }
+    Ok(current.into_std_file())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_directory_path_nofollow(path: &Path) -> io::Result<fs::File> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "confined root is not a real directory",
+        ));
+    }
+    cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority())
+        .map(cap_std::fs::Dir::into_std_file)
+}
+
+fn relative_to<'a>(path: &'a Path, root: &Path) -> io::Result<&'a Path> {
+    path.strip_prefix(root).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "validated path is outside its confined root",
+        )
+    })
+}
+
+fn confined_failure_code(requested: &Path, allowed_root: &Path) -> BackendDiagnosticCode {
+    match fs::canonicalize(requested) {
+        Ok(current) if !current.starts_with(allowed_root) => BackendDiagnosticCode::PathEscape,
+        _ => BackendDiagnosticCode::Io,
+    }
+}
+
 fn sample_backend(layout: &ProjectLayout) -> BackendSample {
     let source_requested = layout.root.join(layout.backend_entry.relative().as_path());
     let mut sample = BackendSample::new(layout, source_requested.clone());
@@ -436,6 +646,15 @@ fn sample_backend(layout: &ProjectLayout) -> BackendSample {
             "project root is not a directory",
         );
     }
+    let project_directory = match ConfinedDirectory::open_ambient_nofollow(&canonical_root) {
+        Ok(directory) => directory,
+        Err(error) => {
+            return sample.source_failure(
+                confined_failure_code(&layout.root, &canonical_root),
+                format!("could not securely open project root: {error}"),
+            );
+        }
+    };
 
     let backend_root_requested = canonical_root.join(layout.backend_root.relative().as_path());
     let canonical_backend_root = match fs::canonicalize(&backend_root_requested) {
@@ -459,6 +678,24 @@ fn sample_backend(layout: &ProjectLayout) -> BackendSample {
             "configured backend root is not a directory",
         );
     }
+    let backend_relative = match relative_to(&canonical_backend_root, &canonical_root) {
+        Ok(relative) => relative,
+        Err(error) => {
+            return sample.source_failure(
+                BackendDiagnosticCode::PathEscape,
+                format!("configured backend root escaped the project root: {error}"),
+            );
+        }
+    };
+    let backend_directory = match project_directory.open_directory(backend_relative) {
+        Ok(directory) => directory,
+        Err(error) => {
+            return sample.source_failure(
+                confined_failure_code(&backend_root_requested, &canonical_root),
+                format!("could not securely open configured backend root: {error}"),
+            );
+        }
+    };
 
     let source_directory_requested = source_requested
         .parent()
@@ -478,6 +715,27 @@ fn sample_backend(layout: &ProjectLayout) -> BackendSample {
             "backend source directory resolves outside the configured backend root",
         );
     }
+    let source_directory_relative =
+        match relative_to(&canonical_source_directory, &canonical_backend_root) {
+            Ok(relative) => relative,
+            Err(error) => {
+                return sample.source_failure(
+                    BackendDiagnosticCode::PathEscape,
+                    format!(
+                        "backend source directory escaped the configured backend root: {error}"
+                    ),
+                );
+            }
+        };
+    let source_directory = match backend_directory.open_directory(source_directory_relative) {
+        Ok(directory) => directory,
+        Err(error) => {
+            return sample.source_failure(
+                confined_failure_code(source_directory_requested, &canonical_backend_root),
+                format!("could not securely open backend source directory: {error}"),
+            );
+        }
+    };
 
     let canonical_source = match fs::canonicalize(&source_requested) {
         Ok(path) => path,
@@ -494,20 +752,31 @@ fn sample_backend(layout: &ProjectLayout) -> BackendSample {
             "backend entry resolves outside the configured backend root",
         );
     }
-    if !canonical_source.is_file() {
-        return sample.source_failure(
-            BackendDiagnosticCode::WrongEntryKind,
-            "configured backend entry is not a regular file",
-        );
-    }
-
-    let source = match fs::read(&canonical_source) {
-        Ok(source) => source,
+    let source_relative = match relative_to(&canonical_source, &canonical_backend_root) {
+        Ok(relative) => relative,
         Err(error) => {
             return sample.source_failure(
-                BackendDiagnosticCode::Io,
-                format!("could not read backend entry: {error}"),
+                BackendDiagnosticCode::PathEscape,
+                format!("backend entry escaped the configured backend root: {error}"),
             );
+        }
+    };
+    let source = match backend_directory.read_regular_file(source_relative) {
+        Ok(source) => source,
+        Err(ConfinedReadError::WrongEntryKind) => {
+            return sample.source_failure(
+                BackendDiagnosticCode::WrongEntryKind,
+                "configured backend entry is not a regular file",
+            );
+        }
+        Err(ConfinedReadError::Io(error)) => {
+            let code = confined_failure_code(&source_requested, &canonical_backend_root);
+            let message = if code == BackendDiagnosticCode::PathEscape {
+                "backend entry changed to resolve outside the configured backend root".to_string()
+            } else {
+                format!("could not securely read backend entry: {error}")
+            };
+            return sample.source_failure(code, message);
         }
     };
     sample.source = SampleInput {
@@ -589,19 +858,23 @@ fn sample_backend(layout: &ProjectLayout) -> BackendSample {
             );
             continue;
         }
-        if !canonical.is_file() {
-            let message = format!("seed asset `{spelling}` is not a regular file");
-            let mut input =
-                SampleInput::unavailable(display_name, requested.clone(), message.clone());
-            input.canonical_path = Some(canonical);
-            sample.assets.insert(spelling, input);
-            sample.diagnostics.push(
-                BackendDiagnostic::new(BackendDiagnosticCode::WrongEntryKind, message)
-                    .at_path(requested),
-            );
-            continue;
-        }
-        match fs::read(&canonical) {
+        let asset_relative = match relative_to(&canonical, &canonical_source_directory) {
+            Ok(relative) => relative,
+            Err(error) => {
+                let message =
+                    format!("seed asset `{spelling}` escaped its source directory: {error}");
+                let mut input =
+                    SampleInput::unavailable(display_name, requested.clone(), message.clone());
+                input.canonical_path = Some(canonical);
+                sample.assets.insert(spelling, input);
+                sample.diagnostics.push(
+                    BackendDiagnostic::new(BackendDiagnosticCode::PathEscape, message)
+                        .at_path(requested),
+                );
+                continue;
+            }
+        };
+        match source_directory.read_regular_file(asset_relative) {
             Ok(bytes) => {
                 sample.assets.insert(
                     spelling,
@@ -613,15 +886,31 @@ fn sample_backend(layout: &ProjectLayout) -> BackendSample {
                     },
                 );
             }
-            Err(error) => {
-                let message = format!("could not read seed asset `{spelling}`: {error}");
+            Err(ConfinedReadError::WrongEntryKind) => {
+                let message = format!("seed asset `{spelling}` is not a regular file");
                 let mut input =
                     SampleInput::unavailable(display_name, requested.clone(), message.clone());
                 input.canonical_path = Some(canonical);
                 sample.assets.insert(spelling, input);
                 sample.diagnostics.push(
-                    BackendDiagnostic::new(BackendDiagnosticCode::Io, message).at_path(requested),
+                    BackendDiagnostic::new(BackendDiagnosticCode::WrongEntryKind, message)
+                        .at_path(requested),
                 );
+            }
+            Err(ConfinedReadError::Io(error)) => {
+                let code = confined_failure_code(&requested, &canonical_source_directory);
+                let message = if code == BackendDiagnosticCode::PathEscape {
+                    format!("seed asset `{spelling}` changed to resolve outside the backend source directory")
+                } else {
+                    format!("could not securely read seed asset `{spelling}`: {error}")
+                };
+                let mut input =
+                    SampleInput::unavailable(display_name, requested.clone(), message.clone());
+                input.canonical_path = Some(canonical);
+                sample.assets.insert(spelling, input);
+                sample
+                    .diagnostics
+                    .push(BackendDiagnostic::new(code, message).at_path(requested));
             }
         }
     }
@@ -739,6 +1028,108 @@ mod tests {
             recovered.changed_inputs_since(&missing),
             vec!["seed asset `./seed/pic.png`"]
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn in_root_source_and_seed_symlinks_remain_supported() {
+        use std::os::unix::fs::symlink;
+
+        let (temp, layout) = project(STORAGE_SOURCE.as_bytes());
+        let backend = temp.path().join("backend");
+        let source = backend.join("app.spock");
+        let real_source = backend.join("real.spock");
+        fs::write(&real_source, STORAGE_SOURCE).expect("real backend source");
+        fs::remove_file(&source).expect("remove source fixture");
+        symlink("real.spock", &source).expect("in-root source symlink");
+
+        fs::create_dir(backend.join("seed")).expect("seed directory");
+        fs::write(backend.join("seed/real.png"), b"inside").expect("real seed asset");
+        symlink("real.png", backend.join("seed/pic.png")).expect("in-root seed symlink");
+
+        let observation = observe_backend(&layout);
+
+        assert!(observation.is_valid(), "{}", observation.diagnostics());
+        let captured = observation.captured_backend().expect("captured backend");
+        assert_eq!(captured.source(), STORAGE_SOURCE.as_bytes());
+        assert_eq!(
+            captured.seed_asset("./seed/pic.png"),
+            Some(b"inside".as_slice())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confined_reader_rejects_a_post_validation_symlink_swap() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempdir().expect("confined root");
+        let outside = tempdir().expect("outside root");
+        let input = root.path().join("input.bin");
+        fs::write(&input, b"inside").expect("safe input");
+        fs::write(outside.path().join("outside.bin"), b"outside").expect("outside input");
+
+        let canonical_root = fs::canonicalize(root.path()).expect("canonical root");
+        let canonical_input = fs::canonicalize(&input).expect("validated input");
+        let reader = ConfinedDirectory::open_ambient_nofollow(&canonical_root)
+            .expect("retained confined root");
+
+        fs::remove_file(&input).expect("remove validated input");
+        symlink(outside.path().join("outside.bin"), &input).expect("escaping replacement");
+        let relative = relative_to(&canonical_input, &canonical_root).expect("relative input");
+
+        assert!(matches!(
+            reader.read_regular_file(relative),
+            Err(ConfinedReadError::Io(_))
+        ));
+        assert_eq!(
+            confined_failure_code(&input, &canonical_root),
+            BackendDiagnosticCode::PathEscape
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confined_root_rejects_a_held_ancestor_redirect() {
+        use std::os::unix::fs::symlink;
+
+        let parent = tempdir().expect("root parent");
+        let outside = tempdir().expect("redirect target");
+        let ancestor = parent.path().join("ancestor");
+        let moved_ancestor = parent.path().join("moved-ancestor");
+        let root = ancestor.join("project");
+        fs::create_dir_all(&root).expect("original root");
+        fs::create_dir(outside.path().join("project")).expect("redirected project root");
+        let canonical_root = fs::canonicalize(&root).expect("canonical original root");
+
+        fs::rename(&ancestor, &moved_ancestor).expect("move original ancestor");
+        symlink(outside.path(), &ancestor).expect("held ancestor redirect");
+        assert_eq!(
+            fs::canonicalize(&canonical_root).expect("redirected canonical spelling"),
+            fs::canonicalize(outside.path().join("project")).expect("canonical redirect target")
+        );
+
+        ConfinedDirectory::open_ambient_nofollow(&canonical_root)
+            .expect_err("component-wise traversal must reject an ancestor redirect");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_replaced_by_a_socket_is_rejected_as_non_regular_without_blocking() {
+        use std::os::unix::net::UnixListener;
+
+        let (temp, layout) = project(b"// initially regular\n");
+        let source = temp.path().join("backend/app.spock");
+        fs::remove_file(&source).expect("remove source fixture");
+        let _socket = UnixListener::bind(&source).expect("source socket");
+
+        let observation = observe_backend(&layout);
+
+        assert!(!observation.is_valid());
+        assert!(observation
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.code == BackendDiagnosticCode::WrongEntryKind));
     }
 
     #[cfg(unix)]

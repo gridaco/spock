@@ -10,6 +10,8 @@ use std::path::{Component, Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+#[cfg(any(windows, target_os = "macos"))]
+use unicode_normalization::UnicodeNormalization;
 
 const LOCK_DIRECTORY: &str = ".spock-named-state-locks";
 const LOCK_SUFFIX: &str = ".lock";
@@ -42,6 +44,11 @@ pub enum NamedStateLockError {
         path.display()
     )]
     ReservedDatabasePath { path: PathBuf },
+    #[error(
+        "named database {} has {links} hard links; use a database path with one directory entry",
+        path.display()
+    )]
+    HardLinkedDatabase { path: PathBuf, links: u64 },
     #[error("could not create named-state lock directory {}: {source}", path.display())]
     CreateParent {
         path: PathBuf,
@@ -101,6 +108,19 @@ impl NamedStateLock {
         if database_uses_lock_namespace(&resolved_database_path) {
             return Err(NamedStateLockError::ReservedDatabasePath {
                 path: database_path,
+            });
+        }
+        let link_count =
+            existing_regular_file_link_count(&resolved_database_path).map_err(|source| {
+                NamedStateLockError::ResolveDatabase {
+                    path: database_path.clone(),
+                    source,
+                }
+            })?;
+        if let Some(links) = link_count.filter(|links| *links > 1) {
+            return Err(NamedStateLockError::HardLinkedDatabase {
+                path: database_path,
+                links,
             });
         }
         let lock_path = lock_path_for_identity(&resolved_database_path);
@@ -221,6 +241,64 @@ fn resolve_directory(directory: &Path) -> std::io::Result<PathBuf> {
     }
 }
 
+fn existing_regular_file_link_count(path: &Path) -> std::io::Result<Option<u64>> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !metadata.file_type().is_file() {
+        // Destructive bootstrap intentionally acts on a final-component
+        // symlink as a directory entry rather than following it. Preserve that
+        // behavior; only existing regular database files have hard-link aliases.
+        return Ok(None);
+    }
+    metadata_link_count(path, &metadata)
+}
+
+#[cfg(unix)]
+fn metadata_link_count(_path: &Path, metadata: &std::fs::Metadata) -> std::io::Result<Option<u64>> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(Some(metadata.nlink()))
+}
+
+#[cfg(windows)]
+fn metadata_link_count(path: &Path, _metadata: &std::fs::Metadata) -> std::io::Result<Option<u64>> {
+    use cap_fs_ext::MetadataExt as _;
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
+
+    // Stable Rust does not expose a Windows hard-link count on path metadata.
+    // Query capability metadata derived from a handle instead. Opening the
+    // final entry as a reparse point also prevents a raced symlink from being
+    // followed while obtaining that handle.
+    let file = std::fs::OpenOptions::new()
+        .access_mode(FILE_READ_ATTRIBUTES)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let metadata = cap_std::fs::File::from_std(file).metadata()?;
+    if !metadata.is_file() {
+        return Ok(None);
+    }
+
+    Ok(Some(metadata.nlink()))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn metadata_link_count(
+    _path: &Path,
+    _metadata: &std::fs::Metadata,
+) -> std::io::Result<Option<u64>> {
+    // The supported release targets expose link counts. Other targets retain
+    // path ownership rather than guessing at unavailable file identity.
+    Ok(None)
+}
+
 fn lexically_absolute(path: &Path) -> std::io::Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -286,7 +364,16 @@ fn hash_os_str(hasher: &mut Sha256, value: &OsStr) {
 
 #[cfg(any(windows, target_os = "macos"))]
 fn hash_os_str(hasher: &mut Sha256, value: &OsStr) {
-    let folded = value.to_string_lossy().to_lowercase();
+    // Supported case-insensitive filesystems compare through uppercase-style
+    // mappings, and supported macOS filesystems also collapse canonical Unicode
+    // equivalents. Match the portable path-key policy so aliases such as Greek
+    // sigma/final-sigma and composed/decomposed accents share one lock.
+    let folded = value
+        .to_string_lossy()
+        .chars()
+        .flat_map(char::to_uppercase)
+        .nfd()
+        .collect::<String>();
     hasher.update(folded.as_bytes());
 }
 
@@ -370,6 +457,51 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove temporary tree");
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn multiply_hard_linked_database_entries_are_rejected() {
+        let root = temp_root("hard-link-alias");
+        std::fs::create_dir(&root).expect("temporary root");
+        let database = root.join("world.sqlite");
+        let alias = root.join("alias.sqlite");
+        std::fs::write(&database, b"existing database").expect("database fixture");
+        std::fs::hard_link(&database, &alias).expect("hard-link alias");
+
+        for path in [&database, &alias] {
+            let error = NamedStateLock::acquire(path).expect_err("hard links must be rejected");
+            assert!(matches!(
+                error,
+                NamedStateLockError::HardLinkedDatabase {
+                    path: rejected,
+                    links
+                } if rejected == *path && links >= 2
+            ));
+        }
+        assert!(!root.join(LOCK_DIRECTORY).exists());
+
+        std::fs::remove_dir_all(root).expect("remove temporary tree");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn single_link_existing_database_remains_lockable() {
+        let root = temp_root("single-link");
+        std::fs::create_dir(&root).expect("temporary root");
+        let database = root.join("world.sqlite");
+        std::fs::write(&database, b"existing database").expect("database fixture");
+
+        let owner = NamedStateLock::acquire(&database).expect("single-link database owner");
+        assert_eq!(
+            owner.resolved_database_path(),
+            std::fs::canonicalize(&root)
+                .expect("canonical temporary root")
+                .join("world.sqlite")
+        );
+
+        drop(owner);
+        std::fs::remove_dir_all(root).expect("remove temporary tree");
+    }
+
     #[cfg(unix)]
     #[test]
     fn replacing_a_final_component_symlink_cannot_change_lock_identity() {
@@ -408,14 +540,21 @@ mod tests {
 
     #[cfg(any(windows, target_os = "macos"))]
     #[test]
-    fn case_aliases_share_one_conservative_lock_identity() {
+    fn case_and_normalization_aliases_share_one_conservative_lock_identity() {
         let root = temp_root("case-alias");
         std::fs::create_dir(&root).expect("temporary root");
 
-        assert_eq!(
-            named_state_lock_path(&root.join("World.sqlite")),
-            named_state_lock_path(&root.join("world.sqlite"))
-        );
+        for (left, right) in [
+            ("World.sqlite", "world.sqlite"),
+            ("caf\u{e9}.sqlite", "cafe\u{301}.sqlite"),
+            ("\u{3c3}.sqlite", "\u{3c2}.sqlite"),
+        ] {
+            assert_eq!(
+                named_state_lock_path(&root.join(left)),
+                named_state_lock_path(&root.join(right)),
+                "{left} and {right} must share one lock identity"
+            );
+        }
 
         std::fs::remove_dir_all(root).expect("remove temporary tree");
     }

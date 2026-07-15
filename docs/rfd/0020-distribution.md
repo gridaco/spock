@@ -93,14 +93,15 @@ platform packages are worth bootstrapping.
 
 The package is produced by an **explicit hand-owned GitHub Actions workflow**,
 `.github/workflows/npm.yml` (the filename the trusted publisher is pinned to):
-an assets job builds and inventories Uhura once; a 4-target build matrix (each
-job builds the Studio SPA, then compiles the binary) uploads four native
-artifacts; a publish job assembles them into the `spock` package and publishes
-it via OIDC; a verify job installs either the exact guarded dry-run tarball or
-the published registry package on macOS/Linux/Windows and runs it. No `dist`,
-no GitHub Release, no installers, no Homebrew, no crates.io — for now. Because
-the binaries are built in CI regardless, every one of those deferred channels
-is nearly free to add later (§2).
+an assets job builds and inventories Uhura once and publishes the exact raw
+manifest SHA-256; a dependent 4-target build matrix (each job builds the Studio
+SPA, then compiles that identity into the binary) uploads four native artifacts;
+a publish job assembles them into the `spock` package and publishes it via OIDC;
+a verify job installs either the exact guarded dry-run tarball or the published
+registry package on macOS/Linux/Windows and runs it. No `dist`, no GitHub
+Release, no installers, no Homebrew, no crates.io — for now. Because the
+binaries are built in CI regardless, every one of those deferred channels is
+nearly free to add later (§2).
 
 ## 2. Channels
 
@@ -330,7 +331,7 @@ spock/
   binaries/linux-x64/spock     │ (git-ignored; never committed)
   binaries/win32-x64/spock.exe ┘
   share/spock/uhura/
-    manifest.json               spock-asset-sidecar/1 integrity + compatibility
+    manifest.json               executable-bound integrity + compatibility
     web/                        Uhura Editor and Play browser application
     wasm/                       wasm-bindgen web module and Wasm binary
 ```
@@ -406,7 +407,7 @@ binary; the sidecar is runtime browser machinery, not a template dependency.
 | D9 | crates.io | **deferred** (bare `spock` taken; irrelevant at v0) | A future presence publishes under `spock-*`. |
 | D10 | Housekeeping | **Delete the stray root `now` file; keep `studio/dist/.gitkeep`** | Zero cost; the `.gitkeep` keeps the rust-embed folder present on fresh checkouts. |
 | D11 | First-run UX | **`spock new` creates; `spock init` adopts** (RFD 0022) | Closes the repo-less onboarding gap without conflating creation and adoption. |
-| D12 | Framework assets | **One shared Uhura web/Wasm sidecar plus a versioned integrity manifest** | Avoids four copies in native binaries; adds one executable-relative asset tree whose compatibility and contents are verified before publish and after install. |
+| D12 | Framework assets | **One shared Uhura web/Wasm sidecar plus an executable-bound integrity manifest** | Avoids four copies in native binaries; serializes asset and native builds so every binary carries the exact manifest SHA-256 and rejects another executable-relative tree. |
 
 ## 10. Open questions for the maintainer
 
@@ -444,7 +445,8 @@ and stays tokenless.
 - [x] Add the README "Install" section (`npx spock` primary).
 - [x] Write `CHANGELOG.md`.
 - [x] Extend the package with one shared Uhura web/Wasm sidecar; build it once,
-      record commits/protocols/hashes/sizes, and enforce the 25 MiB packed gate.
+      record commits/protocols/hashes/sizes, bind its manifest SHA-256 into all
+      four binaries, and enforce the 25 MiB packed gate.
 - [x] Run the first framework release dry run: the exact guarded `0.5.0`
       tarball passed the four-target build and macOS/Linux/Windows
       installed-package verification, including framework routes and sidecar
@@ -479,12 +481,19 @@ Honest accounting, framed for a low-maintenance prototype.
   the §4 non-empty `index.html` guard runs in every build job; installed-package
   verification serves `/~studio` on macOS and Linux.
 - **Missing or mismatched framework sidecar (medium unguarded → low with the
-  manifest).** A native binary alone cannot serve Uhura Editor/Play. The asset
-  job validates required route literals and Wasm magic, the manifest binds
-  exact commits and protocols to every hashed file, `npm pack` proves the exact
-  tarball tree, both publish branches consume that same file, dry-run
-  verification installs it directly, and real-publish verification rechecks the
-  registry-installed bytes before exercising framework routes.
+  executable binding).** A native binary alone cannot serve Uhura Editor/Play.
+  The asset job validates required route literals and Wasm magic, records exact
+  commits and protocols beside every hashed file, then emits the SHA-256 of the
+  raw manifest. Every distribution binary captures that value and checks it
+  before parsing the executable-relative manifest; the manifest inventory is
+  then checked against both the filesystem and the immutable bytes that will be
+  served. This detects corruption or coherent sidecar replacement while the
+  executable remains trusted. It is not a package signature and cannot defend
+  against replacement of both binary and sidecar or compromise of release CI.
+  Explicit paired source/test overrides are intentionally outside this package
+  identity boundary. `npm pack` additionally proves the exact tarball tree,
+  both publish branches consume that same file, and cross-platform verification
+  installs it before exercising framework routes.
 - **npm publish atomicity (low).** The single-package design publishes one
   package per release, so there is no partial/half-released state — the whole
   binary set is in one tarball. The residual rule is npm's own: a version can't

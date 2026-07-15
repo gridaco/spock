@@ -12,6 +12,12 @@ use uhura_host::WebAssets;
 pub const SPOCK_UHURA_WEB_DIST: &str = "SPOCK_UHURA_WEB_DIST";
 pub const SPOCK_UHURA_WASM_DIST: &str = "SPOCK_UHURA_WASM_DIST";
 
+// This value is captured by rustc, not read from the process environment.
+// Official distribution builds bind it to the exact sidecar manifest produced
+// earlier in the same release workflow. Source/test builds intentionally leave
+// it unset and use the explicit paired asset-root override above.
+const PACKAGED_UHURA_MANIFEST_SHA256: Option<&str> =
+    option_env!("SPOCK_PACKAGED_UHURA_MANIFEST_SHA256");
 const SIDECAR_PROTOCOL: &str = "spock-asset-sidecar/1";
 const HOST_ENVIRONMENT_PROTOCOL: &str = "spock-host-environment/1";
 const PROJECT_STATUS_PROTOCOL: &str = "spock-project-status/1";
@@ -119,9 +125,14 @@ struct LocatedUhuraAssets {
 /// locations. Source builds opt in through the paired environment override;
 /// `uhura-host` itself never searches a checkout.
 ///
-/// Load the exact package-owned bytes that were authenticated by the sidecar
-/// manifest. Explicit development overrides have no package manifest and are
-/// still captured once into the same immutable [`WebAssets`] representation.
+/// Load the exact package-owned bytes whose manifest is bound to this
+/// executable and whose inventory matches that manifest. Explicit development
+/// overrides have no package identity and are still captured once into the
+/// same immutable [`WebAssets`] representation.
+///
+/// The executable binding detects a changed or coherently replaced sidecar
+/// while the binary remains trusted. It is not a signature over the binary and
+/// cannot defend against replacement of both artifacts or a compromised build.
 pub fn load_uhura_assets() -> Result<WebAssets, AssetError> {
     let located = locate_uhura_asset_source()?;
     let assets = located.roots.load()?;
@@ -231,6 +242,16 @@ fn validate_packaged_sidecar(
     sidecar_root: &Path,
     roots: &UhuraAssetRoots,
 ) -> Result<SidecarManifest, String> {
+    let expected_manifest_sha256 =
+        require_packaged_manifest_sha256(PACKAGED_UHURA_MANIFEST_SHA256)?;
+    validate_packaged_sidecar_with_digest(sidecar_root, roots, expected_manifest_sha256)
+}
+
+fn validate_packaged_sidecar_with_digest(
+    sidecar_root: &Path,
+    roots: &UhuraAssetRoots,
+    expected_manifest_sha256: &str,
+) -> Result<SidecarManifest, String> {
     let root_metadata = fs::symlink_metadata(sidecar_root)
         .map_err(|error| format!("could not inspect {}: {error}", sidecar_root.display()))?;
     if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
@@ -258,6 +279,7 @@ fn validate_packaged_sidecar(
     }
     let manifest_bytes = fs::read(&manifest_path)
         .map_err(|error| format!("could not read {}: {error}", manifest_path.display()))?;
+    validate_manifest_binding(&manifest_bytes, expected_manifest_sha256)?;
     let manifest: SidecarManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|error| format!("could not parse {}: {error}", manifest_path.display()))?;
 
@@ -308,6 +330,48 @@ fn validate_packaged_sidecar(
     }
 
     Ok(manifest)
+}
+
+fn require_packaged_manifest_sha256(configured: Option<&str>) -> Result<&str, String> {
+    let configured = configured.ok_or_else(|| {
+        format!(
+            "this executable has no trusted Uhura sidecar manifest identity; packaged sidecar loading is disabled (source/test builds must set the paired {SPOCK_UHURA_WEB_DIST} and {SPOCK_UHURA_WASM_DIST} overrides)"
+        )
+    })?;
+    if !lowercase_sha256(configured) {
+        return Err(
+            "the executable's trusted Uhura sidecar manifest identity is not a 64-character lowercase SHA-256 digest"
+                .to_owned(),
+        );
+    }
+    Ok(configured)
+}
+
+fn validate_manifest_binding(
+    manifest_bytes: &[u8],
+    expected_manifest_sha256: &str,
+) -> Result<(), String> {
+    if !lowercase_sha256(expected_manifest_sha256) {
+        return Err("trusted sidecar manifest SHA-256 is malformed".to_owned());
+    }
+    let observed = sha256_bytes(manifest_bytes);
+    if observed != expected_manifest_sha256 {
+        return Err(format!(
+            "manifest SHA-256 {observed} does not match executable-bound identity {expected_manifest_sha256}"
+        ));
+    }
+    Ok(())
+}
+
+fn lowercase_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn validate_loaded_assets(manifest: &SidecarManifest, assets: &WebAssets) -> Result<(), String> {
@@ -597,6 +661,17 @@ mod tests {
     use serde_json::{json, Value};
     use tempfile::tempdir;
 
+    // Most validation tests deliberately mutate one manifest field and need
+    // the executable binding to follow that fixture so they can reach the
+    // lower-level protocol or inventory assertion under test.
+    fn validate_packaged_sidecar(
+        sidecar_root: &Path,
+        roots: &UhuraAssetRoots,
+    ) -> Result<SidecarManifest, String> {
+        let expected = hash_file(&sidecar_root.join("manifest.json"))?;
+        validate_packaged_sidecar_with_digest(sidecar_root, roots, &expected)
+    }
+
     #[test]
     fn explicit_asset_roots_are_snapshotted_as_one_bundle() {
         let temp = tempdir().expect("temporary asset root");
@@ -624,6 +699,46 @@ mod tests {
 
         validate_packaged_sidecar(&fixture.root, &fixture.roots)
             .expect("exact sidecar manifest should validate");
+    }
+
+    #[test]
+    fn packaged_sidecar_requires_an_executable_bound_manifest_identity() {
+        let error = require_packaged_manifest_sha256(None)
+            .expect_err("a source binary must not accept an executable-relative sidecar");
+        assert!(
+            error.contains("no trusted Uhura sidecar manifest identity"),
+            "{error}"
+        );
+
+        let error = require_packaged_manifest_sha256(Some("not-a-digest"))
+            .expect_err("a malformed build identity must fail closed");
+        assert!(
+            error.contains("not a 64-character lowercase SHA-256"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn executable_binding_rejects_a_coherently_rehashed_sidecar() {
+        let mut fixture = SidecarFixture::new();
+        let trusted = fixture.manifest_sha256();
+
+        fs::write(
+            fixture.root.join("web/assets/app.js"),
+            "export const coherently_rehashed = true;\n",
+        )
+        .expect("replace asset bytes");
+        fixture.refresh_manifest_entry("web/assets/app.js");
+        fixture.write_manifest();
+
+        validate_packaged_sidecar(&fixture.root, &fixture.roots)
+            .expect("the rewritten manifest remains internally consistent");
+        let error = validate_packaged_sidecar_with_digest(&fixture.root, &fixture.roots, &trusted)
+            .expect_err("the executable must retain the original manifest identity");
+        assert!(
+            error.contains("does not match executable-bound identity"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -799,7 +914,7 @@ mod tests {
     }
 
     #[test]
-    fn manifest_authenticates_the_exact_immutable_bytes_that_will_be_served() {
+    fn manifest_integrity_covers_the_exact_immutable_bytes_that_will_be_served() {
         let fixture = SidecarFixture::new();
         let manifest = validate_packaged_sidecar(&fixture.root, &fixture.roots)
             .expect("initial sidecar should validate");
@@ -815,7 +930,7 @@ mod tests {
             .expect("filesystem mutation cannot alter an immutable captured snapshot");
         let tampered = fixture.roots.load().expect("capture mutated assets");
         let error = validate_loaded_assets(&manifest, &tampered)
-            .expect_err("mutated captured bytes must fail manifest authentication");
+            .expect_err("mutated captured bytes must fail manifest integrity validation");
         assert!(error.contains("mismatch"), "{error}");
     }
 
@@ -929,6 +1044,22 @@ mod tests {
                 serde_json::to_vec_pretty(&self.manifest).expect("serialize fixture manifest"),
             )
             .expect("write fixture manifest");
+        }
+
+        fn manifest_sha256(&self) -> String {
+            hash_file(&self.root.join("manifest.json")).expect("hash fixture manifest")
+        }
+
+        fn refresh_manifest_entry(&mut self, relative: &str) {
+            let path = self.root.join(relative);
+            let entry = self.manifest["files"]
+                .as_array_mut()
+                .expect("file array")
+                .iter_mut()
+                .find(|entry| entry["path"] == relative)
+                .expect("manifest entry");
+            entry["sha256"] = json!(hash_file(&path).expect("asset hash"));
+            entry["size"] = json!(fs::metadata(path).expect("asset metadata").len());
         }
     }
 }

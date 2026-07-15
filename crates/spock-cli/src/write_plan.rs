@@ -31,7 +31,7 @@ static NEXT_QUARANTINE: AtomicU64 = AtomicU64::new(0);
 
 /// Filesystem policy for the root of a write plan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RootPolicy {
+enum RootPolicy {
     /// `spock new`: the destination itself must not exist.
     NewDestination,
     /// `spock init`: the adoption root must already be a real directory.
@@ -159,7 +159,8 @@ fn scan_unix_inventory_directory(
         let kind = match rustix::fs::FileType::from_raw_mode(metadata.st_mode) {
             rustix::fs::FileType::Directory => InventoryEntryKind::Directory,
             rustix::fs::FileType::Symlink => InventoryEntryKind::Symlink,
-            _ => InventoryEntryKind::File,
+            rustix::fs::FileType::RegularFile => InventoryEntryKind::File,
+            _ => InventoryEntryKind::Unsupported,
         };
         let normalized = normalized_inventory_path(root, &relative)?;
         let ignored = kind == InventoryEntryKind::Directory
@@ -220,8 +221,10 @@ fn scan_windows_inventory_directory(
             InventoryEntryKind::Symlink
         } else if file_type.is_dir() {
             InventoryEntryKind::Directory
-        } else {
+        } else if file_type.is_file() {
             InventoryEntryKind::File
+        } else {
+            InventoryEntryKind::Unsupported
         };
         let normalized = normalized_inventory_path(root, &relative)?;
         let ignored = kind == InventoryEntryKind::Directory
@@ -435,10 +438,8 @@ impl std::error::Error for ApplyError {
 /// directories as residuals. Windows performs no rollback mutation and reports
 /// every known creation as a residual. These conservative rules avoid deleting
 /// or overwriting an entry concurrently installed under a created name.
-pub fn apply_write_plan(
-    plan: &WritePlan,
-    root_policy: RootPolicy,
-) -> Result<ApplySummary, ApplyError> {
+#[cfg(test)]
+fn apply_write_plan(plan: &WritePlan, root_policy: RootPolicy) -> Result<ApplySummary, ApplyError> {
     apply_write_plan_inner(plan, root_policy, |_| {})
 }
 
@@ -450,6 +451,7 @@ pub(crate) fn apply_prepared_write_plan(
     apply_write_plan_inner_with_target(plan, policy, Some(target), |_| {})
 }
 
+#[cfg(test)]
 fn apply_write_plan_inner<F>(
     plan: &WritePlan,
     root_policy: RootPolicy,
@@ -2690,6 +2692,24 @@ mod tests {
             .map(|(path, _)| path.as_str())
             .collect::<Vec<_>>();
         assert_eq!(paths, ["original.spock"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepared_inventory_preserves_unsupported_entry_kinds() {
+        use std::os::unix::net::UnixListener;
+
+        let temporary = TestDirectory::new();
+        let socket_path = temporary.path().join("app.spock");
+        let _socket = UnixListener::bind(&socket_path).unwrap();
+        let prepared = PreparedWriteRoot::open(temporary.path()).unwrap();
+
+        let inventory = prepared.inventory().unwrap();
+        let socket = NormalizedRelativePath::file("app.spock").unwrap();
+        assert_eq!(
+            inventory.kind(&socket),
+            Some(InventoryEntryKind::Unsupported)
+        );
     }
 
     #[cfg(windows)]

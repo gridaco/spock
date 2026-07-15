@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use axum::body::{Body, Bytes};
 use axum::extract::Request;
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
 use axum::http::{HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
@@ -17,9 +17,9 @@ use spock_runtime::generation::BackendGeneration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio_stream::wrappers::ReceiverStream;
-use tower_http::cors::CorsLayer;
 use uhura_host::{EventStreamPoll, RequestMethod, RouteBody, RouteRequest, RouteResponse};
 
+use crate::events::{EventAdmission, EventStreamPermit, MAX_EVENT_STREAMS_PER_SESSION};
 use crate::{
     classify_route, BackendGenerationId, ClientHost, GenerationCoordinator, HostMode,
     ProjectEventHub, ProjectEventStreamPoll, ProjectGenerationId, ProjectStatus, RouteOwner,
@@ -37,6 +37,7 @@ pub struct FrameworkSession {
     backend: Arc<BackendGeneration>,
     publication: Arc<RwLock<PublicationState>>,
     events: Arc<ProjectEventHub>,
+    stream_admission: Arc<EventAdmission>,
     stream_shutdown: Arc<AtomicBool>,
 }
 
@@ -52,13 +53,17 @@ impl FrameworkSession {
         client: Option<ClientHost>,
         coordinator: GenerationCoordinator,
     ) -> Self {
+        let stream_admission = Arc::new(EventAdmission::new(MAX_EVENT_STREAMS_PER_SESSION));
         Self {
             backend: Arc::new(backend),
             publication: Arc::new(RwLock::new(PublicationState {
                 coordinator,
                 client,
             })),
-            events: Arc::new(ProjectEventHub::default()),
+            events: Arc::new(ProjectEventHub::with_admission(Arc::clone(
+                &stream_admission,
+            ))),
+            stream_admission,
             stream_shutdown: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -109,80 +114,93 @@ impl FrameworkSession {
             .is_some();
         let event_shutdown = Arc::clone(&self.stream_shutdown);
         let client_shutdown = Arc::clone(&self.stream_shutdown);
+        let client_stream_admission = Arc::clone(&self.stream_admission);
 
-        let framework =
-            Router::new()
-                .route(
-                    "/~project/status",
-                    get(move || async move {
-                        (
-                            [(CACHE_CONTROL, HeaderValue::from_static("no-store"))],
-                            Json(
-                                status_state
-                                    .read()
-                                    .expect("project publication lock")
-                                    .coordinator
-                                    .status(),
-                            ),
-                        )
-                    }),
-                )
-                .route(
-                    "/~project/environment",
-                    get(move || async move {
-                        let status = environment_state
-                            .read()
-                            .expect("project publication lock")
-                            .coordinator
-                            .status();
-                        (
-                            [(CACHE_CONTROL, HeaderValue::from_static("no-store"))],
-                            Json(HostEnvironment::from_status(&status, graphql_available)),
-                        )
-                    }),
-                )
-                .route(
-                    "/~project/events",
-                    get(move || {
-                        let stream = project_events.subscribe();
-                        let shutdown = Arc::clone(&event_shutdown);
-                        async move { project_event_response(stream, shutdown) }
-                    })
-                    .head(|| async { event_method_error() }),
-                )
-                .route(
-                    "/~health",
-                    get(move || async move {
-                        let status = health_state
-                            .read()
-                            .expect("project publication lock")
-                            .coordinator
-                            .status();
-                        let code = if status.health.ready {
-                            StatusCode::OK
-                        } else {
-                            StatusCode::SERVICE_UNAVAILABLE
-                        };
-                        (
-                            code,
-                            [(CACHE_CONTROL, HeaderValue::from_static("no-store"))],
-                            Json(json!({
-                                "ok": status.health.ready,
-                                "ready": status.health.ready,
-                                "degraded": status.health.degraded,
-                            })),
-                        )
-                    }),
-                )
-                .fallback(move |request: Request| {
-                    let publication = Arc::clone(&publication);
-                    let shutdown = Arc::clone(&client_shutdown);
+        let framework = Router::new()
+            .route(
+                "/~project/status",
+                get(move || async move {
+                    (
+                        [(CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+                        Json(
+                            status_state
+                                .read()
+                                .expect("project publication lock")
+                                .coordinator
+                                .status(),
+                        ),
+                    )
+                }),
+            )
+            .route(
+                "/~project/environment",
+                get(move || async move {
+                    let status = environment_state
+                        .read()
+                        .expect("project publication lock")
+                        .coordinator
+                        .status();
+                    (
+                        [(CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+                        Json(HostEnvironment::from_status(&status, graphql_available)),
+                    )
+                }),
+            )
+            .route(
+                "/~project/events",
+                get(move || {
+                    let stream = project_events.subscribe();
+                    let shutdown = Arc::clone(&event_shutdown);
                     async move {
-                        combined_fallback(request, publication, client_configured, shutdown).await
+                        match stream {
+                            Some(stream) => project_event_response(stream, shutdown),
+                            None => event_capacity_error(),
+                        }
                     }
-                });
+                })
+                .head(|| async { event_method_error() }),
+            )
+            .route(
+                "/~health",
+                get(move || async move {
+                    let status = health_state
+                        .read()
+                        .expect("project publication lock")
+                        .coordinator
+                        .status();
+                    let code = if status.health.ready {
+                        StatusCode::OK
+                    } else {
+                        StatusCode::SERVICE_UNAVAILABLE
+                    };
+                    (
+                        code,
+                        [(CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+                        Json(json!({
+                            "ok": status.health.ready,
+                            "ready": status.health.ready,
+                            "degraded": status.health.degraded,
+                        })),
+                    )
+                }),
+            )
+            .fallback(move |request: Request| {
+                let publication = Arc::clone(&publication);
+                let shutdown = Arc::clone(&client_shutdown);
+                let stream_admission = Arc::clone(&client_stream_admission);
+                async move {
+                    combined_fallback(
+                        request,
+                        publication,
+                        client_configured,
+                        shutdown,
+                        stream_admission,
+                    )
+                    .await
+                }
+            });
 
-        Ok(authority.merge(framework).layer(CorsLayer::permissive()))
+        Ok(authority.merge(framework))
     }
 }
 
@@ -223,10 +241,13 @@ async fn combined_fallback(
     publication: Arc<RwLock<PublicationState>>,
     client_configured: bool,
     stream_shutdown: Arc<AtomicBool>,
+    stream_admission: Arc<EventAdmission>,
 ) -> Response {
     let path = request.uri().path().to_string();
     match classify_route(&path, client_configured) {
-        RouteOwner::Client => route_client(request, &publication, stream_shutdown),
+        RouteOwner::Client => {
+            route_client(request, &publication, stream_shutdown, stream_admission)
+        }
         RouteOwner::Framework if path == "/" && !client_configured => {
             if matches!(
                 *request.method(),
@@ -268,6 +289,7 @@ fn route_client(
     request: Request,
     publication: &RwLock<PublicationState>,
     stream_shutdown: Arc<AtomicBool>,
+    stream_admission: Arc<EventAdmission>,
 ) -> Response {
     let method = match *request.method() {
         axum::http::Method::GET => RequestMethod::Get,
@@ -284,10 +306,14 @@ fn route_client(
     };
     let response = client.route(RouteRequest { method, url });
     drop(publication);
-    uhura_response(response, stream_shutdown)
+    uhura_response(response, stream_shutdown, stream_admission)
 }
 
-fn uhura_response(response: RouteResponse, stream_shutdown: Arc<AtomicBool>) -> Response {
+fn uhura_response(
+    response: RouteResponse,
+    stream_shutdown: Arc<AtomicBool>,
+    stream_admission: Arc<EventAdmission>,
+) -> Response {
     let status = StatusCode::from_u16(response.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     let mut builder = Response::builder().status(status);
     for (name, value) in response.headers {
@@ -303,8 +329,12 @@ fn uhura_response(response: RouteResponse, stream_shutdown: Arc<AtomicBool>) -> 
     let body = match response.body {
         RouteBody::Bytes(bytes) => Body::from(bytes.into_inner()),
         RouteBody::Events(stream) => {
+            let Some(admission_permit) = stream_admission.try_acquire() else {
+                return event_capacity_error();
+            };
             let (sender, receiver) = mpsc::channel::<Result<Bytes, Infallible>>(1);
             tokio::spawn(async move {
+                let _admission_permit: EventStreamPermit = admission_permit;
                 loop {
                     if sender.is_closed() || stream_shutdown.load(Ordering::Acquire) {
                         break;
@@ -384,6 +414,29 @@ fn event_method_error() -> Response {
     response
 }
 
+fn event_capacity_error() -> Response {
+    let mut response = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "error": {
+                "code": "unavailable",
+                "kind": "unavailable",
+                "table": null,
+                "fields": [],
+                "message": "too many active framework event streams; retry shortly",
+            }
+        })),
+    )
+        .into_response();
+    response
+        .headers_mut()
+        .insert(RETRY_AFTER, HeaderValue::from_static("1"));
+    response
+        .headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 fn internal_transport_error(message: &'static str) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -403,14 +456,18 @@ fn internal_transport_error(message: &'static str) -> Response {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::fs;
 
     use axum::body::to_bytes;
     use axum::http::Request;
+    use spock_project::minimal_uhura_client_template;
     use spock_runtime::generation::CapturedBackend;
+    use tempfile::tempdir;
     use tower::ServiceExt;
+    use uhura_host::{capture_project_snapshot, WebAssets};
 
     use super::*;
-    use crate::{Fingerprint, GenerationCoordinator};
+    use crate::{client_source_fingerprint, ClientHost, Fingerprint, GenerationCoordinator};
 
     fn backend_only() -> FrameworkSession {
         session_with_source("")
@@ -428,6 +485,52 @@ mod tests {
             "world-1",
         );
         FrameworkSession::new(backend, None, coordinator)
+    }
+
+    fn client_session() -> FrameworkSession {
+        let project = tempdir().expect("temporary client project");
+        for file in minimal_uhura_client_template().files() {
+            let path = project.path().join(file.path().as_path());
+            fs::create_dir_all(path.parent().expect("client file parent")).unwrap();
+            fs::write(path, file.contents()).unwrap();
+        }
+        let snapshot = capture_project_snapshot(project.path());
+
+        let web_root = tempdir().expect("temporary web assets");
+        fs::create_dir_all(web_root.path().join("assets")).unwrap();
+        fs::write(
+            web_root.path().join("index.html"),
+            r#"<!doctype html><script type="module" src="/assets/app.js"></script>"#,
+        )
+        .unwrap();
+        fs::write(web_root.path().join("assets/app.js"), "export {};\n").unwrap();
+        let web = WebAssets::from_frontend_directory(web_root.path()).unwrap();
+
+        let backend =
+            BackendGeneration::from_captured(CapturedBackend::new("", BTreeMap::new()), None)
+                .expect("backend generation");
+        let source_fingerprint = client_source_fingerprint(&snapshot);
+        let mut coordinator = GenerationCoordinator::activated(
+            HostMode::Start,
+            Fingerprint::new("backend"),
+            Fingerprint::new("topology"),
+            Some(source_fingerprint.clone()),
+            "world-1",
+        );
+        let revision = coordinator.observed_revision();
+        coordinator.begin_client_attempt(revision).unwrap();
+        let (client, publication) = ClientHost::activate(web, &snapshot, revision).unwrap();
+        assert!(publication.report.editor_current);
+        assert!(publication.report.play_ok);
+        coordinator
+            .publish_client(
+                revision,
+                publication.report.source_revision,
+                source_fingerprint,
+                Vec::new(),
+            )
+            .unwrap();
+        FrameworkSession::new(backend, Some(client), coordinator)
     }
 
     async fn response_json(response: Response) -> serde_json::Value {
@@ -490,6 +593,7 @@ mod tests {
             session.publication(),
             true,
             Arc::new(AtomicBool::new(false)),
+            Arc::new(EventAdmission::new(MAX_EVENT_STREAMS_PER_SESSION)),
         )
         .await;
 
@@ -564,5 +668,131 @@ mod tests {
             response_json(environment).await["authority"]["graphql_path"],
             "/graphql/v1"
         );
+    }
+
+    #[tokio::test]
+    async fn combined_host_grants_no_cross_origin_access() {
+        let router = backend_only().router().expect("router");
+        for path in ["/~project/status", "/~contract"] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::get(path)
+                        .header("origin", "https://arbitrary.example")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert!(
+                !response
+                    .headers()
+                    .contains_key("access-control-allow-origin"),
+                "{path} must remain same-origin"
+            );
+        }
+
+        let preflight = router
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/rest/v1/rpc/example")
+                    .header("origin", "https://arbitrary.example")
+                    .header("access-control-request-method", "POST")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(!preflight
+            .headers()
+            .contains_key("access-control-allow-origin"));
+    }
+
+    #[tokio::test]
+    async fn project_and_uhura_event_routes_share_one_reusable_session_budget() {
+        let router = client_session().router().expect("router");
+        let mut streams = Vec::new();
+        for path in [
+            "/~project/events",
+            "/api/editor/events",
+            "/~project/events",
+            "/api/play/events",
+        ] {
+            let response = router
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "GET {path}");
+            streams.push(response);
+        }
+
+        for path in ["/~project/events", "/api/editor/events"] {
+            let saturated = router
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                saturated.status(),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "GET {path}"
+            );
+            assert_eq!(saturated.headers()[RETRY_AFTER], "1");
+            assert_eq!(
+                response_json(saturated).await["error"]["code"],
+                "unavailable"
+            );
+        }
+
+        drop(streams.pop().expect("one admitted stream"));
+        let replacement = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::get("/api/editor/events")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                if response.status() == StatusCode::OK {
+                    break response;
+                }
+                assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+                tokio::time::sleep(STREAM_POLL_INTERVAL).await;
+            }
+        })
+        .await
+        .expect("dropped event response should release admission");
+        streams.push(replacement);
+        assert_eq!(streams.len(), MAX_EVENT_STREAMS_PER_SESSION);
+
+        drop(streams.remove(0));
+        let replacement = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::get("/api/play/events")
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                if response.status() == StatusCode::OK {
+                    break response;
+                }
+                assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+                tokio::time::sleep(STREAM_POLL_INTERVAL).await;
+            }
+        })
+        .await
+        .expect("dropped project event response should release admission");
+        streams.push(replacement);
+        assert_eq!(streams.len(), MAX_EVENT_STREAMS_PER_SESSION);
     }
 }

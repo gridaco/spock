@@ -7,6 +7,7 @@ use serde::Serialize;
 
 pub const PROJECT_EVENT_PROTOCOL: &str = "spock-project-event/1";
 pub const PROJECT_STATUS_PATH: &str = "/~project/status";
+pub const MAX_EVENT_STREAMS_PER_SESSION: usize = 4;
 
 /// One invalidation for the authoritative project-status snapshot.
 ///
@@ -45,17 +46,66 @@ struct HubState {
 
 pub struct ProjectEventHub {
     state: Arc<Mutex<HubState>>,
+    admission: Arc<EventAdmission>,
 }
 
 impl Default for ProjectEventHub {
     fn default() -> Self {
+        Self::with_admission(Arc::new(EventAdmission::new(MAX_EVENT_STREAMS_PER_SESSION)))
+    }
+}
+
+pub(crate) struct EventAdmission {
+    active: Mutex<usize>,
+    limit: usize,
+}
+
+impl EventAdmission {
+    pub(crate) fn new(limit: usize) -> Self {
         Self {
-            state: Arc::new(Mutex::new(HubState::default())),
+            active: Mutex::new(0),
+            limit,
         }
+    }
+
+    pub(crate) fn try_acquire(self: &Arc<Self>) -> Option<EventStreamPermit> {
+        let mut active = self.active.lock().expect("event admission lock");
+        if *active >= self.limit {
+            return None;
+        }
+        *active += 1;
+        Some(EventStreamPermit {
+            admission: Arc::clone(self),
+        })
+    }
+
+    #[cfg(test)]
+    fn active(&self) -> usize {
+        *self.active.lock().expect("event admission lock")
+    }
+}
+
+pub(crate) struct EventStreamPermit {
+    admission: Arc<EventAdmission>,
+}
+
+impl Drop for EventStreamPermit {
+    fn drop(&mut self) {
+        let mut active = self.admission.active.lock().expect("event admission lock");
+        *active = active
+            .checked_sub(1)
+            .expect("event admission count underflow");
     }
 }
 
 impl ProjectEventHub {
+    pub(crate) fn with_admission(admission: Arc<EventAdmission>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(HubState::default())),
+            admission,
+        }
+    }
+
     #[must_use]
     pub fn current_id(&self) -> u64 {
         self.state
@@ -69,7 +119,8 @@ impl ProjectEventHub {
     /// Registration and snapshot creation share the client lock with
     /// publication, so an event may be duplicated at the boundary but cannot
     /// be lost.
-    pub fn subscribe(&self) -> ProjectEventStream {
+    pub fn subscribe(&self) -> Option<ProjectEventStream> {
+        let admission_permit = self.admission.try_acquire()?;
         let (sender, receiver) = mpsc::sync_channel(1);
         let client_id = {
             let mut state = self.state.lock().expect("project event hub lock");
@@ -79,11 +130,12 @@ impl ProjectEventHub {
             state.clients.insert(client_id, sender);
             client_id
         };
-        ProjectEventStream {
+        Some(ProjectEventStream {
             receiver,
             client_id,
             state: Arc::downgrade(&self.state),
-        }
+            _admission_permit: admission_permit,
+        })
     }
 
     /// Advance the session event ID after status and artifacts are visible.
@@ -118,6 +170,7 @@ pub struct ProjectEventStream {
     receiver: Receiver<String>,
     client_id: u64,
     state: Weak<Mutex<HubState>>,
+    _admission_permit: EventStreamPermit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -169,13 +222,17 @@ mod tests {
         }
     }
 
+    fn subscribe(hub: &ProjectEventHub) -> ProjectEventStream {
+        hub.subscribe().expect("event stream admission")
+    }
+
     #[test]
     fn a_new_subscriber_immediately_invalidates_to_the_current_snapshot() {
         let hub = ProjectEventHub::default();
         hub.publish();
         hub.publish();
 
-        let frame = next(&hub.subscribe());
+        let frame = next(&subscribe(&hub));
         assert!(frame.starts_with("id: 2\nevent: invalidate\n"), "{frame}");
         assert!(frame.contains(PROJECT_EVENT_PROTOCOL), "{frame}");
         assert!(frame.contains(PROJECT_STATUS_PATH), "{frame}");
@@ -184,8 +241,8 @@ mod tests {
     #[test]
     fn publications_are_monotonic_and_reach_every_live_subscriber() {
         let hub = ProjectEventHub::default();
-        let first = hub.subscribe();
-        let second = hub.subscribe();
+        let first = subscribe(&hub);
+        let second = subscribe(&hub);
         let _ = next(&first);
         let _ = next(&second);
 
@@ -202,7 +259,7 @@ mod tests {
     #[test]
     fn a_dropped_subscriber_does_not_block_later_publication() {
         let hub = ProjectEventHub::default();
-        drop(hub.subscribe());
+        drop(subscribe(&hub));
         assert_eq!(hub.subscriber_count(), 0);
         assert_eq!(hub.publish().event_id, 1);
         assert_eq!(hub.current_id(), 1);
@@ -212,7 +269,7 @@ mod tests {
     #[test]
     fn a_stalled_subscriber_has_one_bounded_invalidation() {
         let hub = ProjectEventHub::default();
-        let stream = hub.subscribe();
+        let stream = subscribe(&hub);
         for _ in 0..250 {
             hub.publish();
         }
@@ -227,5 +284,25 @@ mod tests {
             stream.next_frame_timeout(Duration::from_millis(1)),
             ProjectEventStreamPoll::Timeout
         );
+    }
+
+    #[test]
+    fn session_admission_is_bounded_and_reusable_after_drop() {
+        let admission = Arc::new(EventAdmission::new(2));
+        let hub = ProjectEventHub::with_admission(Arc::clone(&admission));
+        let first = subscribe(&hub);
+        let second = subscribe(&hub);
+        assert_eq!(admission.active(), 2);
+        assert!(hub.subscribe().is_none());
+
+        drop(first);
+        assert_eq!(admission.active(), 1);
+        let replacement = subscribe(&hub);
+        assert_eq!(admission.active(), 2);
+
+        drop(second);
+        drop(replacement);
+        assert_eq!(admission.active(), 0);
+        assert_eq!(hub.subscriber_count(), 0);
     }
 }

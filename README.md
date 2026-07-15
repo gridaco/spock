@@ -78,12 +78,14 @@ authority is not designed yet should keep that file empty; the client, health,
 status, contract metadata, Editor, and Play can still run.
 
 `spock dev` deliberately has asymmetric reload semantics today. Valid Uhura
-client saves publish live and invalid saves retain the last good Play
-generation. Backend inputs—including the `.spock` source and referenced seed
-assets—and topology-affecting `spock.toml` saves are detected and reported as
-`restart_required`, but they never reopen, reseed, migrate, or replace the
-active database. Restarting reconstructs backend state from seed. This keeps
-the current behavior honest while the development-state model in
+client saves publish live. Invalid saves retain the last good Play generation
+when one exists; an initially invalid client is reported as `cold_invalid`
+while Editor diagnostics remain available. Backend inputs—including the
+`.spock` source and referenced seed assets—and topology-affecting `spock.toml`
+saves are detected and reported as `restart_required`, but they never reopen,
+reseed, migrate, or replace the active database. Restarting reconstructs
+backend state from seed. This keeps the current behavior honest while the
+development-state model in
 [RFD 0023](docs/rfd/0023-development-state-reload.md) remains open.
 
 Framework composition changes the operational envelope, not the doctrine.
@@ -95,8 +97,9 @@ authoritative in both systems just because one command serves them together.
 
 For a project with a configured client, both framework commands serve Uhura
 Editor at `/` and Play at `/play`. Both modes serve Spock Studio at `/~studio`
-and the authority protocols on the same origin. A backend-only project's `/`
-redirects to Studio and its client routes return structured 404 responses.
+and the authority protocols on the same origin; the combined host grants no
+cross-origin CORS access by default. A backend-only project's `/` redirects to
+Studio and its client routes return structured 404 responses.
 `/~project/status` makes the active and merely observed generations explicit;
 `/~health` remains ready-but-degraded when a client candidate is rejected or a
 backend restart is required.
@@ -734,8 +737,10 @@ cargo run --locked -p spock-cli -- dev demo
 `build-wasm.sh` reports the lockfile-exact `wasm-bindgen-cli` install command
 when that tool is missing. The two asset overrides are a pair: setting only one
 is rejected, so a source host cannot accidentally combine incompatible web and
-Wasm generations. A distributed `spock` finds the verified sidecar beside its
-installed executable and needs neither override nor a Node process at runtime.
+Wasm generations. A distributed `spock` finds the sidecar beside its installed
+executable, verifies the executable-bound manifest identity and its file
+inventory, and needs neither override nor a Node process at runtime. The paired
+overrides are an explicit unanchored source/test trust boundary.
 
 The historical `scripts/spock-uhura.sh` two-process runner remains a transition
 and comparison oracle for examples whose backend and client still live in

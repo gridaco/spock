@@ -110,6 +110,11 @@ function assertOutputDirectory(outDir) {
   }
 }
 
+function assertAssetDirectory(root, rootStat) {
+  if (rootStat?.isSymbolicLink()) fail(`asset directory may not be a symlink: ${root}`);
+  if (!rootStat?.isDirectory()) fail(`asset directory is missing: ${root}`);
+}
+
 function selfTest() {
   const root = resolve("sidecar-output-suffix-self-test");
   assertOutputDirectory(join(root, "share", "spock", "uhura"));
@@ -131,13 +136,33 @@ function selfTest() {
     if (!rejected) fail(`self-test accepted invalid --out-dir: ${invalid}`);
   }
 
-  process.stdout.write("verified sidecar output suffix self-test\n");
+  const symlinkRoot = join(root, "symlink-root");
+  try {
+    assertAssetDirectory(symlinkRoot, {
+      isSymbolicLink: () => true,
+      isDirectory: () => false,
+    });
+    fail("self-test accepted a symlinked asset root");
+  } catch (error) {
+    if (error?.message !== `sidecar: asset directory may not be a symlink: ${symlinkRoot}`) {
+      throw error;
+    }
+  }
+
+  const missingRoot = join(root, "missing-root");
+  try {
+    assertAssetDirectory(missingRoot, null);
+    fail("self-test accepted a missing asset root");
+  } catch (error) {
+    if (error?.message !== `sidecar: asset directory is missing: ${missingRoot}`) throw error;
+  }
+
+  process.stdout.write("verified sidecar tooling self-test\n");
 }
 
 async function regularFiles(root, prefix = "") {
   const rootStat = await lstat(root).catch(() => null);
-  if (!rootStat?.isDirectory()) fail(`asset directory is missing: ${root}`);
-  if (rootStat.isSymbolicLink()) fail(`asset directory may not be a symlink: ${root}`);
+  assertAssetDirectory(root, rootStat);
 
   const files = [];
   async function visit(directory, pathPrefix) {

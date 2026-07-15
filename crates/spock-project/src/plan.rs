@@ -26,6 +26,9 @@ pub enum InventoryEntryKind {
     File,
     Directory,
     Symlink,
+    /// A filesystem entry that is neither a regular file, directory, nor
+    /// symlink (for example, a Unix socket or FIFO).
+    Unsupported,
 }
 
 /// A deterministic, read-only view used by pure creation/adoption planning.
@@ -159,8 +162,10 @@ fn scan_directory(
             InventoryEntryKind::Symlink
         } else if file_type.is_dir() {
             InventoryEntryKind::Directory
-        } else {
+        } else if file_type.is_file() {
             InventoryEntryKind::File
+        } else {
+            InventoryEntryKind::Unsupported
         };
         entries.insert(relative.clone(), kind);
 
@@ -379,6 +384,7 @@ fn kind_name(kind: InventoryEntryKind) -> &'static str {
         InventoryEntryKind::File => "file",
         InventoryEntryKind::Directory => "directory",
         InventoryEntryKind::Symlink => "symlink",
+        InventoryEntryKind::Unsupported => "unsupported filesystem entry",
     }
 }
 
@@ -584,6 +590,37 @@ fn finish_plan(
             seen.insert(key, write.relative_path.clone());
         }
     }
+
+    // Equality is not the only impossible file topology. A plan that writes
+    // both `foo` and `foo/bar` would partially mutate the destination before
+    // apply discovers that `foo` cannot be both a file and a directory. Check
+    // every portable parent key in a second pass so case or normalization
+    // aliases are caught even when lexical sorting places the descendant first.
+    let planned_paths = writes
+        .iter()
+        .map(|write| {
+            (
+                portable_case_key(&write.relative_path),
+                &write.relative_path,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    for write in &writes {
+        let mut parent = write.relative_path.parent();
+        while !parent.is_project_root() {
+            if let Some(existing) = planned_paths.get(&portable_case_key(&parent)) {
+                diagnostics.push(Diagnostic::new(
+                    DiagnosticCode::PlanConflict,
+                    format!(
+                        "cannot create `{}` because planned file `{existing}` is its ancestor",
+                        write.relative_path
+                    ),
+                ));
+                break;
+            }
+            parent = parent.parent();
+        }
+    }
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
@@ -671,6 +708,45 @@ mod tests {
         assert!(diagnostic
             .message
             .contains("case- or normalization-insensitive filesystems"));
+    }
+
+    #[test]
+    fn write_plan_rejects_file_ancestor_aliases_before_apply() {
+        for (ancestor, descendant) in [
+            ("client/foo", "client/foo/bar.uhura"),
+            // The descendant sorts before the ancestor, proving validation is
+            // independent of the writes' lexical order.
+            ("client/z", "client/Z/bar.uhura"),
+            ("client/café", "client/cafe\u{301}/bar.uhura"),
+        ] {
+            let diagnostics = finish_plan(
+                PlanKind::Scaffold,
+                PathBuf::from("/future/demo"),
+                vec![
+                    planned(ancestor, Vec::new()).unwrap(),
+                    planned(descendant, Vec::new()).unwrap(),
+                ],
+            )
+            .unwrap_err();
+
+            assert_eq!(diagnostics.len(), 1, "{ancestor} versus {descendant}");
+            let diagnostic = &diagnostics.iter().next().unwrap();
+            assert_eq!(diagnostic.code, DiagnosticCode::PlanConflict);
+            assert!(diagnostic.message.contains(ancestor));
+            assert!(diagnostic.message.contains(descendant));
+            assert!(diagnostic.message.contains("ancestor"));
+        }
+
+        let siblings = finish_plan(
+            PlanKind::Scaffold,
+            PathBuf::from("/future/demo"),
+            vec![
+                planned("client/foo", Vec::new()).unwrap(),
+                planned("client/foobar/page.uhura", Vec::new()).unwrap(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(siblings.writes().len(), 2);
     }
 
     #[test]
@@ -857,6 +933,30 @@ mod tests {
         assert!(paths.contains(&"providers/dist/spock.js"));
         assert!(!paths.contains(&"target/nested/ignored.spock"));
         assert!(paths.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_represents_special_entries_without_adopting_them_as_sources() {
+        use std::os::unix::net::UnixListener;
+
+        let temp = tempdir().unwrap();
+        let socket_path = temp.path().join("app.spock");
+        let _socket = UnixListener::bind(&socket_path).unwrap();
+
+        let inventory = ProjectInventory::scan(temp.path()).unwrap();
+        let socket = NormalizedRelativePath::file("app.spock").unwrap();
+        assert_eq!(
+            inventory.kind(&socket),
+            Some(InventoryEntryKind::Unsupported)
+        );
+
+        let plan = adoption_plan(&inventory, Some("demo")).unwrap();
+        assert!(plan.write("backend/app.spock").is_some());
+        let manifest =
+            std::str::from_utf8(plan.write(MANIFEST_FILE).unwrap().contents.as_slice()).unwrap();
+        assert!(manifest.contains("root = \"backend\""));
+        assert!(manifest.contains("entry = \"app.spock\""));
     }
 
     #[cfg(unix)]

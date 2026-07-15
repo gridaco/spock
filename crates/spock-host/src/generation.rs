@@ -73,6 +73,7 @@ pub enum ClientFreshness {
     Absent,
     Building,
     Active,
+    ColdInvalid,
     RejectedLastGood,
 }
 
@@ -143,7 +144,9 @@ pub struct ActiveClientStatus {
     pub observed_revision: ObservedRevision,
     /// Consecutive publication revision owned by the Uhura host.
     pub source_revision: u64,
-    pub artifact_fingerprint: Fingerprint,
+    /// Content identity of the exact Uhura source snapshot that produced this
+    /// publication. This is not a digest of generated browser artifacts.
+    pub source_fingerprint: Fingerprint,
     pub backend_generation_id: BackendGenerationId,
 }
 
@@ -199,7 +202,7 @@ struct ActiveClient {
     generation_id: ClientGenerationId,
     observed_revision: ObservedRevision,
     source_revision: u64,
-    artifact_fingerprint: Fingerprint,
+    source_fingerprint: Fingerprint,
     backend_generation_id: BackendGenerationId,
 }
 
@@ -301,6 +304,23 @@ impl GenerationCoordinator {
         self.observed_client = observation.client;
         self.observed_backend_diagnostics = observation.backend_diagnostics;
 
+        // A client build is eligible only for the exact project observation
+        // that started it. Terminalize a superseded attempt in the same state
+        // transition that advances the observation so status can never remain
+        // `building` after that candidate becomes permanently ineligible.
+        let superseded_attempt = self.latest_attempt.as_ref().and_then(|attempt| {
+            (attempt.state == ClientAttemptState::Building).then_some(attempt.observed_revision)
+        });
+        if let Some(revision) = superseded_attempt {
+            self.finish_client_rejection(
+                revision,
+                vec![format!(
+                    "client build for observed revision {revision} was superseded by newer project observation {}",
+                    self.observed_revision
+                )],
+            );
+        }
+
         let backend_matches = self.observed_topology == self.active_topology
             && self.observed_backend == self.active_backend;
         self.backend_freshness = if backend_matches {
@@ -336,7 +356,7 @@ impl GenerationCoordinator {
         &mut self,
         observed_revision: ObservedRevision,
         source_revision: u64,
-        artifact_fingerprint: Fingerprint,
+        source_fingerprint: Fingerprint,
         diagnostics: Vec<String>,
     ) -> Result<ClientGenerationId, CandidateError> {
         self.require_started_newest(observed_revision)?;
@@ -346,7 +366,7 @@ impl GenerationCoordinator {
             generation_id,
             observed_revision,
             source_revision,
-            artifact_fingerprint,
+            source_fingerprint,
             backend_generation_id: self.active_backend_id,
         });
         self.latest_attempt = Some(ClientAttempt {
@@ -366,18 +386,27 @@ impl GenerationCoordinator {
         diagnostics: Vec<String>,
     ) -> Result<(), CandidateError> {
         self.require_started_newest(revision)?;
+        self.finish_client_rejection(revision, diagnostics);
+        Ok(())
+    }
+
+    fn finish_client_rejection(&mut self, revision: ObservedRevision, diagnostics: Vec<String>) {
         self.latest_attempt = Some(ClientAttempt {
             observed_revision: revision,
             state: ClientAttemptState::Rejected,
             diagnostics,
         });
-        self.client_freshness = ClientFreshness::RejectedLastGood;
-        self.editor_freshness = if self.active_client.is_some() {
+        let has_active_client = self.active_client.is_some();
+        self.client_freshness = if has_active_client {
+            ClientFreshness::RejectedLastGood
+        } else {
+            ClientFreshness::ColdInvalid
+        };
+        self.editor_freshness = if has_active_client {
             EditorFreshness::Stale
         } else {
             EditorFreshness::ColdInvalid
         };
-        Ok(())
     }
 
     #[must_use]
@@ -389,7 +418,7 @@ impl GenerationCoordinator {
                 generation_id: client.generation_id,
                 observed_revision: client.observed_revision,
                 source_revision: client.source_revision,
-                artifact_fingerprint: client.artifact_fingerprint.clone(),
+                source_fingerprint: client.source_fingerprint.clone(),
                 backend_generation_id: client.backend_generation_id,
             });
         ProjectStatus {
@@ -430,7 +459,10 @@ impl GenerationCoordinator {
             health: HealthStatus {
                 ready: true,
                 degraded: self.backend_freshness == BackendFreshness::RestartRequired
-                    || self.client_freshness == ClientFreshness::RejectedLastGood,
+                    || matches!(
+                        self.client_freshness,
+                        ClientFreshness::ColdInvalid | ClientFreshness::RejectedLastGood
+                    ),
             },
         }
     }
@@ -552,12 +584,7 @@ mod tests {
             .begin_client_attempt(ObservedRevision(1))
             .unwrap();
         let client_id = coordinator
-            .publish_client(
-                ObservedRevision(1),
-                1,
-                fingerprint("artifact-a"),
-                Vec::new(),
-            )
+            .publish_client(ObservedRevision(1), 1, fingerprint("source-a"), Vec::new())
             .unwrap();
         let status = coordinator.status();
         assert_eq!(status.client.freshness, ClientFreshness::Active);
@@ -569,7 +596,46 @@ mod tests {
             status.client.active.as_ref().unwrap().backend_generation_id,
             BackendGenerationId(1)
         );
+        assert_eq!(
+            status.client.active.as_ref().unwrap().source_fingerprint,
+            fingerprint("source-a")
+        );
         assert_eq!(status.active_project.client_generation_id, Some(client_id));
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value["client"]["active"]["source_fingerprint"], "source-a");
+        assert!(value["client"]["active"]
+            .get("artifact_fingerprint")
+            .is_none());
+    }
+
+    #[test]
+    fn initial_client_rejection_is_cold_without_claiming_a_last_good_generation() {
+        let mut coordinator = coordinator();
+        coordinator
+            .begin_client_attempt(ObservedRevision(1))
+            .unwrap();
+        coordinator
+            .reject_client(ObservedRevision(1), vec!["UH0001".to_owned()])
+            .unwrap();
+
+        let status = coordinator.status();
+        assert_eq!(status.client.freshness, ClientFreshness::ColdInvalid);
+        assert!(status.client.active.is_none());
+        assert_eq!(
+            status.client.latest_attempt,
+            Some(ClientAttempt {
+                observed_revision: ObservedRevision(1),
+                state: ClientAttemptState::Rejected,
+                diagnostics: vec!["UH0001".to_owned()],
+            })
+        );
+        assert_eq!(status.editor, EditorFreshness::ColdInvalid);
+        assert!(status.health.ready);
+        assert!(status.health.degraded);
+
+        let value = serde_json::to_value(status).unwrap();
+        assert_eq!(value["client"]["freshness"], "cold_invalid");
+        assert!(value["client"]["active"].is_null());
     }
 
     #[test]
@@ -579,12 +645,7 @@ mod tests {
             .begin_client_attempt(ObservedRevision(1))
             .unwrap();
         let good = coordinator
-            .publish_client(
-                ObservedRevision(1),
-                1,
-                fingerprint("artifact-a"),
-                Vec::new(),
-            )
+            .publish_client(ObservedRevision(1), 1, fingerprint("source-a"), Vec::new())
             .unwrap();
 
         coordinator.observe(observation("backend-a", "topology-a", "client-b"));
@@ -620,7 +681,7 @@ mod tests {
             coordinator.publish_client(
                 ObservedRevision(1),
                 1,
-                fingerprint("artifact-old"),
+                fingerprint("source-old"),
                 Vec::new(),
             ),
             Err(CandidateError::Stale {
@@ -628,7 +689,16 @@ mod tests {
                 observed: ObservedRevision(2),
             })
         );
-        assert!(coordinator.status().client.active.is_none());
+        let status = coordinator.status();
+        assert_eq!(status.client.freshness, ClientFreshness::ColdInvalid);
+        assert!(status.client.active.is_none());
+        let attempt = status.client.latest_attempt.expect("terminal attempt");
+        assert_eq!(attempt.observed_revision, ObservedRevision(1));
+        assert_eq!(attempt.state, ClientAttemptState::Rejected);
+        assert!(attempt
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.contains("superseded by newer project observation 2")));
     }
 
     #[test]
@@ -639,12 +709,7 @@ mod tests {
             .begin_client_attempt(ObservedRevision(2))
             .unwrap();
         coordinator
-            .publish_client(
-                ObservedRevision(2),
-                2,
-                fingerprint("artifact-b"),
-                Vec::new(),
-            )
+            .publish_client(ObservedRevision(2), 2, fingerprint("source-b"), Vec::new())
             .unwrap();
 
         let status = coordinator.status();
@@ -679,7 +744,7 @@ mod tests {
             .publish_client(
                 ObservedRevision(1),
                 1,
-                fingerprint("artifact-a"),
+                fingerprint("source-a"),
                 vec!["UH1000: warning".to_owned()],
             )
             .unwrap();

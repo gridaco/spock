@@ -365,14 +365,7 @@ pub(crate) fn prepare_project(
     // Refresh the caller's discovered root at the construction boundary. A
     // manifest save between CLI discovery and host preparation cannot leave
     // us serving paths parsed from one topology under another fingerprint.
-    let refreshed_root =
-        match spock_project::resolve_target(Some(layout.manifest_path.as_path()), &layout.root)? {
-            spock_project::ResolvedTarget::Project(root) => root,
-            spock_project::ResolvedTarget::SpockFile(_) => {
-                unreachable!("an explicit spock.toml target cannot select file mode")
-            }
-        };
-    let layout = spock_project::load_project(&refreshed_root)?;
+    let layout = reload_project_layout(&layout)?;
     let active_topology = topology_fingerprint(&layout.manifest_path);
     let active_backend = observe_backend(&layout);
     let captured = active_backend
@@ -403,16 +396,18 @@ pub(crate) fn prepare_project(
     } else {
         (None, None, None)
     };
+    let client_fingerprint = initial_client.as_ref().map(client_source_fingerprint);
 
     // Cross-subsystem construction used only immutable captures. Recheck the
-    // topology and backend before acquiring a named-state lock or opening a
-    // database; any overlapping save makes this attempt ineligible.
-    let settled_backend = observe_backend(&layout);
-    if topology_fingerprint(&layout.manifest_path) != active_topology
-        || settled_backend.fingerprint() != active_backend.fingerprint()
-    {
-        return Err(HostError::UnstableProject);
-    }
+    // resolved topology, backend, and client before acquiring a named-state
+    // lock or opening a database; any overlapping save or safe symlink retarget
+    // makes this attempt ineligible.
+    verify_initial_inputs_stable(
+        &layout,
+        &active_topology,
+        &active_backend,
+        client_fingerprint.as_ref(),
+    )?;
 
     let (named_state_lock, backend) = match database_path {
         Some(path) => {
@@ -424,7 +419,6 @@ pub(crate) fn prepare_project(
         None => (None, validation_backend),
     };
 
-    let client_fingerprint = initial_client.as_ref().map(client_source_fingerprint);
     let mut coordinator = GenerationCoordinator::activated(
         mode,
         active_backend.fingerprint().clone(),
@@ -475,6 +469,52 @@ pub(crate) fn prepare_project(
         active_backend,
         _named_state_lock: named_state_lock,
     })
+}
+
+fn reload_project_layout(
+    layout: &ProjectLayout,
+) -> Result<ProjectLayout, spock_project::Diagnostics> {
+    let refreshed_root =
+        match spock_project::resolve_target(Some(layout.manifest_path.as_path()), &layout.root)? {
+            spock_project::ResolvedTarget::Project(root) => root,
+            spock_project::ResolvedTarget::SpockFile(_) => {
+                unreachable!("an explicit spock.toml target cannot select file mode")
+            }
+        };
+    spock_project::load_project(&refreshed_root)
+}
+
+fn verify_initial_inputs_stable(
+    layout: &ProjectLayout,
+    active_topology: &Fingerprint,
+    active_backend: &BackendObservation,
+    active_client: Option<&Fingerprint>,
+) -> Result<(), HostError> {
+    let settled_layout = reload_project_layout(layout).map_err(|_| HostError::UnstableProject)?;
+    if &settled_layout != layout
+        || &topology_fingerprint(&settled_layout.manifest_path) != active_topology
+    {
+        return Err(HostError::UnstableProject);
+    }
+
+    let settled_backend = observe_backend(&settled_layout);
+    if settled_backend.fingerprint() != active_backend.fingerprint() {
+        return Err(HostError::UnstableProject);
+    }
+
+    let settled_client = settled_layout
+        .client
+        .as_ref()
+        .map(|client| {
+            capture_stable_client(client.root.absolute())
+                .map(|snapshot| client_source_fingerprint(&snapshot))
+        })
+        .transpose()
+        .map_err(|_| HostError::UnstableProject)?;
+    if settled_client.as_ref() != active_client {
+        return Err(HostError::UnstableProject);
+    }
+    Ok(())
 }
 
 pub(crate) fn capture_stable_client(root: &Path) -> Result<ProjectSourceSnapshot, String> {
@@ -568,15 +608,19 @@ mod tests {
 
     use super::*;
 
+    fn write_client(root: &Path) {
+        for file in spock_project::minimal_uhura_client_template().files() {
+            let path = root.join(file.path().as_path());
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, file.contents()).unwrap();
+        }
+    }
+
     fn write_project(root: &Path, backend: &str, with_client: bool) -> ProjectLayout {
         fs::create_dir_all(root.join("backend")).unwrap();
         fs::write(root.join("backend/app.spock"), backend).unwrap();
         if with_client {
-            for file in spock_project::minimal_uhura_client_template().files() {
-                let path = root.join("client").join(file.path().as_path());
-                fs::create_dir_all(path.parent().unwrap()).unwrap();
-                fs::write(path, file.contents()).unwrap();
-            }
+            write_client(&root.join("client"));
         }
         let manifest = ProjectManifest::new(
             "demo",
@@ -699,5 +743,74 @@ mod tests {
         let layout = load_project_from(temp.path()).unwrap();
         let second = prepare_project(layout, HostMode::Start, None, None).unwrap();
         assert_ne!(first_world, second.session.status().backend.world_id);
+    }
+
+    #[test]
+    fn final_stability_barrier_rejects_a_client_edit() {
+        let temp = tempdir().unwrap();
+        let layout = write_project(temp.path(), "", true);
+        let active_topology = topology_fingerprint(&layout.manifest_path);
+        let active_backend = observe_backend(&layout);
+        let active_client = client_source_fingerprint(
+            &capture_stable_client(layout.client.as_ref().unwrap().root.absolute()).unwrap(),
+        );
+
+        verify_initial_inputs_stable(
+            &layout,
+            &active_topology,
+            &active_backend,
+            Some(&active_client),
+        )
+        .expect("unchanged project should remain eligible");
+
+        fs::write(
+            temp.path().join("client/app/home/page.uhura"),
+            "this source changed during preparation\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            verify_initial_inputs_stable(
+                &layout,
+                &active_topology,
+                &active_backend,
+                Some(&active_client),
+            ),
+            Err(HostError::UnstableProject)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn final_stability_barrier_re_resolves_a_client_root_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().unwrap();
+        fs::create_dir(temp.path().join("backend")).unwrap();
+        fs::write(temp.path().join("backend/app.spock"), "").unwrap();
+        write_client(&temp.path().join("client-a"));
+        write_client(&temp.path().join("client-b"));
+        symlink("client-a", temp.path().join("client")).unwrap();
+        let manifest =
+            ProjectManifest::new("demo", "backend", "app.spock", Some("client")).unwrap();
+        fs::write(temp.path().join("spock.toml"), manifest.to_toml_string()).unwrap();
+
+        let layout = load_project_from(temp.path()).unwrap();
+        let active_topology = topology_fingerprint(&layout.manifest_path);
+        let active_backend = observe_backend(&layout);
+        let active_client = client_source_fingerprint(
+            &capture_stable_client(layout.client.as_ref().unwrap().root.absolute()).unwrap(),
+        );
+
+        fs::remove_file(temp.path().join("client")).unwrap();
+        symlink("client-b", temp.path().join("client")).unwrap();
+        assert!(matches!(
+            verify_initial_inputs_stable(
+                &layout,
+                &active_topology,
+                &active_backend,
+                Some(&active_client),
+            ),
+            Err(HostError::UnstableProject)
+        ));
     }
 }
