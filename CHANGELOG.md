@@ -3,6 +3,23 @@
 All notable changes to Spock. Spock is a pre-1.0 prototype language; minor
 versions may break.
 
+## 0.5.1 — 2026-07-15
+
+This maintenance release refreshes the framework example and editor tooling
+shipped after `0.5.0`.
+
+- **Editor annotations and workflows.** The bundled Uhura revision preserves
+  source-backed canvas comments alongside replay workflow connector lines;
+  `Shift+Y` toggles the combined annotation layer.
+- **Canonical Instagram project.** Contributor guidance now uses
+  `uhura/examples/instagram`, and the duplicated proof-of-concept project and
+  legacy two-process runner are retired.
+- **VS Code language support.** A repository-owned grammar, language
+  configuration, corpus, and installation guide track the Spock lexer and
+  parser contracts.
+- **Current CLI guidance.** Documentation and the public Spock skill use the
+  installed framework CLI for project checks, starts, and watched development.
+
 ## 0.5.0 — 2026-07-15
 
 This feature release makes the installed `spock` command the project-level
