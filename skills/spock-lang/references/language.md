@@ -1,6 +1,8 @@
 # Spock v0 Language Reference
 
-Use this reference for current accepted syntax. Consult `docs/spec/v0.md` for complete semantics and diagnostic codes.
+Use this reference for current accepted syntax. Consult the
+[Spock v0.5.0 specification](https://github.com/gridaco/spock/blob/v0.5.0/docs/spec/v0.md)
+for complete semantics and diagnostic codes.
 
 ## Lexical rules
 
