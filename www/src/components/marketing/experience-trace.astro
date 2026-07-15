@@ -1,0 +1,130 @@
+<div id="experience-trace" class="experience-trace" data-experience-trace data-active-state="pending">
+  <div class="trace-stage" aria-label="Interactive optimistic like flow">
+    <div class="trace-map">
+      <button class="trace-node trace-node-settled" data-trace-state="settled" type="button">
+        <span>settled</span>
+        <small>7 likes</small>
+      </button>
+
+      <span class="trace-link trace-edge-settled" aria-hidden="true"></span>
+
+      <button class="trace-node trace-node-pending" data-trace-state="pending" type="button">
+        <span>optimistic</span>
+        <small>like shown immediately</small>
+      </button>
+
+      <div class="trace-fork" aria-hidden="true">
+        <svg viewBox="0 0 320 48" preserveAspectRatio="none">
+          <path class="trace-edge trace-edge-accepted" d="M160 0V10C160 28 76 20 76 48" />
+          <path class="trace-edge trace-edge-refused" d="M160 0V10C160 28 244 20 244 48" />
+        </svg>
+      </div>
+
+      <div class="trace-outcomes">
+        <button class="trace-node trace-node-accepted" data-trace-state="accepted" type="button">
+          <span>accepted</span>
+          <small>server confirmed</small>
+        </button>
+        <button class="trace-node trace-node-refused" data-trace-state="refused" type="button">
+          <span>refused</span>
+          <small>server declined</small>
+        </button>
+      </div>
+    </div>
+
+    <div class="trace-readout" aria-live="polite">
+      <span class="trace-heart" data-trace-heart aria-hidden="true">♥</span>
+      <div>
+        <p class="trace-status" data-trace-status>optimistic</p>
+        <p data-trace-copy>
+          The like appears immediately while the request is still running.
+        </p>
+      </div>
+      <strong data-trace-count>8</strong>
+    </div>
+  </div>
+
+  <div class="trace-code">
+    <div class="trace-code-head">
+      <span>app/feed/page.uhura</span>
+      <span>interaction</span>
+    </div>
+    <pre aria-label="Uhura optimistic interaction source"><code><span data-trace-line="settled pending">on like-toggled(post: id)</span>
+<span data-trace-line="pending">  when !(like-pending[post] ?? false) &#123;</span>
+<span data-trace-line="pending">  set like-overlay[post] = true</span>
+<span data-trace-line="pending">  set like-pending[post] = true</span>
+<span data-trace-line="pending">  send like-post(post: post)</span>
+<span data-trace-line="pending">&#125;</span>
+
+<span data-trace-line="accepted">on like-post.ok(tag, cmd) &#123;</span>
+<span data-trace-line="accepted">  set like-pending[cmd.post] = none</span>
+<span data-trace-line="accepted">  set like-overlay[cmd.post] = none</span>
+<span data-trace-line="accepted">&#125;</span>
+
+<span data-trace-line="refused">on like-post.err(tag, cmd, refusal) &#123;</span>
+<span data-trace-line="refused">  set like-pending[cmd.post] = none</span>
+<span data-trace-line="refused">  set like-overlay[cmd.post] = none</span>
+<span data-trace-line="refused">  set notice = "Couldn't like this post."</span>
+<span data-trace-line="refused">&#125;</span></code></pre>
+  </div>
+</div>
+
+<script>
+  const traceCopy = {
+    settled: {
+      status: 'settled',
+      copy: 'The screen matches the latest confirmed state.',
+      count: '7',
+      liked: false,
+    },
+    pending: {
+      status: 'optimistic',
+      copy: 'The like appears immediately while the request is still running.',
+      count: '8',
+      liked: true,
+    },
+    accepted: {
+      status: 'accepted',
+      copy: 'The server confirms the change, so the temporary UI state can clear.',
+      count: '8',
+      liked: true,
+    },
+    refused: {
+      status: 'refused',
+      copy: 'The server declines the change, so the UI rolls back and explains what happened.',
+      count: '7',
+      liked: false,
+    },
+  } as const;
+
+  document.querySelectorAll<HTMLElement>('[data-experience-trace]').forEach((trace) => {
+    const buttons = trace.querySelectorAll<HTMLButtonElement>('[data-trace-state]');
+    const status = trace.querySelector<HTMLElement>('[data-trace-status]');
+    const copy = trace.querySelector<HTMLElement>('[data-trace-copy]');
+    const count = trace.querySelector<HTMLElement>('[data-trace-count]');
+    const heart = trace.querySelector<HTMLElement>('[data-trace-heart]');
+
+    const activate = (state: keyof typeof traceCopy) => {
+      const next = traceCopy[state];
+      trace.dataset.activeState = state;
+      if (status) status.textContent = next.status;
+      if (copy) copy.textContent = next.copy;
+      if (count) count.textContent = next.count;
+      heart?.classList.toggle('is-liked', next.liked);
+
+      buttons.forEach((button) => {
+        const active = button.dataset.traceState === state;
+        button.toggleAttribute('aria-current', active);
+      });
+    };
+
+    buttons.forEach((button) => {
+      button.addEventListener('click', () => {
+        const state = button.dataset.traceState as keyof typeof traceCopy;
+        if (state in traceCopy) activate(state);
+      });
+    });
+
+    activate('pending');
+  });
+</script>

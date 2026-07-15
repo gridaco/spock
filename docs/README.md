@@ -4,6 +4,10 @@ Spock is both an implementation and a language contract. Its documentation is
 split by authority so that an experiment, example, or accepted future design
 cannot silently redefine the language people are using.
 
+The published documentation is available at
+[spock.sh/docs](https://spock.sh/docs/). This directory remains its canonical
+source.
+
 ## Authority map
 
 | Area | Purpose | Authority |

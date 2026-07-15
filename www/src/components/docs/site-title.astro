@@ -1,0 +1,56 @@
+<a class="docs-site-title" href="/" aria-label="Spock home">
+  <span class="docs-site-gesture" aria-hidden="true">🖖</span>
+  <span>spock</span>
+</a>
+<span class="docs-site-note" aria-label="It’s only logical !">
+  It’s only logical !
+</span>
+
+<style>
+  .docs-site-title {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--sl-color-white);
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: -0.03em;
+    text-decoration: none;
+    white-space: nowrap;
+    outline: none;
+  }
+
+  .docs-site-title:hover {
+    color: var(--sl-color-accent);
+  }
+
+  .docs-site-title:focus-visible {
+    border-radius: 0.15rem;
+    outline: 2px solid var(--sl-color-accent);
+    outline-offset: 4px;
+  }
+
+  .docs-site-gesture {
+    font-size: 1.15rem;
+  }
+
+  .docs-site-note {
+    display: none;
+    flex-shrink: 0;
+    color: var(--sl-color-accent);
+    font-family:
+      "Bradley Hand", "Segoe Print", "Marker Felt", "Comic Sans MS", cursive;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    white-space: nowrap;
+    transform: rotate(-2deg);
+  }
+
+  @media (min-width: 64rem) {
+    .docs-site-note {
+      display: inline-flex;
+    }
+  }
+</style>

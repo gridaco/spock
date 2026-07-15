@@ -1,0 +1,71 @@
+---
+const year = new Date().getFullYear();
+---
+
+<footer class="border-t border-line bg-paper">
+  <div class="mx-auto max-w-[1280px] border-x border-line">
+    <div
+      class="grid gap-8 border-b border-line px-6 py-12 sm:px-10 md:grid-cols-[1.3fr_0.7fr] md:items-end lg:px-16 lg:py-14"
+    >
+      <div>
+        <p
+          class="mb-4 font-mono text-[0.68rem] font-semibold tracking-[0.08em] text-accent"
+        >
+          start with a working prototype
+        </p>
+        <h2
+          class="max-w-2xl font-sans text-3xl font-medium tracking-[-0.045em] text-ink sm:text-4xl"
+        >
+          Turn the next idea into something your team can run.
+        </h2>
+      </div>
+      <div class="flex flex-wrap gap-3 md:justify-end">
+        <a
+          class="inline-flex min-h-11 items-center justify-center rounded-md bg-ink px-5 text-sm font-semibold text-white outline-none transition-colors hover:bg-accent-strong focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-paper"
+          href="/docs/"
+        >
+          read the docs
+        </a>
+        <a
+          class="inline-flex min-h-11 items-center justify-center rounded-md border border-line-strong bg-canvas px-5 text-sm font-semibold text-ink outline-none transition-colors hover:border-ink focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-paper"
+          href="https://github.com/gridaco/spock"
+        >
+          github
+        </a>
+      </div>
+    </div>
+
+    <div class="grid gap-8 px-6 py-9 sm:px-10 md:grid-cols-[1fr_auto] md:items-center lg:px-16">
+      <div>
+        <a
+          class="inline-flex items-center gap-2.5 font-sans text-base font-semibold tracking-[-0.03em] text-ink"
+          href="/"
+        >
+          <span aria-hidden="true">🖖</span>
+          <span>spock</span>
+        </a>
+        <p class="mt-3 max-w-lg text-sm leading-6 text-muted">
+          An open-source framework for turning application ideas into working
+          prototypes the whole team can inspect.
+        </p>
+      </div>
+      <nav class="flex flex-wrap gap-x-5 gap-y-3 text-sm text-muted" aria-label="Footer navigation">
+        <a class="hover:text-ink" href="/docs/">docs</a>
+        <a class="hover:text-ink" href="/docs/spec/v0/">specification</a>
+        <a class="hover:text-ink" href="/docs/rfd/">design records</a>
+        <a class="hover:text-ink" href="/docs/changelog/">changelog</a>
+      </nav>
+    </div>
+
+    <div
+      class="flex flex-col gap-2 border-t border-line px-6 py-6 text-xs text-muted sm:flex-row sm:items-center sm:justify-between sm:px-10 lg:px-16"
+    >
+      <p>
+        © {year}{' '}
+        <a class="font-medium text-ink hover:text-accent" href="https://grida.co/"
+          >Grida Inc.</a
+        >{' '}and Spock contributors.
+      </p>
+    </div>
+  </div>
+</footer>

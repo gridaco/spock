@@ -76,7 +76,9 @@ roots, while each language keeps its own checker and configuration.
 
 ## Links
 
-- Source & docs: https://github.com/gridaco/spock
+- Website: https://spock.sh
+- Documentation: https://spock.sh/docs/
+- Source: https://github.com/gridaco/spock
 - Issues: https://github.com/gridaco/spock/issues
 
 MIT

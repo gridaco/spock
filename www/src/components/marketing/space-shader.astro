@@ -1,0 +1,450 @@
+---
+interface Props {
+  stars?: boolean;
+}
+
+const { stars = false } = Astro.props;
+---
+
+<canvas
+  class="space-shader"
+  data-space-shader
+  data-star-field={stars ? 'true' : 'false'}
+  aria-hidden="true"
+></canvas>
+
+<script>
+  const shaderSource = `
+    struct Uniforms {
+      resolution: vec2<f32>,
+      time: f32,
+      starField: f32,
+    }
+
+    struct VertexOutput {
+      @builtin(position) position: vec4<f32>,
+    }
+
+    @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+    @vertex
+    fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
+      let positions = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(3.0, -1.0),
+        vec2<f32>(-1.0, 3.0),
+      );
+      var output: VertexOutput;
+      output.position = vec4<f32>(positions[vertexIndex], 0.0, 1.0);
+      return output;
+    }
+
+    fn hash(point: vec2<f32>) -> f32 {
+      return fract(
+        sin(dot(point, vec2<f32>(127.1, 311.7))) * 43758.5453123
+      );
+    }
+
+    fn noise(point: vec2<f32>) -> f32 {
+      let cell = floor(point);
+      let local = fract(point);
+      let blend = local * local * (vec2<f32>(3.0) - 2.0 * local);
+
+      let a = hash(cell);
+      let b = hash(cell + vec2<f32>(1.0, 0.0));
+      let c = hash(cell + vec2<f32>(0.0, 1.0));
+      let d = hash(cell + vec2<f32>(1.0, 1.0));
+
+      return mix(mix(a, b, blend.x), mix(c, d, blend.x), blend.y);
+    }
+
+    fn fbm(initialPoint: vec2<f32>) -> f32 {
+      var point = initialPoint;
+      var value = 0.0;
+      var amplitude = 0.52;
+      let turn = mat2x2<f32>(0.86, -0.51, 0.51, 0.86);
+
+      for (var octave = 0; octave < 4; octave += 1) {
+        value += amplitude * noise(point);
+        point = turn * point * 2.03 + vec2<f32>(3.7, 1.9);
+        amplitude *= 0.5;
+      }
+
+      return value;
+    }
+
+    fn liquidWarp(point: vec2<f32>, time: f32) -> vec2<f32> {
+      let first = vec2<f32>(
+        fbm(point * 0.92 + vec2<f32>(time * 0.26, -time * 0.18)),
+        fbm(
+          point * 0.88
+            + vec2<f32>(4.7 - time * 0.2, 1.8 + time * 0.24)
+        ),
+      ) - vec2<f32>(0.5);
+
+      let second = vec2<f32>(
+        fbm(
+          point * 1.22
+            + first * 2.7
+            + vec2<f32>(-time * 0.15, time * 0.21)
+        ),
+        fbm(
+          point * 1.16
+            + first * 2.5
+            + vec2<f32>(2.9 + time * 0.19, -time * 0.17)
+        ),
+      ) - vec2<f32>(0.5);
+
+      return first * 0.82 + second * 0.48;
+    }
+
+    fn starLayer(
+      point: vec2<f32>,
+      scale: f32,
+      threshold: f32,
+      seedOffset: f32,
+      time: f32,
+    ) -> f32 {
+      let grid = point * scale;
+      let cell = floor(grid);
+      let local = fract(grid) - vec2<f32>(0.5);
+      let seed = hash(cell + vec2<f32>(seedOffset, seedOffset * 1.73));
+      let offset = vec2<f32>(
+        hash(cell + vec2<f32>(seedOffset + 3.1, 7.7)),
+        hash(cell + vec2<f32>(11.3, seedOffset + 5.9)),
+      ) - vec2<f32>(0.5);
+      let radius = mix(
+        0.022,
+        0.055,
+        hash(cell + vec2<f32>(seedOffset + 13.1, 17.9)),
+      );
+      let distanceToStar = length(local - offset * 0.72);
+      let core = 1.0 - smoothstep(radius * 0.18, radius, distanceToStar);
+      let halo = 1.0 - smoothstep(radius, radius * 2.15, distanceToStar);
+      let exists = smoothstep(threshold, 1.0, seed);
+      let pulseRate = mix(0.32, 0.58, seed);
+      let pulse = 0.76
+        + 0.24 * (0.5 + 0.5 * sin(time * pulseRate + seed * 31.0));
+
+      return exists * (core + halo * 0.09) * pulse;
+    }
+
+    @fragment
+    fn fragmentMain(
+      @builtin(position) fragmentPosition: vec4<f32>,
+    ) -> @location(0) vec4<f32> {
+      let fragment = vec2<f32>(
+        fragmentPosition.x,
+        uniforms.resolution.y - fragmentPosition.y,
+      );
+      let shortestSide = min(uniforms.resolution.x, uniforms.resolution.y);
+      let point = (
+        fragment * 2.0 - uniforms.resolution
+      ) / shortestSide;
+      let time = uniforms.time * 0.16;
+
+      let tilt = mat2x2<f32>(0.94, -0.34, 0.34, 0.94);
+      let base = tilt * point;
+      let warp = liquidWarp(base, time);
+      let liquid = base + warp;
+
+      let body = fbm(
+        liquid * 1.05 + vec2<f32>(time * 0.08, -time * 0.06)
+      );
+      let fold = fbm(
+        liquid * 2.08
+          - warp * 1.25
+          + vec2<f32>(-time * 0.12, time * 0.09)
+      );
+      let current = 0.5 + 0.5 * sin(
+        liquid.x * 2.3 - liquid.y * 1.5 + body * 6.5 + time * 0.72
+      );
+      let counterCurrent = 0.5 + 0.5 * cos(
+        liquid.y * 2.75 + fold * 5.4 - time * 0.58
+      );
+      let fineFlow = noise(
+        liquid * 6.4
+          + warp * 2.1
+          + vec2<f32>(time * 0.21, -time * 0.17)
+      );
+
+      let haze = smoothstep(0.27, 0.82, body)
+        * smoothstep(0.18, 0.9, 1.0 - abs(fold * 2.0 - 1.0));
+      let filament = pow(current, 5.0) * (0.28 + counterCurrent * 0.72);
+      let lens = pow(1.0 - abs(fold * 2.0 - 1.0), 3.0) * haze;
+      let caustic = pow(1.0 - abs(fineFlow * 2.0 - 1.0), 12.0)
+        * (0.18 + filament * 0.82)
+        * smoothstep(0.24, 0.8, body);
+      let bloomCenter = vec2<f32>(
+        0.28 + sin(time * 0.31) * 0.16,
+        0.3 + cos(time * 0.24) * 0.12,
+      );
+      let bloomOffset = point - bloomCenter;
+      let bloom = exp(-dot(bloomOffset, bloomOffset) * 0.58);
+      let edge = 1.0 - smoothstep(0.82, 1.72, length(point));
+
+      let gravity = point - vec2<f32>(1.16, -0.08);
+      let gravityRadius = length(gravity);
+      let gravityAngle = atan2(gravity.y, gravity.x);
+      let ringTexture = noise(vec2<f32>(
+        gravityAngle * 3.1 - time * 0.42,
+        gravityRadius * 9.0 + time * 0.1,
+      ));
+      let ringRadius = 0.82
+        + (ringTexture - 0.5) * 0.055
+        + sin(gravityAngle * 5.0 + time * 0.5) * 0.012;
+      let ringDistance = abs(gravityRadius - ringRadius);
+      let streakTexture = noise(vec2<f32>(
+        gravityAngle * 24.0 - time * 1.6,
+        gravityRadius * 38.0 + time * 0.22,
+      ));
+      let streak = 0.28 + 0.72 * pow(streakTexture, 2.2);
+      let brightSide = 0.42
+        + 0.58 * smoothstep(-0.75, 0.65, -gravity.x);
+      let accretionGlow = exp(-ringDistance * ringDistance * 42.0)
+        * streak
+        * uniforms.starField;
+      let accretionBand = exp(-ringDistance * ringDistance * 620.0)
+        * streak
+        * brightSide
+        * uniforms.starField;
+      let accretionCore = exp(-ringDistance * ringDistance * 2200.0)
+        * (0.5 + streak * 0.5)
+        * brightSide
+        * uniforms.starField;
+
+      let ember = vec3<f32>(0.48, 0.075, 0.012);
+      let orange = vec3<f32>(1.0, 0.29, 0.035);
+      let amber = vec3<f32>(1.0, 0.62, 0.17);
+      let whiteHot = vec3<f32>(1.0, 0.9, 0.66);
+      var color = mix(ember, orange, smoothstep(0.16, 0.88, fold));
+      color = mix(color, amber, filament * counterCurrent * 0.68);
+      color = mix(
+        color,
+        whiteHot,
+        clamp(lens * 0.48 + filament * filament * 0.28, 0.0, 0.72),
+      );
+      let causticColor = mix(
+        vec3<f32>(0.62, 0.1, 0.014),
+        whiteHot,
+        uniforms.starField,
+      );
+      color = mix(color, causticColor, clamp(caustic * 0.78, 0.0, 0.88));
+
+      var accretionColor = mix(
+        vec3<f32>(0.22, 0.035, 0.008),
+        orange,
+        smoothstep(0.02, 0.42, accretionGlow),
+      );
+      accretionColor = mix(
+        accretionColor,
+        amber,
+        clamp(accretionBand, 0.0, 0.9),
+      );
+      accretionColor = mix(
+        accretionColor,
+        vec3<f32>(1.0, 0.94, 0.76),
+        clamp(accretionCore, 0.0, 0.94),
+      );
+      let accretionMask = clamp(
+        accretionGlow * 0.42 + accretionBand * 0.7 + accretionCore,
+        0.0,
+        1.0,
+      );
+      color = mix(color, accretionColor, accretionMask);
+
+      var stars = starLayer(point, 7.4, 0.955, 2.3, uniforms.time)
+        + starLayer(
+          point + vec2<f32>(0.17, -0.09),
+          11.2,
+          0.975,
+          8.7,
+          uniforms.time,
+        );
+      stars = clamp(stars, 0.0, 1.0) * uniforms.starField;
+      color = mix(color, whiteHot, stars * 0.94);
+
+      let lightFieldAlpha = (
+        haze * 0.1
+          + filament * 0.16
+          + lens * 0.035
+          + caustic * 0.16
+          + bloom * 0.02
+      ) * edge;
+      let darkFieldAlpha = (
+        filament * 0.025 + caustic * 0.055 + lens * 0.012
+      ) * edge;
+      let fieldAlpha = mix(
+        lightFieldAlpha,
+        darkFieldAlpha,
+        uniforms.starField,
+      );
+      let alpha = fieldAlpha
+        + stars * 0.72
+        + accretionGlow * 0.08
+        + accretionBand * 0.3
+        + accretionCore * 0.5;
+
+      return vec4<f32>(color, clamp(alpha, 0.0, 0.7));
+    }
+  `;
+
+  const uniformBufferUsage = 0x0040 | 0x0008; // UNIFORM | COPY_DST
+  let devicePromise: Promise<GPUDevice | null> | undefined;
+
+  function getDevice() {
+    if (!navigator.gpu) return Promise.resolve(null);
+    devicePromise ??= navigator.gpu
+      .requestAdapter({ powerPreference: 'low-power' })
+      .then((adapter) => adapter?.requestDevice() ?? null)
+      .catch(() => null);
+    return devicePromise;
+  }
+
+  async function mountShader(canvas: HTMLCanvasElement) {
+    if (canvas.dataset.spaceShaderMounted) return;
+    canvas.dataset.spaceShaderMounted = 'true';
+
+    const requestedContext = canvas.getContext('webgpu') as GPUCanvasContext | null;
+    const requestedDevice = await getDevice();
+    if (!requestedContext || !requestedDevice) return;
+    const context: GPUCanvasContext = requestedContext;
+    const device: GPUDevice = requestedDevice;
+
+    const format = navigator.gpu.getPreferredCanvasFormat();
+    const shader = device.createShaderModule({
+      label: 'Spock landing space field',
+      code: shaderSource,
+    });
+    const pipeline = device.createRenderPipeline({
+      label: 'Spock landing space field pipeline',
+      layout: 'auto',
+      vertex: {
+        module: shader,
+        entryPoint: 'vertexMain',
+      },
+      fragment: {
+        module: shader,
+        entryPoint: 'fragmentMain',
+        targets: [
+          {
+            format,
+            blend: {
+              color: {
+                srcFactor: 'src-alpha',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
+              alpha: {
+                srcFactor: 'one',
+                dstFactor: 'one-minus-src-alpha',
+                operation: 'add',
+              },
+            },
+          },
+        ],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+    const uniformBuffer = device.createBuffer({
+      label: 'Spock landing space field uniforms',
+      size: 16,
+      usage: uniformBufferUsage,
+    });
+    const bindGroup = device.createBindGroup({
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
+    });
+    const uniformValues = new Float32Array(4);
+
+    context.configure({
+      device,
+      format,
+      alphaMode: 'premultiplied',
+    });
+
+    const reducedMotion = window.matchMedia(
+      '(prefers-reduced-motion: reduce)',
+    ).matches;
+    let frame = 0;
+    let running = false;
+    let lastDraw = 0;
+
+    function resize() {
+      const bounds = canvas.getBoundingClientRect();
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(1, Math.round(bounds.width * pixelRatio));
+      const height = Math.max(1, Math.round(bounds.height * pixelRatio));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+    }
+
+    function draw(now: number) {
+      resize();
+      uniformValues[0] = canvas.width;
+      uniformValues[1] = canvas.height;
+      uniformValues[2] = reducedMotion ? 0 : now * 0.001;
+      uniformValues[3] = canvas.dataset.starField === 'true' ? 1 : 0;
+      device.queue.writeBuffer(uniformBuffer, 0, uniformValues);
+
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [
+          {
+            view: context.getCurrentTexture().createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          },
+        ],
+      });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.draw(3);
+      pass.end();
+      device.queue.submit([encoder.finish()]);
+    }
+
+    function tick(now: number) {
+      if (!running) return;
+      if (now - lastDraw >= 1000 / 30) {
+        draw(now);
+        lastDraw = now;
+      }
+      frame = window.requestAnimationFrame(tick);
+    }
+
+    function start() {
+      if (running || reducedMotion) return;
+      running = true;
+      frame = window.requestAnimationFrame(tick);
+    }
+
+    function stop() {
+      running = false;
+      window.cancelAnimationFrame(frame);
+    }
+
+    void device.lost.then(stop);
+
+    const resizeObserver = new ResizeObserver(() => draw(performance.now()));
+    resizeObserver.observe(canvas);
+
+    if (reducedMotion) {
+      draw(0);
+      return;
+    }
+
+    const visibilityObserver = new IntersectionObserver(([entry]) => {
+      if (entry?.isIntersecting) start();
+      else stop();
+    });
+    visibilityObserver.observe(canvas);
+  }
+
+  document
+    .querySelectorAll<HTMLCanvasElement>('[data-space-shader]')
+    .forEach((canvas) => void mountShader(canvas));
+</script>

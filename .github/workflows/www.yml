@@ -1,0 +1,46 @@
+name: www
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "www/**"
+      - "docs/**"
+      - "CHANGELOG.md"
+      - "CODE_OF_CONDUCT.md"
+      - "CONTRIBUTING.md"
+      - "GOVERNANCE.md"
+      - "editors/vscode/syntaxes/spock.tmLanguage.json"
+      - ".github/workflows/www.yml"
+      - ".nvmrc"
+      - ".vercelignore"
+      - "vercel.json"
+  pull_request:
+    paths:
+      - "www/**"
+      - "docs/**"
+      - "CHANGELOG.md"
+      - "CODE_OF_CONDUCT.md"
+      - "CONTRIBUTING.md"
+      - "GOVERNANCE.md"
+      - "editors/vscode/syntaxes/spock.tmLanguage.json"
+      - ".github/workflows/www.yml"
+      - ".nvmrc"
+      - ".vercelignore"
+      - "vercel.json"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: www/pnpm-lock.yaml
+      - run: pnpm -C www install --frozen-lockfile
+      - run: pnpm -C www build
