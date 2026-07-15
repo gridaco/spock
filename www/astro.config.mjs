@@ -53,6 +53,40 @@ export default defineConfig({
           tag: 'meta',
           attrs: { name: 'theme-color', content: '#f1f3f5' },
         },
+        {
+          tag: 'meta',
+          attrs: {
+            property: 'og:image',
+            content: 'https://spock.sh/og.webp',
+          },
+        },
+        {
+          tag: 'meta',
+          attrs: { property: 'og:image:type', content: 'image/webp' },
+        },
+        {
+          tag: 'meta',
+          attrs: { property: 'og:image:width', content: '1774' },
+        },
+        {
+          tag: 'meta',
+          attrs: { property: 'og:image:height', content: '887' },
+        },
+        {
+          tag: 'meta',
+          attrs: { property: 'og:image:alt', content: 'Spock' },
+        },
+        {
+          tag: 'meta',
+          attrs: {
+            name: 'twitter:image',
+            content: 'https://spock.sh/og.webp',
+          },
+        },
+        {
+          tag: 'meta',
+          attrs: { name: 'twitter:image:alt', content: 'Spock' },
+        },
       ],
       social: [
         {
