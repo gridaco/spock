@@ -3,6 +3,30 @@
 All notable changes to Spock. Spock is a pre-1.0 prototype language; minor
 versions may break.
 
+## 0.5.3 — 2026-07-17
+
+This release refreshes the bundled Uhura editor and runtime with built-in
+widget foundations, checked font icons, and richer structure connectors. The
+Spock authority language and contract are unchanged.
+
+- **Built-in widget foundations.** Uhura now has a canonical catalogue for
+  `<scroll>`, `<icon>`, `<button>`, `<view>`, and `<img>`. This deliberately
+  breaking pre-v1 update replaces `<image>` with `<img>` and `<text-field>`
+  with `<textfield>`.
+- **Checked icon fonts.** `<icon name="heart" />` uses bundled Lucide by
+  default, while projects may register local WOFF2 families with JSON
+  name-to-codepoint maps. Families and names are checked before rendering, and
+  the core model carries semantic icon tokens instead of engine-owned paths or
+  SVG commands.
+- **Editor structure.** The bundled Uhura revision adds selected-frame
+  structure connectors and refines workflow-connector routing and
+  presentation, while keeping editor state and content-addressed font
+  resources coherent across publication.
+- **Distribution and docs.** Framework packaging now carries and verifies the
+  icon-font resources through the native host. The Spock website adds an
+  explicit technical-preview notice, while exploratory view work remains in
+  the repository study surface.
+
 ## 0.5.2 — 2026-07-16
 
 This release includes explicit product-error declarations as an experimental

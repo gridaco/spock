@@ -1,6 +1,6 @@
 {
   "name": "spock",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Spock — prototype an authority backend and optional Uhura client as one inspectable project.",
   "bin": {
     "spock": "bin/spock.js"
