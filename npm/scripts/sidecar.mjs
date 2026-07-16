@@ -20,7 +20,7 @@ const PROTOCOLS = Object.freeze({
   environment: "spock-host-environment/1",
   project_status: "spock-project-status/1",
   project_event: "spock-project-event/1",
-  editor_state: "uhura-editor-state/1",
+  editor_state: "uhura-editor-state/2",
   editor_event: "uhura-editor-event/0",
   ir: "uhura-ir/0",
   inspect: "uhura-inspect/0",
