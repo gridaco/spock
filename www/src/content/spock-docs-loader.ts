@@ -19,7 +19,6 @@ const ROOT_FILES = [
 ];
 
 const EXCLUDED = new Set([
-  'docs/rfd/TEMPLATE.md',
   'docs/governance/meetings/0000-template.md',
 ]);
 
@@ -339,9 +338,6 @@ function sidebarOrderFor(sourcePath: string, rfd?: number) {
 function isPublishable(sourcePath: string) {
   if (sourcePath === 'docs/README.md') return true;
   if (/^docs\/spec\/[^/]+\.md$/i.test(sourcePath)) return true;
-  if (sourcePath === 'docs/rfd/README.md') return true;
-  if (/^docs\/rfd\/\d{4}-[^/]+\.md$/i.test(sourcePath)) return true;
-  if (sourcePath === 'docs/rfd/0000-vision.spock') return true;
   if (/^docs\/governance\/.+\.md$/i.test(sourcePath)) return true;
   if (sourcePath === 'docs/working-groups/README.md') return true;
   return /^docs\/working-groups\/\d{4}-[^/]+\/.+\.md$/i.test(sourcePath);
@@ -350,6 +346,8 @@ function isPublishable(sourcePath: string) {
 function isExcluded(sourcePath: string) {
   return (
     EXCLUDED.has(sourcePath) ||
+    sourcePath.startsWith('docs/rfd/') ||
+    sourcePath.startsWith('docs/studies/') ||
     sourcePath.startsWith('docs/working-groups/0000-template/')
   );
 }

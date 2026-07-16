@@ -109,11 +109,6 @@ export default defineConfig({
           items: [{ autogenerate: { directory: 'docs/spec' } }],
         },
         {
-          label: 'Design records',
-          collapsed: true,
-          items: [{ autogenerate: { directory: 'docs/rfd' } }],
-        },
-        {
           label: 'Governance',
           collapsed: true,
           items: [{ autogenerate: { directory: 'docs/governance' } }],

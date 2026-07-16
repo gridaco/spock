@@ -9,7 +9,8 @@ language decisions, and the current language contract.
 | Project authority | [GOVERNANCE.md](../../GOVERNANCE.md) | Roles, membership, conflicts, quorum, decisions, and appeals |
 | Design authority | [Language Design Committee](language-design-committee.md) | Permanent committee operating charter |
 | Design rubric | [Design principles](design-principles.md) | Published tests for coherence with Spock's doctrine |
-| Problem study | [Working groups](../working-groups/README.md) | Temporary, non-normative research |
+| Informal problem study | [Studies](../studies/README.md) | Individual or group research without a committee charter; non-normative |
+| Chartered problem study | [Working groups](../working-groups/README.md) | Temporary, committee-chartered research; non-normative |
 | Proposed decision | [RFDs](../rfd/README.md) | Prospective sponsored proposals and durable dispositions; RFDs 0000–0023 remain legacy records |
 | Current language | [Specification](../spec/) | Normative behavior users may rely upon |
 

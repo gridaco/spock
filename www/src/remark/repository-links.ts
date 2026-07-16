@@ -68,7 +68,8 @@ function publishedRoute(target: string, repoRoot: string) {
   }
 
   if (
-    sourcePath === 'docs/rfd/TEMPLATE.md' ||
+    sourcePath.startsWith('docs/rfd/') ||
+    sourcePath.startsWith('docs/studies/') ||
     sourcePath === 'docs/governance/meetings/0000-template.md' ||
     sourcePath.startsWith('docs/working-groups/0000-template/')
   ) {
@@ -77,9 +78,6 @@ function publishedRoute(target: string, repoRoot: string) {
 
   if (ROOT_ROUTES[sourcePath]) return ROOT_ROUTES[sourcePath];
   if (sourcePath === 'docs/README.md') return '/docs/';
-  if (sourcePath === 'docs/rfd/0000-vision.spock') {
-    return '/docs/rfd/0000-vision/';
-  }
   if (!sourcePath.startsWith('docs/') || !/\.(?:md|spock)$/i.test(sourcePath)) {
     return undefined;
   }
