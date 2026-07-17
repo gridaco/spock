@@ -15,7 +15,7 @@ source.
 | [Governance](../GOVERNANCE.md) | Defines who may make project and language decisions, and by what procedure. | Authoritative for decision-making process. |
 | [Specification](spec/) | Defines the behavior of the current Spock language and its public dialects. | Normative for current behavior. |
 | [RFDs](rfd/) | Preserve legacy design records plus prospective proposals, decisions, and authorized future direction. | Under the new process, an RFD is a decision record, not the current specification. An accepted RFD authorizes graduation into supported implementation but does not make a feature current. |
-| [Informal studies](studies/) | Collect individually organized evidence and evaluation methods before a proposal. | Non-normative and non-authoritative. A study may inform an issue, WG, or RFD but cannot select a design or amend the specification. |
+| [Problem seeds and informal studies](studies/) | Preserve optional pre-research questions and collect individually organized evidence and evaluation methods. | Non-normative and non-authoritative. A seed or study may inform an issue, WG, or RFD but cannot select a design or amend the specification. |
 | [Working groups](working-groups/) | Conduct bounded, organized study of a language problem. | Non-normative and non-authoritative. A WG may recommend an RFD but cannot accept one or amend the specification. |
 | [Examples](../examples/) | Demonstrate and test concrete uses of Spock. | Non-normative, even when an example is executable or used by tests. |
 
@@ -33,14 +33,14 @@ flat hierarchy:
   process document;
 - for why a direction was chosen or what may be implemented next, read its
   RFD;
-- for evidence gathered before a proposal, read the relevant informal study or
-  WG record; and
+- for an open pre-research question or evidence gathered before a proposal,
+  read the relevant problem seed, informal study, or WG record; and
 - for an illustration, read `examples/`, then verify it against the spec.
 
-If an RFD, informal study, WG note, or example conflicts with the current
-specification, the specification governs current behavior. The mismatch should
-be fixed, but it must not be resolved by treating non-normative material as
-hidden language law.
+If an RFD, problem seed, informal study, WG note, or example conflicts with the
+current specification, the specification governs current behavior. The
+mismatch should be fixed, but it must not be resolved by treating non-normative
+material as hidden language law.
 
 ## Changes to the language
 

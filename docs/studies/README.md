@@ -1,15 +1,30 @@
-# Informal studies
+# Problem seeds and informal studies
 
-This directory contains individual or group research that has not been
-chartered as a Spock working group and has not entered the RFD process.
-Studies collect evidence, expose conflicts, define evaluation methods, and
-make later design discussion reproducible.
+This directory contains optional pre-research problem seeds and individual or
+group research that has not been chartered as a Spock working group and has not
+entered the RFD process. Problem seeds preserve a need and a question. Studies
+collect evidence, expose conflicts, define evaluation methods, and make later
+design discussion reproducible.
 
-Everything here is **non-normative and non-authoritative**. A study does not
-define current Spock behavior, record a Language Design Committee decision,
-reserve syntax, select a design, or authorize implementation. Current behavior
-is defined by the [specification](../spec/); proposed language changes follow
-the [language-change process](../governance/language-change-process.md).
+Everything here is **non-normative and non-authoritative**. A problem seed or
+study does not define current Spock behavior, record a Language Design
+Committee decision, reserve syntax, select a design, or authorize
+implementation. Current behavior is defined by the [specification](../spec/);
+proposed language changes follow the
+[language-change process](../governance/language-change-process.md).
+
+## Problem seeds — research not started
+
+A problem seed is an optional informal capture, not a stage in the
+language-change process. It contains no research findings, feasibility claim,
+preferred design, or proposal maturity. If the question is pursued, it first
+goes through normal language-problem triage. If that triage calls for research,
+the seed may be expanded or superseded using the study structure below.
+
+- [Executable service topology](executable-service-topology-seed.md) — whether
+  one local Spock project could preserve meaningful distributed-service
+  boundaries and failure semantics without inheriting the physical friction of
+  production infrastructure.
 
 ## Open studies
 
