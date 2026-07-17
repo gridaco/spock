@@ -109,7 +109,7 @@ authority matters.
 | [RFD 0021](../rfd/0021-filter.md) | Gives compiler-derived surfaces a universal query composer while treating opaque read functions as an exception; says future views would be derived surfaces. | Legacy record originally marked accepted with its read half implemented. The current specification separately defines current query behavior; statements about future views remain non-normative. |
 | [Instagram paper program](../../examples/instagram/v1.spock) | Exercises internal and exposed views, parameters, actor dependence, nesting, joins, ordering, limits, and selected writable fields. | Non-normative exploratory evidence. |
 | [Instagram feedback](../../examples/instagram/v1-FEEDBACK.md) | Identifies nested paging and per-view limits as unresolved and contrasts Spock sketches with PostgreSQL behavior. | Non-normative analysis. |
-| [Uhura specification](../../uhura/docs/spec/README.md) | Uses *semantic view* for a renderer-neutral UI tree and assigns durable product truth to an external authority such as Spock. | Normative within Uhura, not a definition of Spock `view`. |
+| [Uhura v0 incubation draft](../../uhura/docs/spec/drafts/v0.md) | Uses *semantic view* for a renderer-neutral UI tree and assigns durable product truth to an external authority such as Spock. | Non-normative v0 design evidence, not a definition of Spock `view`. |
 
 The records expose real design pressure, but combining the strongest claim from
 each record does not automatically produce a coherent system.
