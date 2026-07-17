@@ -98,7 +98,7 @@ authority is not designed yet should keep that file empty; the client, health,
 status, contract metadata, Editor, and Play can still run.
 
 The repository's canonical full-stack example uses this exact shape at
-[`uhura/examples/instagram`](uhura/examples/instagram). Build its app-owned
+[`uhura/examples/instagram`](https://github.com/gridaco/uhura/tree/main/examples/instagram). Build its app-owned
 provider once, then one command checks and serves the authority and client:
 
 ```sh
