@@ -1,0 +1,64 @@
+---
+import Database from '@lucide/astro/icons/database';
+import Folder from '@lucide/astro/icons/folder';
+import PanelsTopLeft from '@lucide/astro/icons/panels-top-left';
+---
+
+<div class="framework-structure" aria-label="Spock framework project structure">
+  <div class="project-tree-card">
+    <div class="project-tree-header">
+      <span class="project-tree-name">
+        <Folder size={17} stroke-width={1.75} aria-hidden="true" />
+        <code>project/</code>
+      </span>
+    </div>
+
+    <div class="project-source-list">
+      <span class="project-source-folder">
+        <Folder size={15} stroke-width={1.75} aria-hidden="true" />
+        <code>backend/</code>
+      </span>
+      <span class="project-source-item project-source-item-indented">
+        <Database size={15} stroke-width={1.75} aria-hidden="true" />
+        <code>app.spock</code>
+      </span>
+      <span class="project-source-folder">
+        <Folder size={15} stroke-width={1.75} aria-hidden="true" />
+        <code>client/app/home/</code>
+      </span>
+      <span class="project-source-item project-source-item-indented">
+        <PanelsTopLeft size={15} stroke-width={1.75} aria-hidden="true" />
+        <code>page.uhura</code>
+      </span>
+      <span class="project-source-item project-source-item-indented">
+        <PanelsTopLeft size={15} stroke-width={1.75} aria-hidden="true" />
+        <code>page.examples.uhura</code>
+      </span>
+    </div>
+  </div>
+
+  <div class="project-run-card">
+    <span class="project-run-command">
+      <span aria-hidden="true">$</span>
+      <code>spock dev</code>
+    </span>
+  </div>
+
+  <div class="project-surfaces" aria-label="Framework runtime surfaces">
+    <span>
+      <code>/~studio</code>
+      <strong>Studio</strong>
+      <small>authority console</small>
+    </span>
+    <span>
+      <code>/</code>
+      <strong>Editor</strong>
+      <small>checked previews</small>
+    </span>
+    <span>
+      <code>/play</code>
+      <strong>Play</strong>
+      <small>interactive experience</small>
+    </span>
+  </div>
+</div>

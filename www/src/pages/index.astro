@@ -1,26 +1,17 @@
 ---
+import Check from '@lucide/astro/icons/check';
+import Copy from '@lucide/astro/icons/copy';
 import ExperienceTrace from '../components/marketing/experience-trace.astro';
+import FrameworkStructure from '../components/marketing/framework-structure.astro';
 import SpaceShader from '../components/marketing/space-shader.astro';
 import SpockCode from '../components/marketing/spock-code.astro';
 import MarketingLayout from '../layouts/marketing-layout.astro';
 
-const title = 'Spock — Build the app before the stack.';
+const title = 'Spock Programming Language';
 const description =
-  'Spock turns a compact application model into a working backend, admin, and Uhura experience.';
-
-const manifestCode = [
-  'version = 1',
-  '',
-  '[project]',
-  'name = "demo"',
-  '',
-  '[backend]',
-  'root = "backend"',
-  'entry = "app.spock"',
-  '',
-  '[client]',
-  'root = "client"',
-].join('\n');
+  'Define backend rules and interface states in explicit text, check them as one project, and run a working product prototype.';
+const humanCommand = 'npm i -g spock';
+const agentCommand = 'npx skills add gridaco/spock';
 
 const authorityCode = [
   'auth table user {',
@@ -34,34 +25,34 @@ const authorityCode = [
 
 const frameworkLayers = [
   {
-    label: 'language',
-    title: 'Spock language',
-    copy: 'Describe data, constraints, and operations in one compact model.',
-  },
-  {
     label: 'framework',
     title: 'One project',
-    copy: 'Check and run the backend, Studio, Editor, and experience together.',
+    copy: 'Check the authority backend and Uhura client, then serve Studio, Editor, and Play together.',
+  },
+  {
+    label: 'backend',
+    title: 'Spock language',
+    copy: 'Model backend data, relationships, constraints, defaults, and operations.',
   },
   {
     label: 'experience',
     title: 'Uhura language',
-    copy: 'Model interface states, transitions, and presentation.',
+    copy: 'Model UI-session state, experience transitions, and presentation.',
   },
 ];
 
 const roles = [
   {
-    title: 'Teams stay aligned',
-    copy: 'Everyone reviews the same running prototype instead of reconciling decks, schemas, and mock APIs.',
+    title: 'Make decisions while they are cheap',
+    copy: 'Exercise data shapes, constraints, storage, and refusal paths before implementation choices harden.',
   },
   {
-    title: 'Designers test the edges',
-    copy: 'Explore loading, empty, optimistic, accepted, and refused states before the production UI is built.',
+    title: 'Give agents a bounded world',
+    copy: 'Explicit contracts name the types, operations, outcomes, and states production work must preserve.',
   },
   {
-    title: 'Developers learn early',
-    copy: 'Test data, permissions, storage, and external boundaries before those decisions become expensive.',
+    title: 'Start production with answers',
+    copy: 'Choose the real stack after the team has exercised the product end to end—not while its rules are still guesses.',
   },
 ];
 ---
@@ -72,59 +63,117 @@ const roles = [
       <div
         class="mx-auto grid max-w-[1280px] border-x border-line lg:min-h-[700px] lg:grid-cols-[0.9fr_1.1fr]"
       >
-        <div class="flex flex-col justify-center px-6 py-16 sm:px-10 sm:py-20 lg:px-16 lg:py-22">
-          <p
-            class="mb-6 font-mono text-[0.68rem] font-semibold tracking-[0.08em] text-accent"
-          >
-            spock framework
-          </p>
+        <div
+          class="flex flex-col justify-center px-6 py-16 sm:px-10 sm:py-20 lg:px-16 lg:py-22"
+          data-hero-audience
+          data-active-audience="humans"
+        >
           <h1
             id="hero-title"
             class="max-w-[680px] font-sans text-[clamp(3.2rem,5.2vw,5.4rem)] font-medium leading-[0.92] tracking-[-0.065em] text-ink"
           >
-            Build the app before the stack.
+            The logical product compiler.
           </h1>
-          <p class="mt-8 max-w-[640px] text-[1.08rem] leading-7 text-muted sm:text-xl sm:leading-8">
-            Describe the product in one small project. Spock checks it and runs
-            the backend, admin, Editor, and working experience together, so the
-            team can test the product before committing to production
-            architecture.
-          </p>
 
-          <div class="mt-9 flex flex-wrap gap-3">
+          <div class="hero-audience-tabs mt-8" role="tablist" aria-label="Choose an audience">
+            <button
+              id="hero-tab-humans"
+              class="hero-audience-tab"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="hero-command-humans hero-copy-humans"
+              data-audience-tab="humans"
+            >
+              For humans
+            </button>
+            <span class="hero-audience-divider" aria-hidden="true"></span>
+            <button
+              id="hero-tab-agents"
+              class="hero-audience-tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="hero-command-agents hero-copy-agents"
+              tabindex="-1"
+              data-audience-tab="agents"
+            >
+              For agents
+            </button>
+          </div>
+
+          <div class="hero-actions mt-5">
+            <div class="hero-command" role="group" aria-label="Spock setup command">
+              <span class="select-none text-code-muted">$</span>
+              <code
+                id="hero-command-humans"
+                role="tabpanel"
+                aria-labelledby="hero-tab-humans"
+                data-audience-command="humans"
+                data-command={humanCommand}
+              >
+                {humanCommand}
+              </code>
+              <code
+                id="hero-command-agents"
+                role="tabpanel"
+                aria-labelledby="hero-tab-agents"
+                data-audience-command="agents"
+                data-command={agentCommand}
+                hidden
+              >
+                {agentCommand}
+              </code>
+              <button
+                class="hero-copy-button"
+                type="button"
+                data-copy-command={humanCommand}
+                aria-label="Copy setup command"
+              >
+                <Copy class="copy-icon copy-icon-default" size={16} stroke-width={1.75} />
+                <Check class="copy-icon copy-icon-success" size={16} stroke-width={2} />
+              </button>
+              <span class="sr-only" data-copy-status aria-live="polite"></span>
+            </div>
+
             <a
               class="inline-flex min-h-12 items-center justify-center rounded-md bg-ink px-5 text-sm font-semibold text-white outline-none transition-colors hover:bg-code-line focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas"
               href="/docs/"
             >
-              <span>get started</span>
+              Read the docs
             </a>
           </div>
 
-          <div class="hero-command mt-9" aria-label="Install the Spock CLI">
-            <span class="select-none text-code-muted">$</span>
-            <code>npm i -g spock</code>
+          <div class="hero-audience-copy">
+            <p
+              id="hero-copy-humans"
+              data-audience-copy="humans"
+              aria-labelledby="hero-tab-humans"
+              aria-hidden="false"
+            >
+              Spock is a programming language that gives the whole team one
+              source of truth. Check product rules and interface behavior
+              together, then run a prototype that can say no.
+            </p>
+            <p
+              id="hero-copy-agents"
+              data-audience-copy="agents"
+              aria-labelledby="hero-tab-agents"
+              aria-hidden="true"
+            >
+              Spock is a programming language that makes product intent
+              explicit. Give agents backend rules and interface states as one
+              bounded project to check and run—not a scattered stack to
+              reconstruct.
+            </p>
           </div>
-
         </div>
 
         <div
           class="marketing-grid celestial-field flex min-w-0 flex-col justify-center border-t border-line bg-paper px-5 py-12 sm:px-10 sm:py-16 lg:border-l lg:border-t-0 lg:px-12"
         >
           <SpaceShader />
-          <div class="framework-artifact">
-            <SpockCode
-              code={manifestCode}
-              language="toml"
-              label="spock.toml"
-              meta="one command"
-            />
-            <div class="framework-routes" aria-label="Framework surfaces">
-              <span><code>/</code> Editor</span>
-              <span><code>/play</code> experience</span>
-              <span><code>/~studio</code> admin</span>
-              <span><code>/~project/status</code> project status</span>
-            </div>
-          </div>
+          <FrameworkStructure />
         </div>
       </div>
     </section>
@@ -158,19 +207,20 @@ const roles = [
             <p
               class="mb-5 font-mono text-[0.68rem] font-semibold tracking-[0.08em] text-accent"
             >
-              the spock language
+              the product contract
             </p>
             <h2
               id="authority-title"
               class="max-w-[48rem] font-sans text-[clamp(2.65rem,4.3vw,4.25rem)] font-medium leading-[1.04] tracking-[-0.04em] text-ink"
             >
-              A language agents can write with confidence.
+              The product should only have to say it once.
             </h2>
           </div>
           <p class="max-w-xl text-base leading-7 text-muted lg:justify-self-end">
-            Spock keeps the model compact on purpose. People can review the
-            whole contract, while AI agents work with explicit types, checks,
-            defaults, and operations instead of guessing across a stack.
+            Spock keeps durable product truth—data, constraints, defaults, and
+            operations—in one compact authority model. People and agents work
+            from the same explicit text, with structured diagnostics when the
+            contract does not hold.
           </p>
         </div>
 
@@ -178,12 +228,13 @@ const roles = [
           <article class="flex min-w-0 flex-col border-b border-line p-6 sm:p-8 lg:border-b-0 lg:border-r lg:p-10">
             <p class="font-mono text-[0.63rem] tracking-[0.05em] text-accent">spock language</p>
             <h3 class="mt-4 max-w-lg text-3xl font-medium tracking-[-0.045em] text-ink">
-              Keep the whole model in view.
+              Write the rule beside the data it governs.
             </h3>
             <p class="mt-4 max-w-lg text-base leading-7 text-muted">
-              Describe entities, relationships, and the operations that change
-              them in one file. The result is readable to people and precise
-              enough for tools.
+              Define tables, relationships, defaults, value constraints, and
+              operation signatures close enough to reason about together. The
+              compiler turns that source into a contract that runtimes and
+              tools can inspect.
             </p>
             <SpockCode
               code={authorityCode}
@@ -196,12 +247,13 @@ const roles = [
           <article class="flex min-w-0 flex-col p-6 sm:p-8 lg:p-10">
             <p class="font-mono text-[0.63rem] tracking-[0.05em] text-moss">spock studio</p>
             <h3 class="mt-4 max-w-lg text-3xl font-medium tracking-[-0.045em] text-ink">
-              Write the model. The admin is ready.
+              Run the contract. Inspect the result.
             </h3>
             <p class="mt-4 max-w-lg text-base leading-7 text-muted">
-              Studio is generated from the running contract. Browse and edit
-              rows, inspect storage, and test identities without maintaining a
-              separate admin app.
+              Studio reads the active compiled contract. Browse and filter
+              rows, insert valid data, run functions, inspect storage when
+              enabled, and compare actor-sensitive outcomes—without building a
+              separate prototype console.
             </p>
             <figure class="product-shot mt-8">
               <img
@@ -225,20 +277,20 @@ const roles = [
             <p
               class="mb-5 font-mono text-[0.68rem] font-semibold tracking-[0.08em] text-[#ffab63]"
             >
-              the uhura language
+              the experience contract
             </p>
             <h2
               id="uhura-title"
               class="max-w-4xl font-sans text-[clamp(3rem,6vw,6rem)] font-medium leading-[0.92] tracking-[-0.07em]"
             >
-              Design every state, not just the happy path.
+              Design the outcome, not just the screen.
             </h2>
           </div>
           <p class="max-w-xl text-lg leading-8 text-white/68 lg:justify-self-end">
-            Uhura models interface states and transitions. Its Editor puts
-            loading, empty, optimistic, accepted, and refused states side by
-            side, so the flow can be reviewed before the production UI is
-            built.
+            Uhura models UI-session state and transitions. Author the loading,
+            empty, optimistic, confirmed, and refused examples the product
+            needs. The checker validates them; Editor presents the previews
+            together before the production UI is built.
           </p>
         </div>
 
@@ -279,14 +331,15 @@ const roles = [
 
         <div class="mt-18 grid gap-8 border-t border-white/15 pt-14 lg:grid-cols-[0.68fr_1.32fr] lg:gap-14">
           <div>
-            <p class="font-mono text-[0.63rem] tracking-[0.05em] text-[#ffab63]">one interaction, end to end</p>
+            <p class="font-mono text-[0.63rem] tracking-[0.05em] text-[#ffab63]">one action, end to end</p>
             <h3 class="mt-4 text-3xl font-medium tracking-[-0.045em] sm:text-4xl">
-              The UI moves first. The server still decides what is true.
+              Optimistic first. Durable truth still wins.
             </h3>
             <p class="mt-5 max-w-xl text-base leading-8 text-white/65">
-              Choose a state to follow one event through its optimistic result,
-              acceptance, or rollback. Uhura handles the temporary UI state;
-              the server remains the source of truth.
+              Follow one action from immediate interface feedback to
+              confirmation or rollback. Uhura owns the temporary experience
+              state; the authority backend decides whether the attempted
+              change becomes durable.
             </p>
           </div>
           <ExperienceTrace />
@@ -301,32 +354,32 @@ const roles = [
             <p
               class="mb-5 font-mono text-[0.68rem] font-semibold tracking-[0.08em] text-accent"
             >
-              where spock fits
+              what survives
             </p>
             <h2
               id="cycle-title"
               class="max-w-3xl font-sans text-[clamp(2.8rem,5.2vw,5.2rem)] font-medium leading-[0.94] tracking-[-0.065em] text-ink"
             >
-              Prototype the product, not the production stack.
+              The prototype is temporary. The decisions survive.
             </h2>
           </div>
           <p class="max-w-2xl text-lg leading-8 text-muted lg:justify-self-end">
-            Spock replaces the temporary tools teams assemble to answer product
-            questions: mock APIs, seed scripts, throwaway admin panels, and
-            disconnected click-throughs. Once the model holds together, move
-            on to the production implementation.
+            Use Spock to resolve the product’s data, rules, states, and
+            boundaries while change is cheap. Then carry the checked contracts
+            forward as the production specification—not as infrastructure you
+            have to deploy.
           </p>
         </div>
 
         <div class="cycle-track mt-14" aria-label="Spock in the development cycle">
           <div class="cycle-stage">
             <span>before</span>
-            <strong>Idea and requirements</strong>
+            <strong>Product questions</strong>
           </div>
           <div class="cycle-arrow" aria-hidden="true">→</div>
           <div class="cycle-stage cycle-stage-active">
             <span>spock</span>
-            <strong>Working application prototype</strong>
+            <strong>Running product contract</strong>
           </div>
           <div class="cycle-arrow" aria-hidden="true">→</div>
           <div class="cycle-stage">
@@ -352,11 +405,92 @@ const roles = [
         </div>
 
         <p class="mt-8 max-w-3xl text-sm leading-7 text-muted">
-          Spock is for local prototyping. It does not deploy or operate the
-          production system; it helps the team learn what that system needs to
-          be.
+          Spock is a local prototype runtime, not a production platform. Keep
+          the checked contracts; replace the runtime.
         </p>
       </div>
     </section>
   </main>
 </MarketingLayout>
+
+<script>
+  document.querySelectorAll<HTMLElement>('[data-hero-audience]').forEach((audience) => {
+    const tabs = Array.from(
+      audience.querySelectorAll<HTMLButtonElement>('[data-audience-tab]'),
+    );
+    const commandPanels = Array.from(
+      audience.querySelectorAll<HTMLElement>('[data-audience-command]'),
+    );
+    const copyPanels = Array.from(
+      audience.querySelectorAll<HTMLElement>('[data-audience-copy]'),
+    );
+    const copyButton = audience.querySelector<HTMLButtonElement>('[data-copy-command]');
+
+    const activateAudience = (name: string, focus = false) => {
+      audience.dataset.activeAudience = name;
+
+      tabs.forEach((tab) => {
+        const active = tab.dataset.audienceTab === name;
+        tab.setAttribute('aria-selected', String(active));
+        tab.tabIndex = active ? 0 : -1;
+        if (active && focus) tab.focus();
+      });
+
+      commandPanels.forEach((panel) => {
+        const active = panel.dataset.audienceCommand === name;
+        panel.hidden = !active;
+        if (active && panel.dataset.command && copyButton) {
+          copyButton.dataset.copyCommand = panel.dataset.command;
+        }
+      });
+
+      copyPanels.forEach((panel) => {
+        const active = panel.dataset.audienceCopy === name;
+        panel.setAttribute('aria-hidden', String(!active));
+      });
+    };
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener('click', () => {
+        if (tab.dataset.audienceTab) activateAudience(tab.dataset.audienceTab);
+      });
+
+      tab.addEventListener('keydown', (event) => {
+        let nextIndex: number | undefined;
+
+        if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
+        if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
+        if (event.key === 'Home') nextIndex = 0;
+        if (event.key === 'End') nextIndex = tabs.length - 1;
+        if (nextIndex === undefined) return;
+
+        event.preventDefault();
+        const nextAudience = tabs[nextIndex]?.dataset.audienceTab;
+        if (nextAudience) activateAudience(nextAudience, true);
+      });
+    });
+  });
+
+  const copyButton = document.querySelector<HTMLButtonElement>('[data-copy-command]');
+  const copyStatus = document.querySelector<HTMLElement>('[data-copy-status]');
+
+  copyButton?.addEventListener('click', async () => {
+    const command = copyButton.dataset.copyCommand;
+    if (!command) return;
+
+    try {
+      await navigator.clipboard.writeText(command);
+      copyButton.dataset.copied = 'true';
+      copyButton.setAttribute('aria-label', 'Setup command copied');
+      if (copyStatus) copyStatus.textContent = 'Setup command copied.';
+
+      window.setTimeout(() => {
+        delete copyButton.dataset.copied;
+        copyButton.setAttribute('aria-label', 'Copy setup command');
+        if (copyStatus) copyStatus.textContent = '';
+      }, 1800);
+    } catch {
+      if (copyStatus) copyStatus.textContent = 'Could not copy the setup command.';
+    }
+  });
+</script>

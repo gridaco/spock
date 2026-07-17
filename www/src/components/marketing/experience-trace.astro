@@ -3,14 +3,14 @@
     <div class="trace-map">
       <button class="trace-node trace-node-settled" data-trace-state="settled" type="button">
         <span>settled</span>
-        <small>7 likes</small>
+        <small>confirmed product state</small>
       </button>
 
       <span class="trace-link trace-edge-settled" aria-hidden="true"></span>
 
       <button class="trace-node trace-node-pending" data-trace-state="pending" type="button">
         <span>optimistic</span>
-        <small>like shown immediately</small>
+        <small>change shown now</small>
       </button>
 
       <div class="trace-fork" aria-hidden="true">
@@ -23,11 +23,11 @@
       <div class="trace-outcomes">
         <button class="trace-node trace-node-accepted" data-trace-state="accepted" type="button">
           <span>accepted</span>
-          <small>server confirmed</small>
+          <small>authority accepted</small>
         </button>
         <button class="trace-node trace-node-refused" data-trace-state="refused" type="button">
           <span>refused</span>
-          <small>server declined</small>
+          <small>authority refused</small>
         </button>
       </div>
     </div>
@@ -37,7 +37,7 @@
       <div>
         <p class="trace-status" data-trace-status>optimistic</p>
         <p data-trace-copy>
-          The like appears immediately while the request is still running.
+          The like appears before the authority has answered.
         </p>
       </div>
       <strong data-trace-count>8</strong>
@@ -73,25 +73,25 @@
   const traceCopy = {
     settled: {
       status: 'settled',
-      copy: 'The screen matches the latest confirmed state.',
+      copy: 'The UI matches the latest confirmed product state.',
       count: '7',
       liked: false,
     },
     pending: {
       status: 'optimistic',
-      copy: 'The like appears immediately while the request is still running.',
+      copy: 'The like appears before the authority has answered.',
       count: '8',
       liked: true,
     },
     accepted: {
       status: 'accepted',
-      copy: 'The server confirms the change, so the temporary UI state can clear.',
+      copy: 'The authority accepts the action, so the temporary UI state can clear.',
       count: '8',
       liked: true,
     },
     refused: {
       status: 'refused',
-      copy: 'The server declines the change, so the UI rolls back and explains what happened.',
+      copy: 'The authority refuses the action, so the UI rolls back and explains why.',
       count: '7',
       liked: false,
     },
