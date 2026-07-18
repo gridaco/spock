@@ -1,7 +1,7 @@
 # Governance meeting records
 
 Language Design Committee meetings are preferably focused offline or
-synchronous sessions. This directory makes their design work durable and
+synchronous sessions. These records make their design work durable and
 public without requiring a transcript.
 
 ## Before a meeting
