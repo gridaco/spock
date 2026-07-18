@@ -355,6 +355,10 @@ function bannerFor(authority: Authority, sourcePath: string) {
         ? '<strong>Non-normative research.</strong> Working-group material cannot amend the Spock specification.'
         : '<strong>Meeting record.</strong> This record does not define current Spock behavior.';
     case 'guide':
+      // The status page must not point its banner at itself.
+      if (sourcePath === 'docs/status.md') {
+        return '<strong>Non-normative guide.</strong> This page shows how to use Spock; the <a href="/docs/spec/v0/">v0 specification</a> governs where they disagree.';
+      }
       // The /docs/status/ link is an absolute URL, so remark link validation
       // does not cover it; it must track docs/status.md.
       return '<strong>Non-normative guide.</strong> This page shows how to use Spock; the <a href="/docs/spec/v0/">v0 specification</a> governs where they disagree. Spock is pre-1.0 and interfaces may change — see <a href="/docs/status/">project status</a>.';

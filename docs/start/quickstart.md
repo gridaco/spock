@@ -8,7 +8,7 @@ order: 2
 In about ten minutes you will scaffold a project, declare a two-table
 authority, serve it, read from it over REST, write to it over GraphQL, hit
 your first derived error, and read the contract that predicted it. It assumes
-the `spock` CLI from [install.md](install.md) is on your path.
+the `spock` CLI from [Install](install.md) is on your path.
 
 ## Scaffold a project
 
@@ -71,7 +71,7 @@ Two tables and a seed. `auth table user` makes `user` the program's
 [anchor](../language/actor.md) — the one table identity references point at.
 `author: user` is a reference; `= auto` and `= now` are defaults; `unique` is
 a constraint the whole surface will enforce. Field syntax, types, and
-constraints are covered in [tables.md](../language/tables.md). The `seed`
+constraints are covered in [Tables, types, and defaults](../language/tables.md). The `seed`
 block populates the database through the ordinary write path on every start —
 [seed replay](../language/seed.md), the reason a prototype always boots into
 believable state.
@@ -190,7 +190,7 @@ Run the same mutation again:
 on `username` — the code existed in the contract before any request was made,
 and generated clients ship it as a typed union rather than parsing a message
 string. Derived errors are the product surface of your constraints, not
-incidental runtime strings; [derived-api.md](../language/derived-api.md)
+incidental runtime strings; [The derived API](../language/derived-api.md)
 catalogs the kinds.
 
 ## The contract
