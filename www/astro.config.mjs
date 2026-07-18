@@ -105,6 +105,21 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Start',
+          items: [{ autogenerate: { directory: 'docs/start' } }],
+        },
+        {
+          label: 'Language',
+          items: [{ autogenerate: { directory: 'docs/language' } }],
+        },
+        {
+          label: 'Reference',
+          items: [{ autogenerate: { directory: 'docs/reference' } }],
+        },
+        'docs/status',
+        'docs/uhura',
+        'docs/examples',
+        {
           label: 'Specification',
           items: [{ autogenerate: { directory: 'docs/spec' } }],
         },

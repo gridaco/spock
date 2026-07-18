@@ -16,6 +16,7 @@ export const collections = {
           'decision-record',
           'non-normative',
           'informational',
+          'guide',
         ]),
         sourcePath: z.string(),
         legacyRfd: z.boolean().optional(),

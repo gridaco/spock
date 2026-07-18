@@ -8,12 +8,20 @@ The published documentation is available at
 [spock.sh/docs](https://spock.sh/docs/). This directory remains its canonical
 source.
 
+New to Spock? Start with the guides: [install](start/install.md),
+[quickstart](start/quickstart.md), then the
+[tutorial](start/tutorial.md). The [language guide](language/) teaches the
+language progressively; the [reference](reference/) covers the CLI, HTTP
+protocol, error codes, and project manifest; and [project status](status.md)
+states exactly what is stable, experimental, and deliberately absent in v0.
+
 ## Authority map
 
 | Area | Purpose | Authority |
 | --- | --- | --- |
 | [Governance](../GOVERNANCE.md) | Defines who may make project and language decisions, and by what procedure. | Authoritative for decision-making process. |
 | [Specification](spec/) | Defines the behavior of the current Spock language and its public dialects. | Normative for current behavior. |
+| [Guides](start/) | Explain how to install and use current Spock. | Non-normative. A guide illustrates the specification and cannot amend it; the specification governs where they disagree. |
 | [RFDs](rfd/) | Preserve legacy design records plus prospective proposals, decisions, and authorized future direction. | Under the new process, an RFD is a decision record, not the current specification. An accepted RFD authorizes graduation into supported implementation but does not make a feature current. |
 | [Problem seeds and informal studies](studies/) | Preserve optional pre-research questions and collect individually organized evidence and evaluation methods. | Non-normative and non-authoritative. A seed or study may inform an issue, WG, or RFD but cannot select a design or amend the specification. |
 | [Working groups](working-groups/) | Conduct bounded, organized study of a language problem. | Non-normative and non-authoritative. A WG may recommend an RFD but cannot accept one or amend the specification. |

@@ -41,6 +41,10 @@ jobs:
         run: cargo run --locked -p spock-cli -- check examples/instagram/v0.spock
       - name: check the canonical framework example
         run: cargo run --locked -p spock-cli -- check uhura/examples/instagram
+      - name: check documentation snippets
+        run: |
+          cargo build --locked -p spock-cli
+          SPOCK_BIN=target/debug/spock node scripts/check-doc-snippets.mjs
 
   uhura:
     runs-on: ubuntu-latest
