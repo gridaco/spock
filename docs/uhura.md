@@ -62,14 +62,16 @@ dependency-free Uhura client alongside the backend:
 ```text
 client/
 ├── uhura.toml
-├── app/home/page.uhura
-├── app/home/page.examples.uhura
-├── catalog/base.toml
-└── fixtures/
+├── host.toml
+├── machine.uhura
+├── ui.uhura
+└── evidence.uhura
 ```
 
-The scaffold is a welcome screen you can open in the Editor immediately;
-`spock dev` republishes valid client saves live while you edit.
+The scaffold is a complete Uhura 0.4 counter: a standalone machine, an
+explicit web UI projection, its static evidence, and the host entry that binds
+them. You can open it in the Editor immediately; `spock dev` republishes valid
+client saves live while you edit.
 
 ## The canonical full-stack example
 

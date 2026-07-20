@@ -24,16 +24,10 @@ demo/
 │   └── app.spock
 └── client/
     ├── uhura.toml
-    ├── app/
-    │   └── home/
-    │       ├── page.uhura
-    │       └── page.examples.uhura
-    ├── catalog/
-    │   └── base.toml
-    └── fixtures/
-        ├── empty.toml
-        └── scripts/
-            └── empty.toml
+    ├── host.toml
+    ├── machine.uhura
+    ├── ui.uhura
+    └── evidence.uhura
 ```
 
 This is a framework project: a `spock.toml` manifest composing a Spock
@@ -83,7 +77,7 @@ spock check
 ```
 
 ```text
-ok: project `demo` — 2 table(s), 0 record(s), 0 fn(s), 4 seed row(s), 1 preview(s), 0 replay-derived preview(s), 1 unchecked link(s), 1 warning(s)
+ok: project `demo` — 2 table(s), 0 record(s), 0 fn(s), 4 seed row(s), 2 preview(s), 1 replay-derived preview(s), 1 unchecked link(s), 1 warning(s)
 warning: link: application-owned provider adapter code remains unchecked
 ```
 

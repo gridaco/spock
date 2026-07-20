@@ -52,7 +52,7 @@ provable.
 
 ```text
 $ spock check
-ok: project `demo` — 0 table(s), 0 record(s), 0 fn(s), 0 seed row(s), 1 preview(s), 0 replay-derived preview(s), 1 unchecked link(s), 1 warning(s)
+ok: project `demo` — 0 table(s), 0 record(s), 0 fn(s), 0 seed row(s), 2 preview(s), 1 replay-derived preview(s), 1 unchecked link(s), 1 warning(s)
 warning: link: application-owned provider adapter code remains unchecked
 ```
 
@@ -72,10 +72,10 @@ demo/
 │   └── app.spock
 └── client/
     ├── uhura.toml
-    ├── app/home/page.uhura
-    ├── app/home/page.examples.uhura
-    ├── catalog/base.toml
-    └── fixtures/…
+    ├── host.toml
+    ├── machine.uhura
+    ├── ui.uhura
+    └── evidence.uhura
 ```
 
 `new` is create-new-only: the destination must not exist, and a conflicting
