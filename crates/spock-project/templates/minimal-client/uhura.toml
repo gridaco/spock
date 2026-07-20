@@ -7,8 +7,8 @@ language = "0.4"
 starter = "machine.uhura"
 ui = "ui.uhura"
 
-[evidence]
-sources = ["evidence.uhura"]
+[evidence.modules]
+examples = "evidence.uhura"
 
 # Live machine, presentation, lifetime, and port bindings belong to host.toml.
 # Add [assets] or [icons] here when the application needs them.

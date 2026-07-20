@@ -84,12 +84,15 @@ mod tests {
         };
         assert!(contents("machine.uhura").starts_with("pub machine Starter"));
         assert!(contents("ui.uhura").starts_with("use uhura::ui;\n"));
-        assert!(contents("evidence.uhura").contains("\nuse evidence\n"));
+        assert!(contents("evidence.uhura").starts_with("use crate::starter::Starter;\n"));
         assert!(contents("host.toml").contains("lifetime = \"application-session\""));
         let manifest = contents("uhura.toml");
         assert!(manifest.contains("language = \"0.4\""));
         assert!(manifest.contains("starter = \"machine.uhura\""));
         assert!(manifest.contains("ui = \"ui.uhura\""));
+        assert!(manifest.contains("[evidence.modules]"));
+        assert!(manifest.contains("examples = \"evidence.uhura\""));
+        assert!(!manifest.contains("sources = ["));
         assert!(!manifest.contains("generation"));
         assert!(!manifest.contains("runtime"));
     }
