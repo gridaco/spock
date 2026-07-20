@@ -10,24 +10,20 @@ use crate::plan::{ClientTemplate, TemplateFile};
 pub fn minimal_uhura_client_template() -> ClientTemplate {
     let files = [
         (
-            "app/home/page.examples.uhura",
-            include_bytes!("../templates/minimal-client/app/home/page.examples.uhura").as_slice(),
+            "evidence.uhura",
+            include_bytes!("../templates/minimal-client/evidence.uhura").as_slice(),
         ),
         (
-            "app/home/page.uhura",
-            include_bytes!("../templates/minimal-client/app/home/page.uhura").as_slice(),
+            "host.toml",
+            include_bytes!("../templates/minimal-client/host.toml").as_slice(),
         ),
         (
-            "catalog/base.toml",
-            include_bytes!("../templates/minimal-client/catalog/base.toml").as_slice(),
+            "machine.uhura",
+            include_bytes!("../templates/minimal-client/machine.uhura").as_slice(),
         ),
         (
-            "fixtures/empty.toml",
-            include_bytes!("../templates/minimal-client/fixtures/empty.toml").as_slice(),
-        ),
-        (
-            "fixtures/scripts/empty.toml",
-            include_bytes!("../templates/minimal-client/fixtures/scripts/empty.toml").as_slice(),
+            "ui.uhura",
+            include_bytes!("../templates/minimal-client/ui.uhura").as_slice(),
         ),
         (
             "uhura.toml",
@@ -51,13 +47,12 @@ mod tests {
     use super::*;
     use crate::plan::{scaffold_plan, DEFAULT_BACKEND_SOURCE};
 
-    const TEMPLATE_PATHS: [&str; 6] = [
-        "app/home/page.examples.uhura",
-        "app/home/page.uhura",
-        "catalog/base.toml",
-        "fixtures/empty.toml",
-        "fixtures/scripts/empty.toml",
+    const TEMPLATE_PATHS: [&str; 5] = [
+        "evidence.uhura",
+        "host.toml",
+        "machine.uhura",
         "uhura.toml",
+        "ui.uhura",
     ];
 
     #[test]
@@ -75,6 +70,28 @@ mod tests {
             TEMPLATE_PATHS
         );
         assert!(first.files().iter().all(|file| !file.contents().is_empty()));
+
+        let contents = |path: &str| {
+            std::str::from_utf8(
+                first
+                    .files()
+                    .iter()
+                    .find(|file| file.path().as_str() == path)
+                    .expect("canonical starter file")
+                    .contents(),
+            )
+            .expect("canonical starter text is UTF-8")
+        };
+        assert!(contents("machine.uhura").starts_with("pub machine Starter"));
+        assert!(contents("ui.uhura").starts_with("use uhura::ui;\n"));
+        assert!(contents("evidence.uhura").contains("\nuse evidence\n"));
+        assert!(contents("host.toml").contains("lifetime = \"application-session\""));
+        let manifest = contents("uhura.toml");
+        assert!(manifest.contains("language = \"0.4\""));
+        assert!(manifest.contains("starter = \"machine.uhura\""));
+        assert!(manifest.contains("ui = \"ui.uhura\""));
+        assert!(!manifest.contains("generation"));
+        assert!(!manifest.contains("runtime"));
     }
 
     #[test]

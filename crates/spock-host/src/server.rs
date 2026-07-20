@@ -994,11 +994,11 @@ mod tests {
             .latest_publication()
             .clone();
 
-        let page = project.path().join("client/app/home/page.uhura");
-        let original = fs::read_to_string(&page).unwrap();
+        let presentation = project.path().join("client/ui.uhura");
+        let original = fs::read_to_string(&presentation).unwrap();
         let edited = original.replace("Your app is running.", "A client build is in flight.");
         assert_ne!(edited, original);
-        fs::write(&page, edited).unwrap();
+        fs::write(&presentation, edited).unwrap();
         let changed_frame = capture_frame(&prepared.layout).unwrap();
         let changed = apply_frame(
             &session,
@@ -1352,7 +1352,7 @@ mod tests {
         let initial_play = ok_bytes(&client, address, "/api/play/ir.json").await;
         let initial_contract = ok_bytes(&client, address, "/~contract").await;
 
-        let client_source = project.path().join("client/app/home/page.uhura");
+        let client_source = project.path().join("client/machine.uhura");
         let original_client_source = fs::read(&client_source).unwrap();
         fs::write(&client_source, "this is not valid uhura\n").unwrap();
         let rejected = status_until(
@@ -1457,11 +1457,11 @@ mod tests {
         fs::write(project.path().join("backend/app.spock"), "").unwrap();
         write_client_template(&project.path().join("client-a"));
         write_client_template(&project.path().join("client-b"));
-        let retargeted_page = project.path().join("client-b/app/home/page.uhura");
-        let retargeted_source = fs::read_to_string(&retargeted_page)
+        let retargeted_presentation = project.path().join("client-b/ui.uhura");
+        let retargeted_source = fs::read_to_string(&retargeted_presentation)
             .unwrap()
             .replace("Your app is running.", "The retargeted app is running.");
-        fs::write(&retargeted_page, retargeted_source).unwrap();
+        fs::write(&retargeted_presentation, retargeted_source).unwrap();
         write_client_template(outside.path());
         symlink("client-a", project.path().join("client")).unwrap();
         fs::write(

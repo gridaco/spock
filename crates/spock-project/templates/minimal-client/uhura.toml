@@ -1,14 +1,14 @@
-[app]
-name = "spock-starter"
-entry = "home"
+[project]
+name = "spock.starter"
+version = 1
+language = "0.4"
 
-[catalog]
-path = "catalog/base.toml"
+[modules]
+starter = "machine.uhura"
+ui = "ui.uhura"
 
-[fixtures]
-empty = "fixtures/empty.toml"
+[evidence]
+sources = ["evidence.uhura"]
 
-[play.default]
-fixture = "empty"
-script = "empty"
-allow_fixture = true
+# Live machine, presentation, lifetime, and port bindings belong to host.toml.
+# Add [assets] or [icons] here when the application needs them.

@@ -303,7 +303,7 @@ fn project_check_deduplicates_shared_editor_and_play_diagnostics() {
         .assert()
         .success();
     std::fs::write(
-        temporary.path().join("demo/client/app/home/page.uhura"),
+        temporary.path().join("demo/client/machine.uhura"),
         "not valid uhura\n",
     )
     .unwrap();
@@ -314,9 +314,9 @@ fn project_check_deduplicates_shared_editor_and_play_diagnostics() {
         .assert()
         .failure();
     let stderr = String::from_utf8(assertion.get_output().stderr.clone()).unwrap();
-    let repeated = "`not` is not a definition kind";
+    let repeated = "[R1001 uhura/parse]";
     assert_eq!(stderr.matches(repeated).count(), 1, "{stderr}");
-    assert!(stderr.contains("app/home/page.uhura:"), "{stderr}");
+    assert!(stderr.contains("machine.uhura:"), "{stderr}");
 }
 
 #[test]

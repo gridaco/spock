@@ -660,11 +660,7 @@ mod tests {
     fn project_check_aggregates_backend_and_client_failures() {
         let temp = tempdir().unwrap();
         let layout = write_project(temp.path(), "table broken {", true);
-        fs::write(
-            temp.path().join("client/app/home/page.uhura"),
-            "not valid uhura",
-        )
-        .unwrap();
+        fs::write(temp.path().join("client/machine.uhura"), "not valid uhura").unwrap();
 
         let failure = check_project(&layout).unwrap_err();
         assert!(failure
@@ -764,7 +760,7 @@ mod tests {
         .expect("unchanged project should remain eligible");
 
         fs::write(
-            temp.path().join("client/app/home/page.uhura"),
+            temp.path().join("client/machine.uhura"),
             "this source changed during preparation\n",
         )
         .unwrap();

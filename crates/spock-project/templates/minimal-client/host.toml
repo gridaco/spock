@@ -1,0 +1,4 @@
+[entry.starter]
+machine = "crate::Starter"
+presentation = "crate::StarterWeb"
+lifetime = "application-session"

@@ -1,5 +1,0 @@
-# A deterministic no-op driver for the starter page.
-on-unscripted = "error"
-deliver = []
-reply = []
-ui = []
