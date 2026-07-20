@@ -314,7 +314,7 @@ fn project_check_deduplicates_shared_editor_and_play_diagnostics() {
         .assert()
         .failure();
     let stderr = String::from_utf8(assertion.get_output().stderr.clone()).unwrap();
-    let repeated = "[R1001 uhura/parse]";
+    let repeated = "[R1001 uhura-0.4/parse/invalid-declaration]";
     assert_eq!(stderr.matches(repeated).count(), 1, "{stderr}");
     assert!(stderr.contains("machine.uhura:"), "{stderr}");
 }

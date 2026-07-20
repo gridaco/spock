@@ -313,10 +313,10 @@ mod tests {
         )
     }
 
-    fn canonical_uhura_03_snapshot() -> ProjectSourceSnapshot {
+    fn canonical_uhura_snapshot() -> ProjectSourceSnapshot {
         capture_project_snapshot(
             &Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../uhura/examples/applications/a0-return-desk/answers/uhura-0.3"),
+                .join("../../uhura/examples/applications/a0-return-desk/answers/uhura-0.4"),
         )
     }
 
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn aggregate_client_host_preserves_the_uhura_editor_and_play_pipeline() {
         let (_web_root, web) = web_assets();
-        let snapshot = canonical_uhura_03_snapshot();
+        let snapshot = canonical_uhura_snapshot();
         let coordinator = coordinator();
         let (host, publication) =
             ClientHost::activate(web, &snapshot, coordinator.observed_revision()).unwrap();
