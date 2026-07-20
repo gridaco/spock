@@ -554,7 +554,7 @@ jobs:
           fi
           curl -fsS http://127.0.0.1:4124/ | grep -qi "<!doctype html"
           curl -fsS http://127.0.0.1:4124/play | grep -qi "<!doctype html"
-          curl -fsS http://127.0.0.1:4124/api/editor/state | grep -q '"protocol":"uhura-editor-state/2"'
+          curl -fsS http://127.0.0.1:4124/api/editor/state | grep -q '"protocol":"uhura-editor-state/4"'
           curl -fsS http://127.0.0.1:4124/api/play/wasm/uhura_wasm.js >/dev/null
           curl -fsS http://127.0.0.1:4124/api/play/wasm/uhura_wasm_bg.wasm >/dev/null
           curl -fsS http://127.0.0.1:4124/~project/status | grep -q '"protocol":"spock-project-status/1"'
@@ -608,7 +608,7 @@ jobs:
               throw "Editor or Play did not serve HTML"
             }
             $state = Invoke-RestMethod -Uri "http://127.0.0.1:4124/api/editor/state"
-            if ($state.protocol -ne "uhura-editor-state/2") { throw "wrong Editor protocol" }
+            if ($state.protocol -ne "uhura-editor-state/4") { throw "wrong Editor protocol" }
             Invoke-WebRequest -Uri "http://127.0.0.1:4124/api/play/wasm/uhura_wasm.js" | Out-Null
             Invoke-WebRequest -Uri "http://127.0.0.1:4124/api/play/wasm/uhura_wasm_bg.wasm" | Out-Null
             $status = Invoke-RestMethod -Uri "http://127.0.0.1:4124/~project/status"

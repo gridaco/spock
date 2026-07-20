@@ -313,6 +313,23 @@ mod tests {
         )
     }
 
+    fn canonical_uhura_03_snapshot() -> ProjectSourceSnapshot {
+        capture_project_snapshot(
+            &Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../uhura/examples/applications/a0-return-desk/answers/uhura-0.3"),
+        )
+    }
+
+    fn response_json(response: RouteResponse) -> serde_json::Value {
+        assert_eq!(response.status, 200);
+        let RouteBody::Bytes(mut body) = response.body else {
+            panic!("expected a JSON byte response");
+        };
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut body, &mut bytes).expect("response bytes");
+        serde_json::from_slice(&bytes).expect("response JSON")
+    }
+
     fn coordinator() -> GenerationCoordinator {
         GenerationCoordinator::activated(
             HostMode::Dev,
@@ -358,6 +375,61 @@ mod tests {
             published.active.unwrap().observed_revision,
             observed_revision
         );
+    }
+
+    #[test]
+    fn aggregate_client_host_preserves_the_uhura_editor_and_play_pipeline() {
+        let (_web_root, web) = web_assets();
+        let snapshot = canonical_uhura_03_snapshot();
+        let coordinator = coordinator();
+        let (host, publication) =
+            ClientHost::activate(web, &snapshot, coordinator.observed_revision()).unwrap();
+
+        assert!(publication.report.editor_current);
+        assert!(publication.report.play_ok);
+        assert_eq!(publication.report.preview_count, Some(12));
+        assert_eq!(publication.report.replay_derived_count, Some(11));
+
+        let editor = response_json(host.route(RouteRequest {
+            method: RequestMethod::Get,
+            url: "/api/editor/state",
+        }));
+        assert_eq!(editor["protocol"], "uhura-editor-state/4");
+        assert_eq!(
+            editor["render"]["previews"].as_array().map(Vec::len),
+            Some(12)
+        );
+
+        let play = response_json(host.route(RouteRequest {
+            method: RequestMethod::Get,
+            url: "/api/play/config.json",
+        }));
+        assert_eq!(play["protocol"], "uhura-play-config/1");
+        assert!(
+            play.get("runtime").is_none(),
+            "single-engine Play config must not expose a runtime selector"
+        );
+        assert_eq!(play["entry"], "return-desk");
+        assert_eq!(play["provider"]["protocol"], "uhura-adapter-provider/0");
+
+        let ir = response_json(host.route(RouteRequest {
+            method: RequestMethod::Get,
+            url: "/api/play/ir.json",
+        }));
+        assert_eq!(ir["protocol"], "uhura-ir/1");
+
+        let inspection = response_json(host.route(RouteRequest {
+            method: RequestMethod::Get,
+            url: "/api/play/inspect.json",
+        }));
+        assert_eq!(inspection["protocol"], "uhura-inspection/0");
+
+        let application = host.route(RouteRequest {
+            method: RequestMethod::Get,
+            url: "/orders/order-100/return?step=items",
+        });
+        assert_eq!(application.status, 200);
+        assert!(matches!(application.body, RouteBody::Bytes(_)));
     }
 
     #[test]
