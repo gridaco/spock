@@ -424,7 +424,10 @@ jobs:
             echo "::error::expected exactly one guarded npm tarball; found ${#packages[@]}"
             exit 1
           fi
-          npm publish "${packages[0]}" --dry-run --tag "$DIST_TAG"
+          # A branch may revalidate the Cargo version after that version is
+          # already on npm. npm otherwise rejects even --dry-run; --force is
+          # safe here only because this step is gated to dry_run == true.
+          npm publish "${packages[0]}" --dry-run --force --tag "$DIST_TAG"
 
       - name: npm publish
         if: steps.resolve.outputs.dry_run != 'true'

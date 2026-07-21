@@ -266,7 +266,9 @@ is installed and exercised on the full macOS/Linux/Windows verification matrix
 without spending an npm version. Prereleases go out under a `next` dist-tag so
 `latest` only ever moves on a real cut. Both dry and real `npm publish` receive
 that same guarded `.tgz` as their package argument; neither branch silently
-repacks the source directory.
+repacks the source directory. The dry-run command alone uses `--force`, because
+npm otherwise rejects `--dry-run` when the workspace version is already in the
+registry; the real publishing branch never uses `--force`.
 
 **Why hand-rolled, not `dist`.** `dist`'s value is the matrix + C-toolchain
 provisioning + installers + Homebrew formula + GitHub Release, generated
