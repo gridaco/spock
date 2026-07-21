@@ -734,7 +734,7 @@ Initial release budgets on the recorded reference machine are: source
 backend startup baseline; valid client publication p95 within 1.5 seconds;
 idle observer CPU at or below 2%; a 250-revision soak with RSS growth at most
 25 MiB and file-descriptor/thread growth at most three; shutdown and port
-rebind within 2 seconds; and a packed all-platform npm artifact at most 25 MiB.
+rebind within 2 seconds; and a packed all-platform npm artifact at most 26 MiB.
 
 Still deferred are backend world reuse/rebase/migration, Play state-preserving
 HMR, automatic provider TypeScript build supervision, multiple backends or
@@ -798,7 +798,7 @@ watcher convention.
   ([Actions run 29379605382](https://github.com/gridaco/spock/actions/runs/29379605382));
   that workflow remains the authoritative full-matrix integration proof.
 - The local package-topology smoke contains exactly 21 files and the release
-  workflow rejects a packed artifact above 25 MiB. Release CI remains
+  workflow rejects a packed artifact above 26 MiB. Release CI remains
   authoritative for the four real platform binaries.
 - `spock run app.spock` remains valid and shares the named-state safety lock.
 

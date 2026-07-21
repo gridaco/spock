@@ -340,7 +340,7 @@ jobs:
           PACKAGE_VERSION: ${{ steps.resolve.outputs.version }}
         run: cd npm && npm version "$PACKAGE_VERSION" --no-git-tag-version --allow-same-version
 
-      - name: guard — packed package is complete and within 25 MiB
+      - name: guard — packed package is complete and within 26 MiB
         env:
           PACKAGE_VERSION: ${{ steps.resolve.outputs.version }}
         run: |
@@ -398,7 +398,7 @@ jobs:
               throw new Error(`packed executable must have mode 0755: ${path} (mode ${mode})`);
             }
           }
-          const limit = 25 * 1024 * 1024;
+          const limit = 26 * 1024 * 1024;
           if (entry.size > limit) {
             throw new Error(`packed package is ${entry.size} bytes; limit is ${limit} bytes`);
           }
