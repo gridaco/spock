@@ -5,15 +5,36 @@ order: 2
 
 # Quickstart
 
-In about ten minutes you will scaffold a project, declare a two-table
-authority, serve it, read from it over REST, write to it over GraphQL, hit
-your first derived error, and read the contract that predicted it. It assumes
-the `spock` CLI from [Install](install.md) is on your path.
+After the one-time source build below, in about ten minutes you will scaffold
+a project, declare a two-table authority, serve it, read from it over REST,
+write to it over GraphQL, hit your first derived error, and read the contract
+that predicted it.
+
+> **Current-source client.** The full-stack scaffold shown here includes strict
+> Uhura 0.4 and uses an explicitly built source-checkout binary below until a
+> compatible npm release ships. Published `spock@0.5.3` users instead start
+> with `spock new demo --backend-only` and use plain `spock` for later
+> commands. Their backend behavior is the same, but the client files, preview
+> counts, Editor, and Play shown on this page are absent. Do not pair the
+> published retired sidecar with the 0.4 files below.
 
 ## Scaffold a project
 
 ```sh
-spock new demo
+# From the Spock source checkout.
+git submodule update --init --recursive
+corepack pnpm@10.11.0 -C crates/spock-runtime/studio install --frozen-lockfile
+corepack pnpm@10.11.0 -C crates/spock-runtime/studio build
+corepack pnpm@10.11.0 -C uhura/web install --frozen-lockfile
+corepack pnpm@10.11.0 -C uhura/web build
+bash uhura/scripts/build-wasm.sh
+cargo build --locked -p spock-cli
+
+export SPOCK_SOURCE="$PWD/target/debug/spock"
+export SPOCK_UHURA_WEB_DIST="$PWD/uhura/web/dist"
+export SPOCK_UHURA_WASM_DIST="$PWD/uhura/crates/uhura-wasm/pkg/web"
+cd ..
+"$SPOCK_SOURCE" new demo
 cd demo
 ```
 
@@ -24,16 +45,10 @@ demo/
 │   └── app.spock
 └── client/
     ├── uhura.toml
-    ├── app/
-    │   └── home/
-    │       ├── page.uhura
-    │       └── page.examples.uhura
-    ├── catalog/
-    │   └── base.toml
-    └── fixtures/
-        ├── empty.toml
-        └── scripts/
-            └── empty.toml
+    ├── host.toml
+    ├── machine.uhura
+    ├── ui.uhura
+    └── evidence.uhura
 ```
 
 This is a framework project: a `spock.toml` manifest composing a Spock
@@ -79,23 +94,25 @@ believable state.
 ## Check it
 
 ```sh
-spock check
+"$SPOCK_SOURCE" check
 ```
 
 ```text
-ok: project `demo` — 2 table(s), 0 record(s), 0 fn(s), 4 seed row(s), 1 preview(s), 0 replay-derived preview(s), 1 unchecked link(s), 1 warning(s)
+ok: project `demo` — 2 table(s), 0 record(s), 0 fn(s), 4 seed row(s), 2 preview(s), 1 replay-derived preview(s), 1 unchecked link(s), 1 warning(s)
 warning: link: application-owned provider adapter code remains unchecked
 ```
 
 `check` does more than parse: it materializes the schema in memory, validates
 every declaration, and replays the seed through the runtime write path. The
 counts after the seed rows — previews, links, the warning — describe the
-Uhura client half of the project, which Spock observes but does not check.
+Uhura client half of the project. Spock checks that client as part of the same
+project: an invalid Uhura machine, Web UI, evidence corpus, host entry, or
+provider contract makes the whole `spock check` fail.
 
 ## Serve it
 
 ```sh
-spock dev
+"$SPOCK_SOURCE" dev
 ```
 
 ```text

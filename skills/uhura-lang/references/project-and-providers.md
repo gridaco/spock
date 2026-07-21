@@ -1,6 +1,12 @@
-# Uhura Projects, Examples, and Providers
+# Uhura 0.4 Projects, Evidence, and Providers
 
-## Framework project layout
+Keep the machine, presentation, evidence, and deployment boundaries visible.
+They share checked types and one runtime kernel, but they are not one ambient
+application language.
+
+## Framework project topology
+
+A small framework project normally has this shape:
 
 ```text
 spock.toml
@@ -8,145 +14,174 @@ backend/
   app.spock
 client/
   uhura.toml
-  uhura.lock
-  app/**/page.uhura
-  components/*.uhura
-  surfaces/*.uhura
-  ports/*.port.toml
-  fixtures/standard.toml
-  fixtures/scripts/*.toml
-  fixtures/assets/manifest.toml
-  providers/
-  catalog/base.toml
+  host.toml
+  machine.uhura
+  ui.uhura
+  evidence.uhura
   styles/theme.css
+  providers/
+    app.js
 ```
 
-`spock.toml` composes the authority and client roots without merging their
-languages or ownership. Inside the configured client, `uhura.toml` declares
-the entry route, catalog, named ports, fixtures, assets, play profile, and
-optional provider module/configuration. `uhura.lock` pins catalog and port
-hashes. Treat contract drift as a project error; never hand-edit or silently
-delete the lock to bypass it.
-
-## Port contracts
-
-Ports are the typed boundary to authoritative providers. Keep UI source provider-neutral.
+The physical `.uhura` filenames are conventional, not semantic. `uhura.toml`
+is the source of truth for logical modules:
 
 ```toml
-[port]
-name = "feed"
-version = "0.1.0"
+[project]
+name = "spock.starter"
+version = 1
+language = "0.4"
 
-[types.user-ref]
-kind = "record"
+[modules]
+starter = "machine.uhura"
+ui = "ui.uhura"
 
-[types.user-ref.fields]
-id = "id"
-username = "text"
-
-[types.media]
-kind = "union"
-
-[types.media.variants.image]
-src = "asset"
-alt = "text"
-
-[projections.viewer]
-type = "user-ref"
-boot = true
-
-[projections.post-by-id]
-type = "post-summary"
-key = "id"
-
-[refusals.not-authorized]
-
-[commands.like-post]
-payload = { post = "id" }
-refusals = ["not-authorized"]
+[evidence.modules]
+examples = "evidence.uhura"
 ```
 
-Current type grammar includes `bool`, `int`, `text`, `option<T>`, `list<T>`, and declared types of kind `record`, `union`, `enum`, `id`, `opaque`, or `asset`.
-
-Use opaque values for provider-owned cursors that Uhura may echo but not
-inspect. Use asset values for provider-resolved media references. Command
-success payloads are empty in the current implementation; authority settlement
-travels as projection updates, not a second payload carrier.
-
-Projections are absent until delivered. A `boot = true` projection arrives before `Init`; other projections must be handled through availability. Keyed projections use a typed key.
-
-## Examples and preview provenance
-
-Place examples beside their definition:
-
-```text
-page.uhura
-page.examples.uhura
-```
-
-Pinned example:
+Every owned `.uhura` file must appear exactly once in `[modules]` or
+`[evidence.modules]`. Imports use the logical name:
 
 ```uhura
-use fixture standard
-
-example first-page default {
-  projection feed.viewer = fixture.users.mira
-  projection feed.feed-page = fixture.feed.page-1
-}
+use crate::starter::Starter;
 ```
 
-Derived example:
+Moving a physical file and updating only the module map must not change the
+checked program identity. Public declaration identity follows package identity
+and public name, not a directory route.
+
+Optional `[assets]` and `[icons]` tables also belong in `uhura.toml`. Do not
+invent a separate catalog manifest.
+
+`uhura.lock` exists exactly when `[dependencies]` is non-empty. Never
+hand-author, retain, or delete it to bypass resolution. A local project with no
+dependencies must not carry a lock.
+
+## Deterministic evidence
+
+Evidence modules use the same 0.4 lexer, imports, values, and machine contracts.
+They define scenarios, checkpoints, and named UI examples without contributing
+runtime declarations:
 
 ```uhura
-example like-pending {
-  from first-page
-  events [ like-toggled(post: "post-1", now-liked: true) ]
-  note "optimistic state while the command is pending"
+use crate::starter::Starter;
+use crate::ui::StarterWeb;
+
+scenario walkthrough for Starter {
+  start
+  pin welcome
+
+  send Increment
+  expect Accepted commands []
+  pin incremented
 }
+
+example welcome
+  for StarterWeb as page default
+  note "The clean starting point."
+  = walkthrough::welcome;
+
+example incremented
+  for StarterWeb as page
+  note "The same program after one accepted input."
+  = walkthrough::incremented;
 ```
 
-Use examples to expose meaningful loading, ready, empty, failure, pending, refusal, surface, and navigation states. A derived example must remain reachable through checked events from its source example. Preserve `from`, projections, events, and notes so Canvas can show honest provenance.
+Use evidence to prove reachability and exact machine behavior:
 
-Examples do not enter runtime IR. Static projection must not execute I/O or emit commands; replay-derived previews are checked build artifacts over deterministic core steps.
+- `start` constructs the machine;
+- `send` dispatches an external event;
+- `deliver` supplies a typed port input;
+- `expect` checks the outcome and ordered commands;
+- `pin` captures a checked checkpoint; and
+- `example` selects a UI projection over a checkpoint for Editor.
 
-## Fixtures and scripts
+Bind deterministic standard port drivers in a scenario before `start` when the
+machine requires them. Prefer a scenario chain over duplicating state literals.
+Cover loading, ready, empty, failure, pending, accepted, refused, retry, and
+navigation states that materially change the experience.
 
-Fixture data in `fixtures/*.toml` supplies named, typed projection slices. Keep slices aligned with port contracts and use meaningful product data rather than lorem ipsum or decorative counters.
+Evidence is not live provider proof. It executes the ordinary deterministic
+machine with checked inputs and adapters; Play exercises the admitted host
+deployment.
 
-Scripts in `fixtures/scripts/*.toml` provide deterministic provider delivery and UI events. A reply matches one pending command by command name and optional payload predicate. Use `after-ticks` to make pending states observable. Keep `on-unscripted = "error"` for strict scenarios unless the design explicitly requires another policy.
+## Live host admission
 
-Use focused scripts for one behavior and a canonical demo script for the full walkthrough. Trace both success and failure/refusal paths.
+`host.toml` is read after the project resolves and checks. It selects one live
+entry in 0.4:
 
-## Provider seam
-
-Core exchanges versioned JSON envelopes with a provider:
-
-```text
-command
-projection
-projection-failed
-outcome with optional atomic projection updates
+```toml
+[entry.starter]
+machine = "crate::Starter"
+presentation = "crate::StarterWeb"
+lifetime = "application-session"
+stylesheet = "styles/theme.css"
 ```
 
-Rules:
+Host selectors use public declarations, not logical module paths. The entry
+selects:
 
-- Echo core-minted correlation ids unchanged.
-- Produce exactly one eventual outcome per command.
-- Deliver one ordered, non-reentrant stream.
-- Increase projection revisions strictly per `(projection, key)`.
-- Apply an accepted command's projection consequence before or atomically with its outcome.
-- Convert transport failure to `unavailable`; do not throw ambient exceptions into Core.
-- Keep files and browser-native values outside the serializable Core envelope.
+- one public machine;
+- an optional `pub ui` bound to that machine;
+- exactly the `"application-session"` lifetime;
+- required configuration when the machine config is not `Unit`;
+- a stylesheet;
+- exact port-adapter bindings; and
+- an optional provider module and configuration.
 
-The fixture driver is the deterministic CI provider. A live provider may use Spock, but no Spock object or source syntax belongs in Uhura Core or `.uhura` source.
+Core checking and evidence do not require `host.toml`. Play does.
+
+## Port and provider boundary
+
+Machines declare typed ports in `.uhura` source. The host maps each required
+port locator to an adapter identity:
+
+```toml
+[entry.instagram.ports]
+router = "web.history"
+authority = "app.provider"
+mutations = "app.provider"
+
+[entry.instagram.provider]
+module = "providers/dist/spock.js"
+
+[entry.instagram.provider.config]
+endpoint = "http://127.0.0.1:4000"
+```
+
+`web.history` is a checked built-in adapter. `app.provider` names ports supplied
+by the configured provider module. These sets must cover the deployment
+requirements exactly.
+
+A custom module exports the provider adapter factory expected by the admitted
+host, currently `createUhuraAdapters(config, host)`. Use the host-provided port,
+adapter, contract hash, and contract-instance hash. Do not calculate or
+hardcode compiler-owned identities.
+
+Provider rules:
+
+- implement only the ports assigned to the provider's adapter identity;
+- preserve typed wire values and core-minted correlation ids;
+- deliver one ordered, deferred stream so foreign code cannot synchronously
+  re-enter a machine reaction;
+- produce exactly one eventual settlement for each request;
+- convert transport failures into modeled deliveries rather than throwing them
+  into Core; and
+- keep browser-native and authority-specific objects outside machine state.
+
+The npm Spock host serves a generated JavaScript provider module but does not
+compile app-specific TypeScript. Build provider source separately and point
+`host.toml` at the generated JavaScript artifact.
 
 ## Authority boundary
 
-Spock owns users, posts, relationships, permissions, transactions, files, accepted commands, and durable timestamps. Uhura owns local drafts, optimistic overlays, pending markers, notices, selected UI sections, surfaces, and logical navigation.
+Spock or another authority owns users, records, permissions, transactions,
+files, accepted mutations, and durable timestamps. Uhura owns deterministic
+session state, drafts, optimistic overlays, pending markers, notices, and
+logical navigation.
 
-Derive displayed counts from authority source rows in the provider. Do not
-store decorative counts in both systems. Return authority echoes and
-projection updates after mutations. Treat local actor selection as prototype
-impersonation, not production authentication. Verify authoritative
-consequences through Studio or the affected endpoint, not by trusting client
-state alone.
+Do not duplicate one authoritative fact in machine and provider state. Verify
+durable consequences through Studio or the affected endpoint, not by trusting
+Play state alone. Actor selection in a prototype is impersonation, not
+production authentication or authorization.

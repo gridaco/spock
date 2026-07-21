@@ -18,6 +18,12 @@ you name.
 makes the bare `spock` command available. Platform requirements and the
 distribution model live on the [install page](../start/install.md).
 
+The version transcript below is the current published package. Its framework
+commands are available, but its embedded Uhura frontend predates strict 0.4.
+Sections that show the machine/UI/evidence scaffold describe current source
+until a compatible npm release ships; use `--backend-only` with 0.5.3 rather
+than mixing that sidecar with a 0.4 client.
+
 ```sh
 $ spock --version
 spock 0.5.3
@@ -52,7 +58,7 @@ provable.
 
 ```text
 $ spock check
-ok: project `demo` — 0 table(s), 0 record(s), 0 fn(s), 0 seed row(s), 1 preview(s), 0 replay-derived preview(s), 1 unchecked link(s), 1 warning(s)
+ok: project `demo` — 0 table(s), 0 record(s), 0 fn(s), 0 seed row(s), 2 preview(s), 1 replay-derived preview(s), 1 unchecked link(s), 1 warning(s)
 warning: link: application-owned provider adapter code remains unchecked
 ```
 
@@ -72,10 +78,10 @@ demo/
 │   └── app.spock
 └── client/
     ├── uhura.toml
-    ├── app/home/page.uhura
-    ├── app/home/page.examples.uhura
-    ├── catalog/base.toml
-    └── fixtures/…
+    ├── host.toml
+    ├── machine.uhura
+    ├── ui.uhura
+    └── evidence.uhura
 ```
 
 `new` is create-new-only: the destination must not exist, and a conflicting

@@ -20,18 +20,20 @@ const PROTOCOLS = Object.freeze({
   environment: "spock-host-environment/1",
   project_status: "spock-project-status/1",
   project_event: "spock-project-event/1",
-  editor_state: "uhura-editor-state/2",
+  editor_state: "uhura-editor-state/5",
   editor_event: "uhura-editor-event/0",
-  ir: "uhura-ir/0",
-  inspect: "uhura-inspect/0",
-  view: "uhura-view/0",
-  provider: "uhura-provider/0",
+  ir: "uhura-ir/1",
+  inspect: "uhura-inspection/1",
+  view: "uhura-view/1",
+  adapter_provider: "uhura-adapter-provider/0",
 });
 const REQUIRED_ROUTES = Object.freeze([
   "/api/editor/state",
   "/api/editor/events",
   "/api/play/events",
+  "/api/play/config.json",
   "/api/play/ir.json",
+  "/api/play/inspect.json",
   "/api/play/wasm/uhura_wasm.js",
 ]);
 const REQUIRED_WASM = Object.freeze([

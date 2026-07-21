@@ -7,6 +7,7 @@
 mod assets;
 mod backend_capture;
 mod client;
+mod client_route_admission;
 mod events;
 mod generation;
 mod http;

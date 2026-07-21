@@ -25,7 +25,7 @@ fn scaffolded_full_stack_project_discovers_and_loads_from_a_descendant() {
         .unwrap();
     apply_for_test(&plan);
 
-    let descendant = destination.join("client/app");
+    let descendant = destination.join("client");
     let target = resolve_target(None, &descendant).unwrap();
     assert!(matches!(target, ResolvedTarget::Project(_)));
     let layout = load_project_from(&descendant).unwrap();

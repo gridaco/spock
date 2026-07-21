@@ -1,0 +1,22 @@
+pub machine Starter {
+  events {
+    Increment,
+  }
+
+  outcomes {
+    commit Accepted,
+  }
+
+  state {
+    count: Nat = 0,
+  }
+
+  observe {
+    count,
+  }
+
+  on Increment {
+    count = count + 1;
+    Accepted
+  }
+}

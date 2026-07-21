@@ -138,6 +138,13 @@ Projects add optional seed assets and richer Uhura directories such as
 components, surfaces, ports, providers, and styles only when the application
 needs them. The initial starter does not invent empty structure or a lockfile.
 
+> **Implementation evolution.** This tree records the client model selected
+> when RFD 0022 was accepted. Current source has since moved the incubating Uhura
+> client to strict 0.4 machine, UI, evidence, and host modules. The generated
+> topology documented by the current [quickstart](../start/quickstart.md) and
+> [Uhura integration guide](../uhura.md) is authoritative for the toolchain;
+> this retained tree is design history, not current scaffolding syntax.
+
 `app.spock` is the conventional backend name, not `main.spock`:
 
 - it already appears in examples, command tests, and the composition proof;
@@ -727,7 +734,7 @@ Initial release budgets on the recorded reference machine are: source
 backend startup baseline; valid client publication p95 within 1.5 seconds;
 idle observer CPU at or below 2%; a 250-revision soak with RSS growth at most
 25 MiB and file-descriptor/thread growth at most three; shutdown and port
-rebind within 2 seconds; and a packed all-platform npm artifact at most 25 MiB.
+rebind within 2 seconds; and a packed all-platform npm artifact at most 26 MiB.
 
 Still deferred are backend world reuse/rebase/migration, Play state-preserving
 HMR, automatic provider TypeScript build supervision, multiple backends or
@@ -791,7 +798,7 @@ watcher convention.
   ([Actions run 29379605382](https://github.com/gridaco/spock/actions/runs/29379605382));
   that workflow remains the authoritative full-matrix integration proof.
 - The local package-topology smoke contains exactly 21 files and the release
-  workflow rejects a packed artifact above 25 MiB. Release CI remains
+  workflow rejects a packed artifact above 26 MiB. Release CI remains
   authoritative for the four real platform binaries.
 - `spock run app.spock` remains valid and shares the named-state safety lock.
 

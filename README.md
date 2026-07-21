@@ -31,13 +31,19 @@ other musl-based Linux distributions are not supported yet. Framework commands
 begin with `0.5.0`; registry releases through `0.4.0` expose only the standalone
 language commands.
 
-With the `0.5.0` framework npm release:
+Published `0.5.x` supports framework projects. The shortest version-stable
+start is backend-only:
 
 ```sh
-npx spock new demo
+npx spock new demo --backend-only
 cd demo
 npx spock dev
 ```
+
+Published `spock@0.5.3` embeds the retired Uhura frontend. The strict Uhura 0.4
+client documented below is integrated in current source and requires the
+[source build](#uhura-the-client-language) until a compatible npm release
+ships. Do not mix a 0.4 client with the 0.5.3 sidecar.
 
 Standalone programs keep the same entry points:
 
@@ -50,10 +56,17 @@ npm i -g spock
 ```
 
 ```sh
-spock new demo                   # create backend + Uhura client + spock.toml
-spock check                      # check the whole nearest project
-spock dev                        # watch client; observe backend as restart-required
-spock start                      # serve one fixed combined generation
+# published 0.5.3: backend-only
+spock new api --backend-only
+spock check api
+spock dev api
+
+# current checkout: strict Uhura 0.4 full stack, after the asset build below
+cargo run --locked -p spock-cli -- new demo
+cargo run --locked -p spock-cli -- check demo
+SPOCK_UHURA_WEB_DIST="$PWD/uhura/web/dist" \
+SPOCK_UHURA_WASM_DIST="$PWD/uhura/crates/uhura-wasm/pkg/web" \
+cargo run --locked -p spock-cli -- dev demo
 
 # standalone language escape hatches stay available
 spock check app.spock            # parse + fully load-check one program
@@ -99,17 +112,26 @@ status, contract metadata, Editor, and Play can still run.
 
 The repository's canonical full-stack example uses this exact shape at
 [`uhura/examples/instagram`](https://github.com/gridaco/uhura/tree/main/examples/instagram). Build its app-owned
-provider once, then one command checks and serves the authority and client:
+provider and the source-only Editor/Play assets once, then the current Spock
+source checks and serves the authority and strict Uhura 0.4 client:
 
 ```sh
+git submodule update --init --recursive
+corepack pnpm@10.11.0 -C crates/spock-runtime/studio install --frozen-lockfile
+corepack pnpm@10.11.0 -C crates/spock-runtime/studio build
 corepack pnpm@10.11.0 -C uhura/web install --frozen-lockfile
-corepack pnpm@10.11.0 -C uhura/web build:provider
-spock start uhura/examples/instagram
+corepack pnpm@10.11.0 -C uhura/web build
+bash uhura/scripts/build-wasm.sh
+
+SPOCK_UHURA_WEB_DIST="$PWD/uhura/web/dist" \
+SPOCK_UHURA_WASM_DIST="$PWD/uhura/crates/uhura-wasm/pkg/web" \
+cargo run --locked -p spock-cli -- start uhura/examples/instagram
 ```
 
-The `0.5.2` CLI includes the fixture's proposed `error` declarations as an
-experimental RFD 0024 implementation preview, so this remains a distribution
-smoke through the published npm CLI. The same project remains independently
+Published `spock@0.5.3` and earlier accept the backend's experimental RFD 0024
+`error` declarations but embed the retired Uhura frontend, so they cannot run
+this strict 0.4 checkout. The next compatible npm release must package this
+same checked runtime and asset generation. The project remains independently
 checkable as a Spock backend and an Uhura client.
 
 `spock dev` deliberately has asymmetric reload semantics today. Valid Uhura
@@ -751,10 +773,11 @@ shim only selects and owns the matching native process. Releases through
 Spock's doctrine forbids Spock from building a client language — "generate
 types, never the client" (`docs/rfd/0010`), "borrow, don't build"
 (`docs/rfd/0009`). That slot is filled by
-[Uhura](https://github.com/gridaco/uhura): a declarative UI language and
-deterministic headless experience runtime that owns non-authoritative
-UI-session state and experience behavior, with Spock as its canonical
-provider. No fact may be authoritative in both languages.
+[Uhura](https://github.com/gridaco/uhura): a deterministic machine language
+with an explicit optional Web UI profile. It owns non-authoritative client
+state and experience behavior, with Spock as its canonical provider; its UI
+modules are pure projections of machine observations rather than a second
+state model. No fact may be authoritative in both languages.
 
 Uhura is a subsystem of the Spock project: its canonical source lives in its
 own repository and is included here as a git submodule at `uhura/`. The root

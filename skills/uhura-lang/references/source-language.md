@@ -1,182 +1,173 @@
-# Current Uhura Source Language
+# Uhura 0.4 Source Language
 
-Use `spock check` from the installed npm distribution as the acceptance test
-for every source form. The language is incubating and not
-compatibility-frozen; do not infer syntax that the installed version rejects.
+Use `spock check` from a compatible npm distribution as the acceptance test.
+Uhura 0.4 is strict, machine-first, and not backward-compatible with the
+retired v0 page/store grammar.
 
-## File placement and headers
+## Rust-shaped core
 
-Paths define identity:
+Core source deliberately follows a bounded Rust shape:
 
-```text
-app/feed/page.uhura                       route feed
-app/profile/[user]/page.uhura             route profile(user)
-components/post-card.uhura                 component post-card
-surfaces/comments-sheet.uhura              surface comments-sheet
-```
+- `use`, `pub`, and `pub use` for resolution and visibility;
+- `struct`, `enum`, constructors, patterns, and exhaustive `match`;
+- immutable `let`, `const`, `fn`, lexical `return`, and block-tail values;
+- semicolon-terminated statements and comma-separated fields; and
+- snake_case values, SCREAMING_SNAKE_CASE constants, and UpperCamelCase types.
 
-One definition lives in each file. Pages are route definitions and cannot be imported. Components and surfaces are imported explicitly. Use lowercase kebab-case names.
+It does not borrow Rust ownership, traits, macros, async execution, or unsafe
+foreign calls. Do not import JavaScript or treat expressions as JavaScript.
 
-Headers:
-
-```uhura
-page
-
-component post-card
-
-surface comments-sheet modality sheet
-```
-
-Imports bring exact items into file scope:
+Imports are explicit and inert:
 
 ```uhura
-use component post-card
-use surface comments-sheet
-use port feed {
-  projection feed-page
-  projection viewer
-  command like-post
-  type post-summary
-}
+use uhura::observation::Observation;
+use crate::notice::Notice;
 ```
 
-Declare route params, component/surface props, and component emits explicitly:
+`crate` names the current package. `uhura` names checked standard contracts.
+Physical filenames do not infer modules; `uhura.toml` maps each logical module
+to one source file.
+
+## Machine contract
+
+A minimal complete machine:
 
 ```uhura
-param user: id
+pub machine Starter {
+  events {
+    Increment,
+  }
 
-props {
-  post: post-summary
-  liked: bool
-}
+  outcomes {
+    commit Accepted,
+  }
 
-emits {
-  like-toggled(post: id, now-liked: bool)
-}
-```
-
-## Store blocks
-
-Pages and surfaces own reconstructible UI-session state and handlers:
-
-```uhura
-store {
   state {
-    like-overlay: map[id]bool = {}
-    like-pending: map[id]bool = {}
-    notice: text? = none
+    count: Nat = 0,
   }
 
-  on like-toggled(post: id, now-liked: bool)
-      when now-liked && !(like-pending[post] ?? false) {
-    set like-overlay[post] = true
-    set like-pending[post] = true
-    send like-post(post: post)
+  observe {
+    count,
   }
 
-  on like-post.ok(tag, cmd) {
-    set like-pending[cmd.post] = none
-    set like-overlay[cmd.post] = none
-  }
-
-  on like-post.err(tag, cmd, refusal) {
-    set like-pending[cmd.post] = none
-    set like-overlay[cmd.post] = none
-    set notice = "Could not like this post."
+  on Increment {
+    count = count + 1;
+    Accepted
   }
 }
 ```
 
-Current value shapes include `bool`, `int`, `text`, `id`, `tag`, optionals, lists, records, and maps. Core has no floats, clock, randomness, environment, network, storage, URL, clipboard, renderer geometry, or unordered iteration.
+The machine is the state-transition authority. Its named sections may include:
 
-## Store statements
+- `config` and `require` for admitted construction parameters;
+- `events` for external inputs;
+- `commands` and typed `port` declarations for output and later delivery;
+- `outcomes`, with explicit `commit` or `abort` publication policy;
+- `state`, `computed`, and `observe`;
+- `invariant` checks; and
+- one `on` reaction per admitted input pattern.
 
-Only these statement forms are current:
+Each reaction executes transactionally. A commit-policy outcome publishes its
+new state and commands. An abort-policy outcome discards the draft and emits no
+commands. Model pending work, optimism, settlement, and rollback as ordinary
+typed state; do not hide them in a renderer or provider.
 
-```text
-set field = expression
-set map[key] = expression
-set map[key] = none
-send command(args)
-send command(args) as tag_binding
-open-surface name(args)
-dismiss
-navigate route(named_args)
-navigate replace route(named_args)
-navigate back
-```
-
-`set` writes only the current scope. Handler execution is transactional. At most one guarded handler for an event runs. Structural statements apply at dispatch end.
-
-`send` emits a typed provider command and creates a pending correlation. An imported command provides `<command>.ok` and `<command>.err` events. Provider updates settle authority truth before the outcome handler clears an optimistic overlay.
-
-Use `as t` when local optimistic state needs the minted command tag as a stable key.
-
-## Navigation and surfaces
-
-Use plain `navigate` for hierarchical push navigation, `navigate replace` for peer/redirect replacement, and `navigate back` to reveal retained previous page state.
+Use ports for typed host capabilities:
 
 ```uhura
-on comments-requested(post: id) {
-  open-surface comments-sheet(post: post)
-}
+use uhura::observation::Observation;
+use uhura::ports::RequestPort;
+use uhura::web_router::{Router, Routes};
 
-on profile-tab-selected(user: id) {
-  navigate replace profile(user: user)
+pub machine Application {
+  port router = Router<Location> {
+    routes: APP_ROUTES,
+  };
+  port authority = Observation<Authority> {};
+  port mutations = RequestPort<RequestId, Mutation, Settlement> {};
+
+  // events, outcomes, state, observation, and reactions
 }
 ```
 
-Only a surface may `dismiss`. Dismissal pops that instance and emits focus restoration intent. Replacing or popping a page force-closes surfaces owned by the removed page.
+Qualified port deliveries such as `mutations.Settled(request, result)` are
+checked inputs. `emit mutations.Request(...)` publishes a typed command. A
+provider is not called inline and cannot synchronously re-enter a reaction.
 
-## Markup
+## Explicit Web UI profile
 
-Use catalog elements and semantic events:
+Core is complete without presentation. A source module activates Web UI only
+with the exact direct import:
 
 ```uhura
-<view class="post-row">
-  <button label="Like" pressed={liked}
-          on:press={emit like-toggled(post: post.id, now-liked: !liked)}>
-    <icon name={if liked then "heart-filled" else "heart"} />
-  </button>
-  <text>{post.caption}</text>
-</view>
+use uhura::ui;
+use crate::starter::Starter;
+
+pub ui StarterWeb for Starter(view) {
+  <main aria-label="Spock starter">
+    <p>Count: {view.count}</p>
+    <button on press -> Increment>
+      Increment
+    </button>
+  </main>
+}
 ```
 
-The catalog, not HTML, defines legal elements, props, slots, and events. Elements represent semantics; the renderer decides concrete controls and pixels.
+`pub ui Name for Machine(view)` is a named pure projection of that machine's
+observation. It does not allocate an instance, own state, access private
+machine fields, or grant browser authority.
 
-Structural forms:
+The 0.4 UI profile is Svelte-shaped where familiarity is useful:
 
 ```uhura
-{#if condition}
-  ...
+{#if view.loading}
+  <p>Loading…</p>
 {:else}
-  ...
+  <ul>
+    {#each view.items as item (item.id)}
+      <li>{item.label}</li>
+    {/each}
+  </ul>
 {/if}
-
-{#each items as item (item.id)}
-  ...
-{/each}
-
-{#match value}
-  {:when variant binding}
-    ...
-{/match}
 ```
 
-Every repeated child needs a stable key. Match closed unions exhaustively. Projection availability uses `loading`, `failed reason`, and `ready value` arms.
+Expressions inside braces are Uhura expressions, not JavaScript. UI bodies
+cannot mutate state, emit commands, run callbacks, access the DOM, or execute
+host code.
 
-Expressions are deliberately small: literals, lexical names, field access, map lookup, option fallback `??`, boolean/comparison operators, integer arithmetic, text concatenation `++`, `if ... then ... else ...`, record literals, and accepted builtins such as `count` and `to-text`. Check the existing corpus before assuming another operation exists.
+Semantic event binding constructs exactly one machine input:
 
-Forward a declared component emit with `on:event-name`; produce a semantic event with `emit event-name(...)`. Do not invent DOM event names unless the catalog declares equivalent semantics.
+```uhura
+<input
+  value={view.query}
+  on input -> SearchChanged(event.value)
+/>
 
-## CSS
+<button on press -> OpenProfile(person.user.id)>
+  Open profile
+</button>
+```
 
-An optional final `<style>` block contains real CSS. Uhura shallow-checks selectors against source structure; declarations pass through to the renderer stylesheet.
+The right side is a checked input constructor, not an eager call and not a
+general function invocation. `event` exists only in the binding expression and
+has the finite payload declared by the selected element contract.
 
-Use CSS for layout, visual treatment, responsive presentation, and theme tokens. Do not use CSS to simulate state, authorization, command settlement, navigation, surface ownership, accessibility semantics, or missing language features.
+Use standard framework vocabulary explicitly. For example, importing
+`uhura::web_router::{Link, Router}` does not install routing or grant browser
+history; the machine declares the `Router` port and `host.toml` binds it to a
+host adapter.
 
-## Source bounds
+## Current presentation bounds
 
-Current implementation bounds include one definition per file, files up to
-256 KiB, nesting up to 32, up to 512 nodes per view, and up to 128 handlers per
-page. Keep authoring substantially below these ceilings.
+- Web is the only presentation target.
+- The checked UI element and widget vocabulary is finite.
+- Reusable UI declaration invocation, slots, and component-local semantic
+  state are not selected in 0.4.
+- A `pub ui` is independently selectable by host admission or evidence.
+- Stylesheets are external files selected by `host.toml`; there is no Uhura
+  `<style>` language block.
+- There is no arbitrary DOM event, JavaScript callback, lifecycle hook, timer,
+  randomness, ambient network, storage, or browser global in source.
+
+Do not emulate missing language features through hidden provider state or
+markup-side effects.

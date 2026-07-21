@@ -22,12 +22,12 @@ const SIDECAR_PROTOCOL: &str = "spock-asset-sidecar/1";
 const HOST_ENVIRONMENT_PROTOCOL: &str = "spock-host-environment/1";
 const PROJECT_STATUS_PROTOCOL: &str = "spock-project-status/1";
 const PROJECT_EVENT_PROTOCOL: &str = "spock-project-event/1";
-const EDITOR_STATE_PROTOCOL: &str = "uhura-editor-state/2";
+const EDITOR_STATE_PROTOCOL: &str = "uhura-editor-state/5";
 const EDITOR_EVENT_PROTOCOL: &str = "uhura-editor-event/0";
-const IR_PROTOCOL: &str = "uhura-ir/0";
-const INSPECT_PROTOCOL: &str = "uhura-inspect/0";
-const VIEW_PROTOCOL: &str = "uhura-view/0";
-const PROVIDER_PROTOCOL: &str = "uhura-provider/0";
+const IR_PROTOCOL: &str = "uhura-ir/1";
+const INSPECT_PROTOCOL: &str = "uhura-inspection/1";
+const VIEW_PROTOCOL: &str = "uhura-view/1";
+const ADAPTER_PROVIDER_PROTOCOL: &str = "uhura-adapter-provider/0";
 const SIDECAR_PROTOCOLS: [(&str, &str); 9] = [
     ("environment", HOST_ENVIRONMENT_PROTOCOL),
     ("project_status", PROJECT_STATUS_PROTOCOL),
@@ -37,7 +37,7 @@ const SIDECAR_PROTOCOLS: [(&str, &str); 9] = [
     ("ir", IR_PROTOCOL),
     ("inspect", INSPECT_PROTOCOL),
     ("view", VIEW_PROTOCOL),
-    ("provider", PROVIDER_PROTOCOL),
+    ("adapter_provider", ADAPTER_PROVIDER_PROTOCOL),
 ];
 const MAX_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
 const REQUIRED_FILES: [&str; 3] = [
@@ -762,12 +762,12 @@ mod tests {
         fixture.manifest["protocols"]
             .as_object_mut()
             .expect("protocol object")
-            .remove("provider");
+            .remove("adapter_provider");
         fixture.write_manifest();
         let error = validate_packaged_sidecar(&fixture.root, &fixture.roots)
             .expect_err("missing protocol must fail closed");
         assert!(
-            error.contains("required protocol provider is missing"),
+            error.contains("required protocol adapter_provider is missing"),
             "{error}"
         );
 
@@ -1024,7 +1024,7 @@ mod tests {
                     "ir": IR_PROTOCOL,
                     "inspect": INSPECT_PROTOCOL,
                     "view": VIEW_PROTOCOL,
-                    "provider": PROVIDER_PROTOCOL
+                    "adapter_provider": ADAPTER_PROVIDER_PROTOCOL
                 },
                 "files": files,
             });

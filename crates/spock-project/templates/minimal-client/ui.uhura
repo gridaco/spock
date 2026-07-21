@@ -1,0 +1,13 @@
+use uhura::ui;
+use crate::starter::Starter;
+
+pub ui StarterWeb for Starter(view) {
+  <main aria-label="Spock starter">
+    <p>SPOCK + UHURA</p>
+    <h1>Your app is running.</h1>
+    <p>Count: {view.count}</p>
+    <button on press -> Increment>
+      Increment
+    </button>
+  </main>
+}

@@ -459,11 +459,10 @@ mod tests {
         }
 
         for valid in [
-            "app/home/page.examples.uhura",
-            "app/home/page.uhura",
-            "catalog/base.toml",
-            "fixtures/empty.toml",
-            "fixtures/scripts/empty.toml",
+            "evidence.uhura",
+            "host.toml",
+            "machine.uhura",
+            "ui.uhura",
             "uhura.toml",
         ] {
             assert_eq!(NormalizedRelativePath::file(valid).unwrap().as_str(), valid);

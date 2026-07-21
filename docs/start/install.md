@@ -25,7 +25,7 @@ Play — and every command runs offline once the package is on disk.
 `npx` runs Spock without installing anything globally:
 
 ```sh
-npx spock new demo
+npx spock new demo --backend-only
 cd demo
 npx spock dev
 ```
@@ -68,6 +68,12 @@ with a `spock.toml` manifest — so a framework project requires `0.5.0` or
 later. The experimental error-declaration preview requires `0.5.2` or later;
 [project status](../status.md) records the standing of every surface. The
 [changelog](../../CHANGELOG.md) records each cut.
+
+Published `spock@0.5.3` still embeds the retired Uhura frontend. Current source
+has moved the client to strict Uhura 0.4, but that checker/runtime/asset set has
+not shipped in npm yet. Use `--backend-only` for a version-stable 0.5.3
+quickstart, or use the repository source build for a current 0.4 full-stack
+project. A 0.4 client must not be paired with the 0.5.3 sidecar.
 
 ## Building from source
 

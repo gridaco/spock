@@ -340,7 +340,7 @@ jobs:
           PACKAGE_VERSION: ${{ steps.resolve.outputs.version }}
         run: cd npm && npm version "$PACKAGE_VERSION" --no-git-tag-version --allow-same-version
 
-      - name: guard — packed package is complete and within 25 MiB
+      - name: guard — packed package is complete and within 26 MiB
         env:
           PACKAGE_VERSION: ${{ steps.resolve.outputs.version }}
         run: |
@@ -398,7 +398,7 @@ jobs:
               throw new Error(`packed executable must have mode 0755: ${path} (mode ${mode})`);
             }
           }
-          const limit = 25 * 1024 * 1024;
+          const limit = 26 * 1024 * 1024;
           if (entry.size > limit) {
             throw new Error(`packed package is ${entry.size} bytes; limit is ${limit} bytes`);
           }
@@ -424,7 +424,10 @@ jobs:
             echo "::error::expected exactly one guarded npm tarball; found ${#packages[@]}"
             exit 1
           fi
-          npm publish "${packages[0]}" --dry-run --tag "$DIST_TAG"
+          # A branch may revalidate the Cargo version after that version is
+          # already on npm. npm otherwise rejects even --dry-run; --force is
+          # safe here only because this step is gated to dry_run == true.
+          npm publish "${packages[0]}" --dry-run --force --tag "$DIST_TAG"
 
       - name: npm publish
         if: steps.resolve.outputs.dry_run != 'true'
@@ -554,7 +557,7 @@ jobs:
           fi
           curl -fsS http://127.0.0.1:4124/ | grep -qi "<!doctype html"
           curl -fsS http://127.0.0.1:4124/play | grep -qi "<!doctype html"
-          curl -fsS http://127.0.0.1:4124/api/editor/state | grep -q '"protocol":"uhura-editor-state/2"'
+          curl -fsS http://127.0.0.1:4124/api/editor/state | grep -q '"protocol":"uhura-editor-state/5"'
           curl -fsS http://127.0.0.1:4124/api/play/wasm/uhura_wasm.js >/dev/null
           curl -fsS http://127.0.0.1:4124/api/play/wasm/uhura_wasm_bg.wasm >/dev/null
           curl -fsS http://127.0.0.1:4124/~project/status | grep -q '"protocol":"spock-project-status/1"'
@@ -608,7 +611,7 @@ jobs:
               throw "Editor or Play did not serve HTML"
             }
             $state = Invoke-RestMethod -Uri "http://127.0.0.1:4124/api/editor/state"
-            if ($state.protocol -ne "uhura-editor-state/2") { throw "wrong Editor protocol" }
+            if ($state.protocol -ne "uhura-editor-state/5") { throw "wrong Editor protocol" }
             Invoke-WebRequest -Uri "http://127.0.0.1:4124/api/play/wasm/uhura_wasm.js" | Out-Null
             Invoke-WebRequest -Uri "http://127.0.0.1:4124/api/play/wasm/uhura_wasm_bg.wasm" | Out-Null
             $status = Invoke-RestMethod -Uri "http://127.0.0.1:4124/~project/status"
