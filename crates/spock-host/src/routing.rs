@@ -8,6 +8,8 @@ pub enum RouteOwner {
     NotFound,
 }
 
+const RESERVED_PROTOCOL_MOUNTS: [&str; 4] = ["/api", "/graphql", "/rest", "/storage"];
+
 /// Classify one URI path into the combined host's non-overlapping route map.
 ///
 /// Query strings are transport metadata and must be removed by the caller.
@@ -116,10 +118,19 @@ fn client_path(path: &str) -> bool {
 }
 
 fn reserved_protocol_path(path: &str) -> bool {
-    path.starts_with("/~")
-        || ["/api", "/graphql", "/rest", "/storage"]
-            .iter()
-            .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
+    reserved_protocol_namespace(path).is_some()
+}
+
+fn reserved_protocol_namespace(path: &str) -> Option<&'static str> {
+    if path.starts_with("/~") {
+        return Some("/~*");
+    }
+    RESERVED_PROTOCOL_MOUNTS.into_iter().find(|prefix| {
+        path == *prefix
+            || path
+                .strip_prefix(*prefix)
+                .is_some_and(|suffix| suffix.starts_with('/'))
+    })
 }
 
 #[cfg(test)]

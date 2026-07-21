@@ -5,6 +5,7 @@ use uhura_host::{
     WebAssets,
 };
 
+use crate::client_route_admission::apply_checked_client_route_admission;
 use crate::{Fingerprint, ObservedRevision};
 
 /// Content identity of the exact Uhura snapshot consumed by a client build.
@@ -38,7 +39,8 @@ impl PreparedClient {
         source_revision: u64,
     ) -> Self {
         let source_fingerprint = client_source_fingerprint(snapshot);
-        let candidate = build_candidate(snapshot, source_revision);
+        let mut candidate = build_candidate(snapshot, source_revision);
+        apply_checked_client_route_admission(&mut candidate);
         let summary = candidate.summary();
         Self {
             observed_revision,
@@ -320,6 +322,61 @@ mod tests {
         )
     }
 
+    fn colliding_route_snapshot() -> (TempDirectory, ProjectSourceSnapshot) {
+        let root = TempDirectory::new("colliding-route");
+        fs::write(
+            root.as_ref().join("uhura.toml"),
+            r#"[project]
+name = "test.spock-collision"
+version = 1
+language = "0.4"
+
+[modules]
+app = "app.uhura"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.as_ref().join("app.uhura"),
+            r#"use uhura::web_router::{Router, Routes};
+
+pub enum Location {
+  Graph,
+}
+
+pub const ROUTES: Routes<Location> = Routes::from([
+  ("Graph", "/graphql/v2"),
+]);
+
+pub machine App {
+  port router = Router<Location> { routes: ROUTES };
+
+  outcomes {
+    commit Accepted,
+  }
+
+  on router.Changed(location) {
+    Accepted
+  }
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.as_ref().join("host.toml"),
+            r#"[entry.app]
+machine = "crate::App"
+lifetime = "application-session"
+
+[entry.app.ports]
+router = "web.history"
+"#,
+        )
+        .unwrap();
+        let snapshot = capture_project_snapshot(root.as_ref());
+        (root, snapshot)
+    }
+
     fn response_json(response: RouteResponse) -> serde_json::Value {
         assert_eq!(response.status, 200);
         let RouteBody::Bytes(mut body) = response.body else {
@@ -394,7 +451,7 @@ mod tests {
             method: RequestMethod::Get,
             url: "/api/editor/state",
         }));
-        assert_eq!(editor["protocol"], "uhura-editor-state/4");
+        assert_eq!(editor["protocol"], "uhura-editor-state/5");
         assert_eq!(
             editor["render"]["previews"].as_array().map(Vec::len),
             Some(12)
@@ -422,7 +479,7 @@ mod tests {
             method: RequestMethod::Get,
             url: "/api/play/inspect.json",
         }));
-        assert_eq!(inspection["protocol"], "uhura-inspection/0");
+        assert_eq!(inspection["protocol"], "uhura-inspection/1");
 
         let application = host.route(RouteRequest {
             method: RequestMethod::Get,
@@ -494,5 +551,81 @@ mod tests {
         });
         assert_eq!(response.status, 200);
         assert!(matches!(response.body, RouteBody::Bytes(_)));
+    }
+
+    #[test]
+    fn initial_dev_route_collision_publishes_editor_without_play() {
+        let (_web_root, web) = web_assets();
+        let (_project_root, collision) = colliding_route_snapshot();
+        let revision = coordinator().observed_revision();
+        let (host, publication) = ClientHost::activate(web, &collision, revision).unwrap();
+
+        assert!(publication.report.editor_current);
+        assert!(!publication.report.play_ok);
+        assert!(!publication.report.has_good_play);
+        assert!(publication.active.is_none());
+        let editor = response_json(host.route(RouteRequest {
+            method: RequestMethod::Get,
+            url: "/api/editor/state",
+        }));
+        assert!(editor["diagnostics"]["diagnostics"]
+            .as_array()
+            .is_some_and(|diagnostics| diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic["rule"] == "spock/reserved-client-route" })));
+        assert_eq!(
+            host.route(RouteRequest {
+                method: RequestMethod::Get,
+                url: "/api/play/ir.json",
+            })
+            .status,
+            503
+        );
+    }
+
+    #[test]
+    fn route_collision_update_advances_editor_and_retains_last_good_play() {
+        let (_web_root, web) = web_assets();
+        let valid = canonical_uhura_snapshot();
+        let mut coordinator = coordinator();
+        let (mut host, initial) =
+            ClientHost::activate(web, &valid, coordinator.observed_revision()).unwrap();
+        let active = initial.active.expect("valid example has Play artifacts");
+        let (_project_root, collision) = colliding_route_snapshot();
+        coordinator.observe(Observation {
+            topology: Fingerprint::new("topology-a"),
+            backend: Fingerprint::new("backend-a"),
+            client: Some(client_source_fingerprint(&collision)),
+            changed_backend_inputs: Vec::new(),
+            backend_diagnostics: Vec::new(),
+        });
+        let revision = coordinator.observed_revision();
+        let candidate = host.prepare(&collision, revision);
+        assert!(candidate.summary().editor_current);
+        assert!(!candidate.summary().play_ok);
+
+        let publication = host.publish(candidate, revision).unwrap();
+        assert!(publication.report.editor_current);
+        assert!(!publication.report.play_ok);
+        assert!(publication.report.has_good_play);
+        assert_eq!(publication.active.as_ref(), Some(&active));
+        let editor = response_json(host.route(RouteRequest {
+            method: RequestMethod::Get,
+            url: "/api/editor/state",
+        }));
+        assert_eq!(editor["sourceRevision"], 2);
+        assert!(editor["diagnostics"]["diagnostics"]
+            .as_array()
+            .is_some_and(|diagnostics| diagnostics
+                .iter()
+                .any(|diagnostic| { diagnostic["rule"] == "spock/reserved-client-route" })));
+        assert_eq!(
+            host.route(RouteRequest {
+                method: RequestMethod::Get,
+                url: "/api/play/ir.json",
+            })
+            .status,
+            200
+        );
     }
 }

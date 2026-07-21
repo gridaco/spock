@@ -9,6 +9,9 @@ use spock_project::ProjectLayout;
 use spock_runtime::generation::{BackendGeneration, BackendGenerationError};
 use uhura_host::{build_candidate, capture_project_snapshot, ProjectSourceSnapshot};
 
+use crate::client_route_admission::{
+    apply_checked_client_route_admission, checked_client_route_collisions, ClientRouteCollision,
+};
 use crate::{
     client_source_fingerprint, load_uhura_assets, observe_backend, AssetError, BackendDiagnostics,
     BackendObservation, ClientHost, ClientHostError, Fingerprint, FrameworkSession,
@@ -208,11 +211,18 @@ pub fn check_project(layout: &ProjectLayout) -> Result<ProjectCheckReport, Proje
                 collect_uhura_diagnostics(diagnostics.editor, &mut failures, &mut warnings);
                 collect_uhura_diagnostics(diagnostics.play, &mut failures, &mut warnings);
                 if summary.editor_current && summary.play_ok {
-                    Some(ClientCheckSummary {
-                        source_id: candidate.source_id(),
-                        preview_count: summary.preview_count.unwrap_or(0),
-                        replay_derived_count: summary.replay_derived_count.unwrap_or(0),
-                    })
+                    let collisions =
+                        checked_client_route_collisions(candidate.checked_route_patterns());
+                    if collisions.is_empty() {
+                        Some(ClientCheckSummary {
+                            source_id: candidate.source_id(),
+                            preview_count: summary.preview_count.unwrap_or(0),
+                            replay_derived_count: summary.replay_derived_count.unwrap_or(0),
+                        })
+                    } else {
+                        collect_spock_route_collisions(collisions, &mut failures);
+                        None
+                    }
                 } else {
                     if !failures
                         .diagnostics
@@ -308,6 +318,25 @@ fn collect_uhura_diagnostics(
     }
 }
 
+fn collect_spock_route_collisions(
+    collisions: Vec<ClientRouteCollision>,
+    failures: &mut ProjectCheckFailure,
+) {
+    failures
+        .diagnostics
+        .extend(collisions.into_iter().map(|collision| {
+            let message = collision.message();
+            ProjectCheckDiagnostic {
+                component: ProjectComponent::Client,
+                code: Some(collision.code().to_string()),
+                rule: Some(collision.rule().to_string()),
+                file: None,
+                span: None,
+                message,
+            }
+        }));
+}
+
 fn parse_diagnostic_span(value: &Value) -> Option<ProjectDiagnosticSpan> {
     Some(ProjectDiagnosticSpan {
         offset: value.get("offset")?.as_u64()?,
@@ -381,7 +410,8 @@ pub(crate) fn prepare_project(
     let (initial_client, client_diagnostics, web) = if let Some(client_layout) = &layout.client {
         let snapshot = capture_stable_client(client_layout.root.absolute())
             .map_err(HostError::ClientCapture)?;
-        let candidate = build_candidate(&snapshot, 1);
+        let mut candidate = build_candidate(&snapshot, 1);
+        apply_checked_client_route_admission(&mut candidate);
         let summary = candidate.summary();
         let diagnostic_messages = candidate_diagnostic_messages(&candidate);
         let diagnostic_text = candidate_diagnostic_text(&candidate);
@@ -633,6 +663,119 @@ mod tests {
         load_project_from(root).unwrap()
     }
 
+    fn dummy_uhura_assets(root: &Path) -> UhuraAssetRoots {
+        let web = root.join("web");
+        let wasm = root.join("wasm");
+        fs::create_dir_all(web.join("assets")).unwrap();
+        fs::create_dir_all(&wasm).unwrap();
+        fs::write(
+            web.join("index.html"),
+            r#"<!doctype html><script type="module" src="/assets/app.js"></script>"#,
+        )
+        .unwrap();
+        fs::write(web.join("assets/app.js"), "export {};\n").unwrap();
+        fs::write(wasm.join("uhura_wasm.js"), "export {};\n").unwrap();
+        fs::write(wasm.join("uhura_wasm_bg.wasm"), b"wasm").unwrap();
+        UhuraAssetRoots { web, wasm }
+    }
+
+    fn write_client_routes(root: &Path, patterns: &[(&str, &str)]) {
+        let variants = patterns
+            .iter()
+            .map(|(constructor, _)| format!("  {constructor},"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let entries = patterns
+            .iter()
+            .map(|(constructor, pattern)| format!("  (\"{constructor}\", \"{pattern}\"),"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(
+            root.join("client/machine.uhura"),
+            format!(
+                r#"use uhura::web_router::{{Router, Routes as WebRoutes}};
+
+pub enum Location {{
+{variants}
+}}
+
+pub const ROUTES: WebRoutes<Location> = WebRoutes::from([
+{entries}
+]);
+
+pub machine Starter {{
+  port router = Router<Location> {{ routes: ROUTES }};
+
+  events {{
+    Increment,
+  }}
+
+  outcomes {{
+    commit Accepted,
+  }}
+
+  state {{
+    count: Nat = 0,
+  }}
+
+  observe {{
+    count,
+  }}
+
+  on Increment {{
+    count = count + 1;
+    Accepted
+  }}
+
+  on router.Changed(location) {{
+    Accepted
+  }}
+}}
+"#
+            ),
+        )
+        .unwrap();
+        fs::write(
+            root.join("client/host.toml"),
+            r#"[entry.starter]
+machine = "crate::Starter"
+presentation = "crate::StarterWeb"
+lifetime = "application-session"
+
+[entry.starter.ports]
+router = "web.history"
+"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("client/evidence.uhura"),
+            r#"use crate::starter::{ROUTES, Starter};
+use crate::ui::StarterWeb;
+use uhura::web_router::Router;
+
+scenario walkthrough for Starter {
+  bind router = Router.fixture(ROUTES)
+
+  start
+  pin welcome
+
+  send Increment
+  expect Accepted commands []
+  pin incremented
+}
+
+example welcome
+  for StarterWeb as page default
+  = walkthrough::welcome;
+
+example incremented
+  for StarterWeb as page
+  = walkthrough::incremented;
+"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn project_check_accepts_backend_only_and_empty_full_stack_projects() {
         let backend = tempdir().unwrap();
@@ -685,6 +828,115 @@ mod tests {
         let rendered = located.to_string();
         assert!(rendered.contains(":"), "{rendered}");
         assert!(rendered.contains('['), "{rendered}");
+    }
+
+    #[test]
+    fn project_check_rejects_every_spock_owned_client_route_namespace() {
+        for (constructor, pattern, namespace) in [
+            ("Api", "/api", "/api"),
+            ("Meta", "/graphql", "/graphql"),
+            ("Graph", "/graphql/v2/query", "/graphql"),
+            ("Rest", "/rest/v2/items", "/rest"),
+            ("Storage", "/storage/v2/object", "/storage"),
+        ] {
+            let temp = tempdir().unwrap();
+            let layout = write_project(temp.path(), "", true);
+            write_client_routes(temp.path(), &[(constructor, pattern)]);
+
+            let failure = check_project(&layout).unwrap_err();
+            let diagnostic = failure
+                .diagnostics()
+                .iter()
+                .find(|diagnostic| {
+                    diagnostic.rule.as_deref() == Some("spock/reserved-client-route")
+                })
+                .unwrap_or_else(|| panic!("{pattern} diagnostics: {:#?}", failure.diagnostics()));
+            assert_eq!(diagnostic.component, ProjectComponent::Client);
+            assert_eq!(diagnostic.code.as_deref(), Some("SPK1001"));
+            assert_eq!(diagnostic.file, None);
+            assert_eq!(diagnostic.span, None);
+            assert!(diagnostic.message.contains("spock.starter@1::ROUTES"));
+            assert!(diagnostic.message.contains(constructor));
+            assert!(diagnostic.message.contains(pattern));
+            assert!(diagnostic.message.contains(namespace));
+        }
+    }
+
+    #[test]
+    fn project_check_keeps_similarly_prefixed_application_routes() {
+        let temp = tempdir().unwrap();
+        let layout = write_project(temp.path(), "", true);
+        write_client_routes(
+            temp.path(),
+            &[
+                ("Graphical", "/graphical"),
+                ("Restroom", "/restroom"),
+                ("StorageUnit", "/storage-unit"),
+            ],
+        );
+
+        let report = check_project(&layout).unwrap();
+        assert!(report.client.is_some());
+    }
+
+    #[test]
+    fn start_preparation_rejects_route_collisions_before_loading_web_assets() {
+        let temp = tempdir().unwrap();
+        let layout = write_project(temp.path(), "", true);
+        write_client_routes(temp.path(), &[("Graph", "/graphql/v1")]);
+
+        let error = match prepare_project(layout, HostMode::Start, None, None) {
+            Ok(_) => panic!("route collision must fail start preparation"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, HostError::ClientInvalid(_)), "{error:?}");
+        assert!(error.to_string().contains("spock/reserved-client-route"));
+        assert!(error.to_string().contains("/graphql/v1"));
+    }
+
+    #[test]
+    fn dev_preparation_publishes_colliding_editor_without_play() {
+        let temp = tempdir().unwrap();
+        let assets = tempdir().unwrap();
+        let layout = write_project(temp.path(), "", true);
+        write_client_routes(temp.path(), &[("Graph", "/graphql/v1")]);
+
+        let prepared = prepare_project(
+            layout,
+            HostMode::Dev,
+            None,
+            Some(dummy_uhura_assets(assets.path())),
+        )
+        .unwrap();
+        let status = prepared.session.status();
+        assert!(status.client.active.is_none());
+        assert_eq!(
+            status.client.latest_attempt.unwrap().state,
+            crate::ClientAttemptState::Rejected
+        );
+        let publication_state = prepared.session.publication();
+        let publication = publication_state.read().unwrap();
+        let client = publication.client.as_ref().unwrap();
+        assert!(client.latest_publication().report.editor_current);
+        assert!(!client.latest_publication().report.play_ok);
+        assert_eq!(
+            client
+                .route(uhura_host::RouteRequest {
+                    method: uhura_host::RequestMethod::Get,
+                    url: "/api/editor/state",
+                })
+                .status,
+            200
+        );
+        assert_eq!(
+            client
+                .route(uhura_host::RouteRequest {
+                    method: uhura_host::RequestMethod::Get,
+                    url: "/api/play/ir.json",
+                })
+                .status,
+            503
+        );
     }
 
     #[test]
