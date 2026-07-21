@@ -14,6 +14,19 @@ never collide with one, and future surfaces (an `/auth/v1`, say) claim mounts
 the same way. The one exception worth knowing: the `rpc` path segment under
 `/rest/v1` is protocol-owned too, so a table named `rpc` fails startup.
 
+In a framework project, this ownership is also a client-admission rule.
+Spock asks Uhura whether routes selected by the deployed machine's
+`web.history` port overlap `/~*`, `/api`, `/graphql`, `/rest`, or `/storage`
+and their descendants. It consumes Uhura's checked path semantics; it does not
+parse source route strings. The composition check runs for `spock check`,
+before `spock start` binds or loads browser assets, and for client generations
+observed by `spock dev`. A rejected development edit still publishes the
+current Editor graph and diagnostic while Play keeps serving the last good
+client generation. Uhura remains framework-agnostic: these namespaces are
+reserved by the Spock host, not by the Uhura language. Similar ordinary names
+such as `/graphical`, `/restroom`, and `/storage-unit` remain application
+routes.
+
 The examples on this page assume this program, served with
 `spock run api.spock`:
 

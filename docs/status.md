@@ -14,8 +14,10 @@ contract: the compiled contract shape and the derived error vocabulary are
 frozen additively for v0.x, while source syntax may still change between minor
 versions.
 
-That is the whole disclaimer. Every other page on this site describes shipped
-behavior in plain terms and points here instead of hedging inline.
+That is the whole disclaimer. Every page distinguishes shipped behavior from
+any explicitly labeled current-source integration that is waiting for a
+release; pages otherwise describe shipped behavior in plain terms and point
+here instead of hedging inline.
 
 ## Legend
 
@@ -72,7 +74,7 @@ behavior in plain terms and points here instead of hedging inline.
 | `spock new` / `init` / `check` / `start` / `dev` | Stable |
 | `spock dev` client live reload (last-known-good) | Stable |
 | `spock dev` backend reload (currently `restart_required`) | In progress |
-| Uhura client language | Experimental — incubating, see [Uhura](uhura.md) |
+| Uhura client language | Experimental — strict 0.4 is integrated in current source but not yet shipped in npm; published 0.5.3 embeds the retired frontend. See [Uhura](uhura.md) |
 
 ## Distribution
 

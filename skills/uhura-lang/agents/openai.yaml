@@ -1,4 +1,4 @@
 interface:
   display_name: "Uhura Language"
-  short_description: "Build Uhura clients with npm Spock"
-  default_prompt: "Use $uhura-lang to create or modify this Uhura client with the npm-distributed Spock CLI, then verify Editor, Play, and authority behavior."
+  short_description: "Build strict Uhura 0.4 programs with Spock"
+  default_prompt: "Use $uhura-lang to create or modify this strict Uhura 0.4 program with the npm-distributed Spock CLI, stop on an incompatible legacy distribution, and verify Editor, Play, and authority behavior."

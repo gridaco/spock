@@ -138,6 +138,13 @@ Projects add optional seed assets and richer Uhura directories such as
 components, surfaces, ports, providers, and styles only when the application
 needs them. The initial starter does not invent empty structure or a lockfile.
 
+> **Implementation evolution.** This tree records the client model selected
+> when RFD 0022 was accepted. Current source has since moved the incubating Uhura
+> client to strict 0.4 machine, UI, evidence, and host modules. The generated
+> topology documented by the current [quickstart](../start/quickstart.md) and
+> [Uhura integration guide](../uhura.md) is authoritative for the toolchain;
+> this retained tree is design history, not current scaffolding syntax.
+
 `app.spock` is the conventional backend name, not `main.spock`:
 
 - it already appears in examples, command tests, and the composition proof;

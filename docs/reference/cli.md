@@ -18,6 +18,12 @@ you name.
 makes the bare `spock` command available. Platform requirements and the
 distribution model live on the [install page](../start/install.md).
 
+The version transcript below is the current published package. Its framework
+commands are available, but its embedded Uhura frontend predates strict 0.4.
+Sections that show the machine/UI/evidence scaffold describe current source
+until a compatible npm release ships; use `--backend-only` with 0.5.3 rather
+than mixing that sidecar with a 0.4 client.
+
 ```sh
 $ spock --version
 spock 0.5.3

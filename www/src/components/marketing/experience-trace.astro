@@ -46,26 +46,50 @@
 
   <div class="trace-code">
     <div class="trace-code-head">
-      <span>app/feed/page.uhura</span>
-      <span>interaction</span>
+      <span>client/machine.uhura</span>
+      <span>Uhura 0.4</span>
     </div>
-    <pre aria-label="Uhura optimistic interaction source"><code><span data-trace-line="settled pending">on like-toggled(post: id)</span>
-<span data-trace-line="pending">  when !(like-pending[post] ?? false) &#123;</span>
-<span data-trace-line="pending">  set like-overlay[post] = true</span>
-<span data-trace-line="pending">  set like-pending[post] = true</span>
-<span data-trace-line="pending">  send like-post(post: post)</span>
+    <pre aria-label="Uhura optimistic interaction source excerpt"><code><span data-trace-line="settled pending">on ToggleLike(post, liked) &#123;</span>
+<span data-trace-line="pending">  if like_pending.contains(post) &#123;</span>
+<span data-trace-line="pending">    return Duplicate;</span>
+<span data-trace-line="pending">  &#125;</span>
+<span data-trace-line="pending">  let serial: PositiveInt = next_request + 1;</span>
+<span data-trace-line="pending">  let request = RequestId(serial);</span>
+<span data-trace-line="pending">  next_request = serial;</span>
+<span data-trace-line="pending">  like_overlay = like_overlay.put(post, liked);</span>
+<span data-trace-line="pending">  like_pending = like_pending.add(post);</span>
+<span data-trace-line="pending">  pending = pending.put(request, Mutation::SetLike &#123;</span>
+<span data-trace-line="pending">    post, liked,</span>
+<span data-trace-line="pending">  &#125;);</span>
+<span data-trace-line="pending">  emit mutations.Request(request, Mutation::SetLike &#123;</span>
+<span data-trace-line="pending">    post, liked,</span>
+<span data-trace-line="pending">  &#125;);</span>
+<span data-trace-line="pending">  Accepted</span>
 <span data-trace-line="pending">&#125;</span>
 
-<span data-trace-line="accepted">on like-post.ok(tag, cmd) &#123;</span>
-<span data-trace-line="accepted">  set like-pending[cmd.post] = none</span>
-<span data-trace-line="accepted">  set like-overlay[cmd.post] = none</span>
-<span data-trace-line="accepted">&#125;</span>
-
-<span data-trace-line="refused">on like-post.err(tag, cmd, refusal) &#123;</span>
-<span data-trace-line="refused">  set like-pending[cmd.post] = none</span>
-<span data-trace-line="refused">  set like-overlay[cmd.post] = none</span>
-<span data-trace-line="refused">  set notice = "Couldn't like this post."</span>
-<span data-trace-line="refused">&#125;</span></code></pre>
+<span data-trace-line="accepted refused">on mutations.Settled(request, result) &#123;</span>
+<span data-trace-line="accepted refused">  let mutation = match pending.get(request) &#123;</span>
+<span data-trace-line="accepted refused">    None => return Stale,</span>
+<span data-trace-line="accepted refused">    Some(mutation) => mutation,</span>
+<span data-trace-line="accepted refused">  &#125;;</span>
+<span data-trace-line="accepted refused">  pending = pending.remove(request);</span>
+<span data-trace-line="accepted refused">  match mutation &#123;</span>
+<span data-trace-line="accepted refused">    Mutation::SetLike &#123; post, liked: _ &#125; => &#123;</span>
+<span data-trace-line="accepted refused">      like_pending = like_pending.remove(post);</span>
+<span data-trace-line="accepted refused">      match result &#123;</span>
+<span data-trace-line="accepted">        Settlement::Accepted => &#123;&#125;,</span>
+<span data-trace-line="refused">        Settlement::Refused &#123; .. &#125; => &#123;</span>
+<span data-trace-line="refused">          like_overlay = like_overlay.remove(post);</span>
+<span data-trace-line="refused">          notice.updates.show("Couldn't update this like. Try again.");</span>
+<span data-trace-line="refused">        &#125;,</span>
+<span data-trace-line="accepted refused">        _ => return Invalid("unexpected settlement"),</span>
+<span data-trace-line="accepted refused">      &#125;</span>
+<span data-trace-line="accepted refused">    &#125;,</span>
+<span data-trace-line="accepted refused">    // Other mutation arms are omitted from this excerpt.</span>
+<span data-trace-line="accepted refused">    _ => &#123;&#125;,</span>
+<span data-trace-line="accepted refused">  &#125;</span>
+<span data-trace-line="accepted refused">  Accepted</span>
+<span data-trace-line="accepted refused">&#125;</span></code></pre>
   </div>
 </div>
 
@@ -85,7 +109,7 @@
     },
     accepted: {
       status: 'accepted',
-      copy: 'The authority accepts the action, so the temporary UI state can clear.',
+      copy: 'The authority accepts the action, so the optimistic state remains effective.',
       count: '8',
       liked: true,
     },
