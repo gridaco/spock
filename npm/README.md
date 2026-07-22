@@ -8,9 +8,6 @@ language materializes the backend from tables, functions, and rules; Uhura
 defines the client experience; one command checks and serves both on one
 origin.
 
-`0.5.0` is the first framework-capable npm release. Releases through `0.4.0`
-expose only the standalone `.spock` language commands.
-
 ## Install
 
 ```sh
@@ -40,7 +37,7 @@ spock start                      # fixed combined generation
 spock init [PATH]                # adopt existing sources without moving them
 spock new api --backend-only     # omit the optional Uhura client
 
-# language-level escape hatches remain
+# language-level commands
 spock check backend/app.spock    # parse + check one program
 spock run backend/app.spock      # materialize + serve (GraphQL, REST, /~studio)
 spock gen types backend/app.spock        # emit TypeScript types
