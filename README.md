@@ -31,19 +31,20 @@ other musl-based Linux distributions are not supported yet. Framework commands
 begin with `0.5.0`; registry releases through `0.4.0` expose only the standalone
 language commands.
 
-Published `0.5.x` supports framework projects. The shortest version-stable
-start is backend-only:
+Published `0.5.x` supports framework projects. `spock@0.5.4` is the first npm
+release with the strict Uhura 0.4 checker, runtime, Editor, Play, and explicit
+`web-app@1` application profile packaged together. A full-stack start needs no
+source checkout:
 
 ```sh
-npx spock new demo --backend-only
+npx spock@0.5.4 new demo
 cd demo
-npx spock dev
+npx spock@0.5.4 dev
 ```
 
-Published `spock@0.5.3` embeds the retired Uhura frontend. The strict Uhura 0.4
-client documented below is integrated in current source and requires the
-[source build](#uhura-the-client-language) until a compatible npm release
-ships. Do not mix a 0.4 client with the 0.5.3 sidecar.
+Framework releases `spock@0.5.0` through `0.5.3` embed the retired Uhura
+frontend and cannot run a strict 0.4 client. Use `0.5.4` or later for the
+client documented below.
 
 Standalone programs keep the same entry points:
 
@@ -56,17 +57,14 @@ npm i -g spock
 ```
 
 ```sh
-# published 0.5.3: backend-only
-spock new api --backend-only
-spock check api
-spock dev api
+# installed 0.5.4: strict Uhura 0.4 full stack
+npm i -g spock@0.5.4
+spock new demo
+spock check demo
+spock dev demo
 
-# current checkout: strict Uhura 0.4 full stack, after the asset build below
-cargo run --locked -p spock-cli -- new demo
-cargo run --locked -p spock-cli -- check demo
-SPOCK_UHURA_WEB_DIST="$PWD/uhura/web/dist" \
-SPOCK_UHURA_WASM_DIST="$PWD/uhura/crates/uhura-wasm/pkg/web" \
-cargo run --locked -p spock-cli -- dev demo
+# omit the client only when the project is intentionally backend-only
+spock new api --backend-only
 
 # standalone language escape hatches stay available
 spock check app.spock            # parse + fully load-check one program
@@ -111,28 +109,28 @@ authority is not designed yet should keep that file empty; the client, health,
 status, contract metadata, Editor, and Play can still run.
 
 The repository's canonical full-stack example uses this exact shape at
-[`uhura/examples/instagram`](https://github.com/gridaco/uhura/tree/main/examples/instagram). Build its app-owned
-provider and the source-only Editor/Play assets once, then the current Spock
-source checks and serves the authority and strict Uhura 0.4 client:
+[`uhura/examples/instagram`](https://github.com/gridaco/uhura/tree/main/examples/instagram).
+The installed `0.5.4` package supplies the matching Editor, Play, and Wasm
+assets. The example's application-owned TypeScript provider remains source, so
+build that provider once before serving the checkout:
 
 ```sh
 git submodule update --init --recursive
-corepack pnpm@10.11.0 -C crates/spock-runtime/studio install --frozen-lockfile
-corepack pnpm@10.11.0 -C crates/spock-runtime/studio build
 corepack pnpm@10.11.0 -C uhura/web install --frozen-lockfile
-corepack pnpm@10.11.0 -C uhura/web build
-bash uhura/scripts/build-wasm.sh
+corepack pnpm@10.11.0 -C uhura/web build:provider
 
-SPOCK_UHURA_WEB_DIST="$PWD/uhura/web/dist" \
-SPOCK_UHURA_WASM_DIST="$PWD/uhura/crates/uhura-wasm/pkg/web" \
-cargo run --locked -p spock-cli -- start uhura/examples/instagram
+npm i -g spock@0.5.4
+spock check uhura/examples/instagram
+spock start uhura/examples/instagram
 ```
 
-Published `spock@0.5.3` and earlier accept the backend's experimental RFD 0024
-`error` declarations but embed the retired Uhura frontend, so they cannot run
-this strict 0.4 checkout. The next compatible npm release must package this
-same checked runtime and asset generation. The project remains independently
-checkable as a Spock backend and an Uhura client.
+Published `spock@0.5.2` and `0.5.3` accept the backend's experimental RFD 0024
+`error` declarations. Framework releases `0.5.0` through `0.5.3` embed the
+retired Uhura frontend, so they cannot run this strict 0.4 checkout;
+releases through `0.4.0` are standalone-only. `spock@0.5.4` packages the
+checked language/runtime and the `web-app@1` topology used by the example.
+Building the example's custom provider is still an application build, not a
+toolchain build.
 
 `spock dev` deliberately has asymmetric reload semantics today. Valid Uhura
 client saves publish live. Invalid saves retain the last good Play generation
@@ -805,6 +803,18 @@ SPOCK_UHURA_WEB_DIST="$PWD/uhura/web/dist" \
 SPOCK_UHURA_WASM_DIST="$PWD/uhura/crates/uhura-wasm/pkg/web" \
 cargo run --locked -p spock-cli -- dev uhura/examples/instagram
 ```
+
+After those local Uhura artifacts exist, the root `justfile` provides the
+short source-checkout form:
+
+```sh
+just check uhura/examples/instagram
+just start uhura/examples/instagram
+just dev uhura/examples/instagram
+```
+
+`just spock <COMMAND> ...` is the generic passthrough for every other local
+CLI invocation.
 
 `build-wasm.sh` reports the lockfile-exact `wasm-bindgen-cli` install command
 when that tool is missing. The two asset overrides are a pair: setting only one

@@ -9,9 +9,10 @@ This skill describes the strict machine-first language selected by:
 language = "0.4"
 ```
 
-The current repository implements that language. The published
-`spock@0.5.3` npm package predates it and accepts the retired v0 client model
-instead.
+`spock@0.5.4` is the first npm package that implements that language and its
+explicit `web-app@1` profile. Framework releases `0.5.0` through `0.5.3`
+accept the retired v0 client model instead; releases through `0.4.0` expose no
+framework client.
 
 For a public user workflow:
 
@@ -19,10 +20,10 @@ For a public user workflow:
 2. Run `spock --version` and record the installed version.
 3. For an existing project, read its `uhura.toml` and run
    `spock check path/to/project`.
-4. For a new project, stop on known-incompatible `spock@0.5.3`. For any later
-   public release, generate a disposable project under the operating-system
-   temporary directory, require exact language 0.4 in its manifest, and check
-   that probe before writing the requested target.
+4. For a new project, use known-compatible `spock@0.5.4`. Stop on `0.5.3` or
+   earlier. For a later public release, generate a disposable project under
+   the operating-system temporary directory, require exact language 0.4 in its
+   manifest, and check that probe before writing the requested target.
 
 If the installed CLI rejects language 0.4 or generates an older manifest, stop
 and report the distribution mismatch. Do not remove the version, translate
@@ -31,10 +32,10 @@ checkout. Never use the requested project path as a compatibility probe. A
 contributor may explicitly choose the repository toolchain, but that is a
 separate workflow and must not leak into public user instructions.
 
-When a compatible release exists, install it once and use plain commands:
+Install the compatible release once and use plain commands:
 
 ```sh
-npm install --global spock@VERSION
+npm install --global spock@0.5.4
 spock --version
 ```
 
@@ -96,19 +97,26 @@ but not necessarily provider truth.
 
 - Web is the only UI profile.
 - Editor is read-only; there is no Canvas-to-source round trip.
-- UI declarations are pure whole-machine observation projections. Reusable UI
-  invocation, slots, and component-local semantic state are not selected.
-- Routing is explicit: import the router contract, declare its machine port,
-  and bind that port to `web.history`. Filesystem routing is not implicit.
-- Framework features are explicit imports and host bindings; there is no
-  ambient meta-framework module behavior.
+- Machine presentations are pure whole-machine observation projections. The
+  selected Web application profile also supports typed, wrapper-free pure UI
+  components with checked props and emitted events. Slots, component-local
+  semantic state, lifecycle, and loaders are not selected.
+- Routing is explicit in ordinary projects. A project may explicitly select
+  `web-app@1`, which discovers `app/**/page.uhura` and generates a route table
+  checked against its configured location type. This is opt-in filesystem
+  routing, not an ambient interpretation of arbitrary files.
+- `web-app@1` also discovers `components/`, `surfaces/`, and colocated
+  `*.examples.uhura`; the authored core/evidence module map and host bindings
+  remain explicit.
+- Web-app v1 path parameters are required named fields. Optional segments,
+  query-derived location fields, layouts, and loaders are not selected.
 - There is no arbitrary JavaScript or foreign-source escape inside `.uhura`.
 - The npm host serves provider JavaScript but does not compile application
   TypeScript.
 - The UI element/widget catalogue is finite.
 - A 0.4 host manifest admits one live entry with application-session lifetime.
-- Command cancellation, timeouts, retained-session migration, and reusable
-  presentation composition remain unselected or limited.
+- Command cancellation, timeouts, and retained-session migration remain
+  unselected or limited.
 - Local actor switching is not production authentication or authorization.
 
 Do not hide these boundaries in CSS, provider callbacks, duplicated state, or

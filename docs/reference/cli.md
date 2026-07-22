@@ -18,15 +18,14 @@ you name.
 makes the bare `spock` command available. Platform requirements and the
 distribution model live on the [install page](../start/install.md).
 
-The version transcript below is the current published package. Its framework
-commands are available, but its embedded Uhura frontend predates strict 0.4.
-Sections that show the machine/UI/evidence scaffold describe current source
-until a compatible npm release ships; use `--backend-only` with 0.5.3 rather
-than mixing that sidecar with a 0.4 client.
+The version transcript below is the current published package. It includes the
+strict Uhura 0.4 checker/runtime, Editor, Play, and explicit `web-app@1`
+profile. Releases `0.5.0` through `0.5.3` have the same framework command names
+but embed the retired client frontend.
 
 ```sh
 $ spock --version
-spock 0.5.3
+spock 0.5.4
 ```
 
 `-V` is the short form. Every command supports `--help`.
@@ -83,6 +82,12 @@ demo/
     ├── ui.uhura
     └── evidence.uhura
 ```
+
+The starter deliberately uses one explicit machine presentation. Larger Web
+clients may opt into Uhura's `web-app@1` profile in `uhura.toml`; that profile
+discovers its conventional page/component/surface tree and generates a checked
+route table and root application presentation without changing these Spock
+commands.
 
 `new` is create-new-only: the destination must not exist, and a conflicting
 entry fails the whole plan before any write. `NAME` must be a single safe path

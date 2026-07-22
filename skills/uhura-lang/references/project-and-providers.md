@@ -6,7 +6,8 @@ application language.
 
 ## Framework project topology
 
-A small framework project normally has this shape:
+A small framework project whose Uhura client does not select `web-app@1`
+normally has this explicit shape:
 
 ```text
 spock.toml
@@ -23,8 +24,8 @@ client/
     app.js
 ```
 
-The physical `.uhura` filenames are conventional, not semantic. `uhura.toml`
-is the source of truth for logical modules:
+For an explicit client, the physical `.uhura` filenames are conventional, not
+semantic. `uhura.toml` is the source of truth for logical modules:
 
 ```toml
 [project]
@@ -40,8 +41,8 @@ ui = "ui.uhura"
 examples = "evidence.uhura"
 ```
 
-Every owned `.uhura` file must appear exactly once in `[modules]` or
-`[evidence.modules]`. Imports use the logical name:
+Every owned `.uhura` file in that explicit shape must appear exactly once in
+`[modules]` or `[evidence.modules]`. Imports use the logical name:
 
 ```uhura
 use crate::starter::Starter;
@@ -50,6 +51,37 @@ use crate::starter::Starter;
 Moving a physical file and updating only the module map must not change the
 checked program identity. Public declaration identity follows package identity
 and public name, not a directory route.
+
+The only current filename-derived exception is an explicitly selected closed
+Web application profile:
+
+```toml
+[framework]
+profile = "web-app"
+version = 1
+machine = "crate::application::ApplicationMachine"
+location = "crate::routing::Location"
+```
+
+`web-app@1` admits exactly these profile-owned source shapes in addition to the
+explicit core and shared-evidence maps:
+
+```text
+app/**/page.uhura
+app/**/page.examples.uhura
+components/**/*.uhura
+components/**/*.examples.uhura
+surfaces/**/*.uhura
+surfaces/**/*.examples.uhura
+```
+
+The root `app/page.uhura` is required. A discovered page contains exactly one
+public machine-bound `*Page` UI. A component or surface contains exactly one
+public pure component named from its filename; calls use exact immutable props
+and finite emitted-event protocols and must be acyclic. Sibling example files
+are discovered as evidence for that subject. These profile-owned files must
+not also appear in the explicit maps, and unrecognized `.uhura` files under
+the owned roots are rejected rather than becoming ambient modules.
 
 Optional `[assets]` and `[icons]` tables also belong in `uhura.toml`. Do not
 invent a separate catalog manifest.

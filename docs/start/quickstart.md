@@ -5,36 +5,22 @@ order: 2
 
 # Quickstart
 
-After the one-time source build below, in about ten minutes you will scaffold
-a project, declare a two-table authority, serve it, read from it over REST,
-write to it over GraphQL, hit your first derived error, and read the contract
-that predicted it.
+In about ten minutes you will scaffold a project, declare a two-table
+authority, serve it, read from it over REST, write to it over GraphQL, hit your
+first derived error, and read the contract that predicted it.
 
-> **Current-source client.** The full-stack scaffold shown here includes strict
-> Uhura 0.4 and uses an explicitly built source-checkout binary below until a
-> compatible npm release ships. Published `spock@0.5.3` users instead start
-> with `spock new demo --backend-only` and use plain `spock` for later
-> commands. Their backend behavior is the same, but the client files, preview
-> counts, Editor, and Play shown on this page are absent. Do not pair the
-> published retired sidecar with the 0.4 files below.
+This guide requires `spock@0.5.4` or later. `0.5.4` is the first npm release
+that packages the strict Uhura 0.4 client used by the full-stack scaffold;
+framework releases `0.5.0` through `0.5.3` carry the retired frontend and
+cannot run these client files, while releases through `0.4.0` have no
+framework client.
 
 ## Scaffold a project
 
 ```sh
-# From the Spock source checkout.
-git submodule update --init --recursive
-corepack pnpm@10.11.0 -C crates/spock-runtime/studio install --frozen-lockfile
-corepack pnpm@10.11.0 -C crates/spock-runtime/studio build
-corepack pnpm@10.11.0 -C uhura/web install --frozen-lockfile
-corepack pnpm@10.11.0 -C uhura/web build
-bash uhura/scripts/build-wasm.sh
-cargo build --locked -p spock-cli
-
-export SPOCK_SOURCE="$PWD/target/debug/spock"
-export SPOCK_UHURA_WEB_DIST="$PWD/uhura/web/dist"
-export SPOCK_UHURA_WASM_DIST="$PWD/uhura/crates/uhura-wasm/pkg/web"
-cd ..
-"$SPOCK_SOURCE" new demo
+npm install --global spock@0.5.4
+spock --version
+spock new demo
 cd demo
 ```
 
@@ -94,7 +80,7 @@ believable state.
 ## Check it
 
 ```sh
-"$SPOCK_SOURCE" check
+spock check
 ```
 
 ```text
@@ -112,7 +98,7 @@ provider contract makes the whole `spock check` fail.
 ## Serve it
 
 ```sh
-"$SPOCK_SOURCE" dev
+spock dev
 ```
 
 ```text

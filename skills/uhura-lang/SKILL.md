@@ -23,17 +23,16 @@ task to contributor development.
 3. For an existing project, read `[project].language` before editing and run
    `spock check`. This skill documents strict language `"0.4"` only.
 4. For a new project, prove compatibility before writing the requested target.
-   Stop immediately on published `spock@0.5.3`. For a later public release,
-   generate and check a disposable probe under the operating-system temporary
-   directory; require its manifest to select exact language `"0.4"`.
+   `spock@0.5.4` is known compatible. Stop on `0.5.3` or earlier; for a later
+   public release, generate and check a disposable probe under the
+   operating-system temporary directory and require its manifest to select
+   exact language `"0.4"`.
 
-The current repository uses Uhura 0.4, while the published `spock@0.5.3`
-release predates that language. If the installed CLI is that release, generates
-an older manifest in the disposable probe, or rejects
+`spock@0.5.4` is the first published package with Uhura 0.4. If the installed
+CLI predates it, generates an older manifest in a disposable probe, or rejects
 `[project] language = "0.4"`, stop and report a distribution mismatch. Never
 use the requested target as the probe, rewrite the project in retired v0
-syntax, remove the language gate, or silently fall back to the installed
-legacy grammar.
+syntax, remove the language gate, or silently fall back to a legacy grammar.
 
 Read references only as needed:
 
@@ -59,20 +58,27 @@ Read references only as needed:
 
 ## Preserve the layer boundaries
 
-- `uhura.toml` selects language 0.4 and maps logical core and evidence modules.
+- `uhura.toml` selects language 0.4 and maps logical core and evidence modules;
+  an optional explicit `web-app@1` framework profile may additionally discover
+  pages, pure components, surfaces, and colocated examples.
 - Core `.uhura` modules define types, values, parts, ports, and `pub machine`
   declarations.
 - A UI module must explicitly `use uhura::ui;` before defining a `pub ui`
-  projection for a machine.
+  projection for a machine or a reusable pure UI component.
 - Evidence modules define scenarios, checkpoints, and named examples over the
   same checked machine; they do not define another runtime.
+- A selected Web application profile generates its checked route table and
+  root `Application` presentation in memory; generated source is not authored
+  state and does not create another machine.
 - `host.toml` selects one live machine, optional presentation, lifetime,
   stylesheet, and exact adapter bindings after source checking.
 - A provider module implements only ports assigned to its adapter identity.
   It does not own machine state or UI semantics.
 
-Do not recreate retired path-based pages, component stores, surface stores,
-TOML port contracts, fixture scripts, or catalog manifests.
+Do not recreate retired page/component/surface stores, TOML port contracts,
+fixture scripts, or catalog manifests. Under `web-app@1`, path-based pages,
+components, and surfaces are pure UI composition over the configured machine,
+not independent state owners.
 
 ## Follow the execution loop
 

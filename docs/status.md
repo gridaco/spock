@@ -4,7 +4,7 @@ description: What is stable, experimental, in progress, and deliberately absent 
 
 # Project status
 
-Spock is pre-1.0 software, currently 0.5.3; minor versions may break, and the
+Spock is pre-1.0 software, currently 0.5.4; minor versions may break, and the
 [changelog](../CHANGELOG.md) records every cut. Spock v0 is a local prototype
 runtime for building and studying authority contracts; it is not a production
 platform. Its state is disposable by doctrine — the database is rebuilt from
@@ -74,7 +74,7 @@ here instead of hedging inline.
 | `spock new` / `init` / `check` / `start` / `dev` | Stable |
 | `spock dev` client live reload (last-known-good) | Stable |
 | `spock dev` backend reload (currently `restart_required`) | In progress |
-| Uhura client language | Experimental — strict 0.4 is integrated in current source but not yet shipped in npm; published 0.5.3 embeds the retired frontend. See [Uhura](uhura.md) |
+| Uhura client language | Experimental — strict 0.4 and its explicit `web-app@1` profile ship with `spock@0.5.4`; framework releases 0.5.0–0.5.3 carry the retired frontend, while releases through 0.4.0 are standalone-only. See [Uhura](uhura.md) |
 
 ## Distribution
 

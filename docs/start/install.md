@@ -25,9 +25,9 @@ Play — and every command runs offline once the package is on disk.
 `npx` runs Spock without installing anything globally:
 
 ```sh
-npx spock new demo --backend-only
+npx spock@0.5.4 new demo
 cd demo
-npx spock dev
+npx spock@0.5.4 dev
 ```
 
 For a persistent `spock` command, install globally:
@@ -40,7 +40,7 @@ Verify the installed version:
 
 ```sh
 spock --version
-# spock 0.5.3
+# spock 0.5.4
 ```
 
 ## What the package contains
@@ -69,11 +69,12 @@ later. The experimental error-declaration preview requires `0.5.2` or later;
 [project status](../status.md) records the standing of every surface. The
 [changelog](../../CHANGELOG.md) records each cut.
 
-Published `spock@0.5.3` still embeds the retired Uhura frontend. Current source
-has moved the client to strict Uhura 0.4, but that checker/runtime/asset set has
-not shipped in npm yet. Use `--backend-only` for a version-stable 0.5.3
-quickstart, or use the repository source build for a current 0.4 full-stack
-project. A 0.4 client must not be paired with the 0.5.3 sidecar.
+`spock@0.5.4` is the first release that packages strict Uhura 0.4 end to end:
+checker, runtime, Editor, Play, WebAssembly, and the explicit `web-app@1`
+profile. It can create and run the full-stack quickstart without a source
+checkout. Framework releases `0.5.0` through `0.5.3` carry the retired client
+frontend and cannot run a strict 0.4 project; their backend-only projects
+remain valid. Releases through `0.4.0` are standalone-only.
 
 ## Building from source
 

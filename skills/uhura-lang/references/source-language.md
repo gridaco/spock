@@ -24,9 +24,13 @@ use uhura::observation::Observation;
 use crate::notice::Notice;
 ```
 
-`crate` names the current package. `uhura` names checked standard contracts.
-Physical filenames do not infer modules; `uhura.toml` maps each logical module
-to one source file.
+`crate` names the current package's single closed compilation unit and module
+tree—the role Rust calls a crate. `uhura` names checked standard contracts.
+Outside an explicitly selected framework profile, physical filenames do not
+infer modules; `uhura.toml` maps each logical core or evidence module to one
+source file. The closed `web-app@1` profile is the only current exception: it
+derives UI and sibling-evidence modules from its admitted `app/`,
+`components/`, and `surfaces/` paths. Arbitrary filenames remain nonsemantic.
 
 ## Machine contract
 
@@ -161,8 +165,11 @@ host adapter.
 
 - Web is the only presentation target.
 - The checked UI element and widget vocabulary is finite.
-- Reusable UI declaration invocation, slots, and component-local semantic
-  state are not selected in 0.4.
+- Reusable pure UI declarations and calls have exact immutable props, finite
+  emitted-event protocols, and an acyclic call graph. `web-app@1` assigns
+  component and surface file roles; the component semantics are part of the
+  language rather than a second runtime. Slots and component-local semantic
+  state remain unselected.
 - A `pub ui` is independently selectable by host admission or evidence.
 - Stylesheets are external files selected by `host.toml`; there is no Uhura
   `<style>` language block.

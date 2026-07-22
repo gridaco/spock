@@ -27,8 +27,8 @@ binds external capabilities. Renderers own pixels and device mechanics.
 ## Create a project
 
 1. Run `spock --version` and record the installed version.
-2. Stop before any target write when the version is the known-incompatible
-   published `spock@0.5.3`.
+2. Require known-compatible `spock@0.5.4`; stop before any target write on
+   `0.5.3` or earlier.
 3. For a later public release, create a disposable probe beneath the
    operating-system temporary directory. Require its generated
    `client/uhura.toml` to select exact language `"0.4"` and require
@@ -39,7 +39,7 @@ binds external capabilities. Renderers own pixels and device mechanics.
 5. Reconfirm `client/uhura.toml`, then run `spock check` before replacing
    generated source.
 6. Read `spock.toml`, the backend, module map, generated machine, UI, evidence,
-   and host entry.
+   host entry, and any selected framework profile and discovered UI tree.
 7. Define the machine contract before consuming its observation or inputs in
    UI.
 8. Add deterministic scenarios and examples for meaningful states.
@@ -48,7 +48,10 @@ binds external capabilities. Renderers own pixels and device mechanics.
 10. Run `spock check`, then `spock dev`; inspect Editor, Play, Studio, and the
     intended provider consequence.
 
-Do not infer a logical module from a filename or add an unmapped `.uhura` file.
+Do not infer a core or evidence logical module from an arbitrary filename or
+add an unmapped `.uhura` file. The only filename-derived UI modules are the
+page/component/surface conventions admitted by an explicit `web-app@1`
+profile.
 
 ## Modify an existing project
 
@@ -56,7 +59,8 @@ Do not infer a logical module from a filename or add an unmapped `.uhura` file.
 2. Run the compatibility gate. Stop if the installed CLI cannot check 0.4.
 3. Preserve unrelated changes and run a healthy `spock check` baseline.
 4. Read the affected logical modules, imports, evidence, `host.toml`, style,
-   provider artifact, and authority contract.
+   provider artifact, authority contract, and any selected framework profile,
+   generated route contract, or discovered UI source involved in the change.
 5. Make the smallest ownership-correct change:
    - machine behavior first;
    - observation needed by UI second;

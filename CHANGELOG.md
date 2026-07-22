@@ -3,6 +3,34 @@
 All notable changes to Spock. Spock is a pre-1.0 prototype language; minor
 versions may break.
 
+## 0.5.4 — 2026-07-23
+
+This release replaces the retired Uhura client with the strict, machine-first
+Uhura 0.4 language and restores checked Web application ergonomics on top of
+that kernel. The Spock authority language and contract are unchanged.
+
+- **Machine-first Uhura 0.4.** Client state and transitions are expressed as a
+  deterministic checked machine; UI is an explicit observation and event
+  binding layer. The old UI-first client syntax has no compatibility parser.
+- **Checked Web application topology.** The opt-in `web-app@1` profile
+  discovers routed pages, pure components, surfaces, and colocated examples;
+  it generates the route table and root `Application` as ordinary checked
+  source rather than introducing another runtime.
+- **Typed UI composition.** Reusable UI declarations have exact immutable
+  props and finite emitted-event protocols. Calls are checked, acyclic, and
+  wrapper-free, including explicitly imported public dependency components.
+- **One project contract.** CLI checking and formatting, the native host,
+  Editor, Play, source provenance, annotations, and the packaged Spock host
+  now consume the same resolved Uhura project and Router selection.
+- **Canonical application proof.** Instagram is organized as nine pages,
+  eight pure components, and one surface while preserving its 91 Editor
+  previews, replay evidence, dynamic routes, provider boundary, and live
+  behavior.
+- **Distribution and guidance.** The npm sidecar, release gates, documentation,
+  and public Uhura skill now describe and exercise the same strict 0.4
+  application contract. Source contributors also gain path-honest `just`
+  wrappers for the local Spock CLI.
+
 ## 0.5.3 — 2026-07-17
 
 This release refreshes the bundled Uhura editor and runtime with built-in
