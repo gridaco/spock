@@ -19,10 +19,10 @@ genuinely open are in §10.
 
 Local framework acceptance assembles the exact 21-file package topology and
 sidecar inventory. Release CI remains authoritative for the four real platform
-artifacts and rejects any package above 26 MiB. The `0.5.0` dry run installed
+artifacts and rejects any package above 27 MiB. The `0.5.0` dry run installed
 and exercised that exact guarded tarball on macOS, Linux, and Windows after all
-four native targets built successfully; verification against the first real
-framework publish remains pending.
+four native targets built successfully; the same pipeline subsequently
+published and verified framework packages through `0.5.3`.
 
 ## 0. Where this fits
 
@@ -85,12 +85,14 @@ forced by publishing. **npm Trusted Publishing (OIDC) is configured for the
 `spock` package only.** Each `@scope/spock-<plat>` package would need its own
 trusted-publisher config, which cannot be set until the package exists — a
 bootstrap that needs a one-time token. Bundling keeps v0 **tokenless** through
-the one already-trusted package. The workflow's hard 26 MiB limit keeps the
+the one already-trusted package. The workflow's hard 27 MiB limit keeps the
 all-platform trade-off explicit and makes package growth fail visibly. Uhura
-0.4 moved the original limit by one MiB only after the exact 21-file dry-run
-package measured 26,501,976 bytes; the increase is accounted for by four
-statically linked copies of the language engine and the expanded Wasm sidecar,
-not an accidental file. That remains cheap enough for v0 that simplicity wins.
+0.4 first moved the original 25 MiB limit to 26 MiB after its 21-file dry-run
+package measured 26,501,976 bytes. The complete `web-app@1` dry run then
+measured 27,421,302 bytes (26.15 MiB) and moved the limit to 27 MiB. Both
+increases are accounted for by four statically linked copies of the language
+engine, the checked application resolver, and the expanded Wasm sidecar, not
+accidental files. That remains cheap enough for v0 that simplicity wins.
 `optionalDependencies` remains the documented end-state (§7), for when the
 platform packages are worth bootstrapping.
 
@@ -237,7 +239,7 @@ dispatch / tag vX.Y.Z
  │    ├─ assemble npm/binaries/<key>/ (chmod 0755 on Unix)
  │    ├─ guard: all four platforms and the sidecar are present
  │    ├─ stamp the resolved version into package.json
- │    ├─ npm pack: exact file set, exact 0755 executables, tarball ≤ 26 MiB
+ │    ├─ npm pack: exact file set, exact 0755 executables, tarball ≤ 27 MiB
  │    ├─ upload the guarded tarball as a one-day workflow artifact
  │    └─ npm publish the same guarded .tgz (OIDC, tokenless; --dry-run when requested)
  └─ verify   (matrix: macos-14, ubuntu-22.04, windows-2025)
@@ -361,7 +363,7 @@ The committed shim is mode `0755`, and CI restores that exact mode on the Unix
 native binaries (`upload-artifact` drops native executable bits); npm preserves
 those modes in the tarball. Release CI rejects any missing or unexpected packed
 path, checks the shim plus all three Unix native binaries are exactly `0755`,
-and measures the actual artifact against the framework's 26 MiB budget.
+and measures the actual artifact against the framework's 27 MiB budget.
 
 **Version.** CI derives the version from `[workspace.package]`; a tag or an
 optional dispatch value is an exact assertion, never an independent source. It
@@ -402,7 +404,7 @@ binary; the sidecar is runtime browser machinery, not a template dependency.
 | # | Decision | Recommendation | Trade-off |
 |---|---|---|---|
 | D1 | Orchestrator | **Hand-rolled `npm.yml`** for npm-only; adopt `dist` later when installers + brew are added | About 500 explicit lines including framework/package verification; `dist` re-enters when its currently unused outputs become wanted. |
-| D2 | npm layout | **Single package, all binaries bundled** (not `optionalDependencies`) | Hard 26 MiB release gate; tokenless through the one trusted `spock` package. `optionalDependencies` is deferred until worth a bootstrap token (§7). |
+| D2 | npm layout | **Single package, all binaries bundled** (not `optionalDependencies`) | Hard 27 MiB release gate; tokenless through the one trusted `spock` package. `optionalDependencies` is deferred until worth a bootstrap token (§7). |
 | D3 | Linux binary | **glibc for v0** (`ubuntu-22.04`); static-musl as the follow-up | glibc covers most hosts and isolates first-release CI variables; musl needs another target, linker toolchain, and runtime smoke. |
 | D4 | Studio prebuild | **plain `pnpm build` step per job + non-empty guard** | Rebuilds the SPA in each build job (cheap) and validates the mac/Windows build. |
 | D5 | Studio for crates.io | *(deferred)* `include = ["studio/dist/**"]` + check-only `build.rs` | Recorded so it isn't re-derived when crates.io is picked up. |
@@ -451,7 +453,7 @@ and stays tokenless.
 - [x] Write `CHANGELOG.md`.
 - [x] Extend the package with one shared Uhura web/Wasm sidecar; build it once,
       record commits/protocols/hashes/sizes, bind its manifest SHA-256 into all
-      four binaries, and enforce the 26 MiB packed gate.
+      four binaries, and enforce the 27 MiB packed gate.
 - [x] Run the first framework release dry run: the exact guarded `0.5.0`
       tarball passed the four-target build and macOS/Linux/Windows
       installed-package verification, including framework routes and sidecar

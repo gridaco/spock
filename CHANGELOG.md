@@ -28,8 +28,9 @@ that kernel. The Spock authority language and contract are unchanged.
   behavior.
 - **Distribution and guidance.** The npm sidecar, release gates, documentation,
   and public Uhura skill now describe and exercise the same strict 0.4
-  application contract. Source contributors also gain path-honest `just`
-  wrappers for the local Spock CLI.
+  application contract. The complete all-platform tarball measures 27,421,302
+  bytes (26.15 MiB), within a 27 MiB hard budget. Source contributors also gain
+  path-honest `just` wrappers for the local Spock CLI.
 
 ## 0.5.3 — 2026-07-17
 
