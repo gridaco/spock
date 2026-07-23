@@ -142,6 +142,7 @@ try {
     undefined,
     { timeout: 60_000 },
   );
+  await play.waitForLoadState('networkidle', { timeout: 60_000 });
 
   const like = play.getByRole('button', { name: 'Like', exact: true }).first();
   await like.waitFor({ state: 'visible', timeout: 30_000 });
@@ -193,6 +194,7 @@ try {
       undefined,
       { timeout: 60_000 },
     );
+    await play.waitForLoadState('networkidle', { timeout: 60_000 });
   }
 
   await context.close();
