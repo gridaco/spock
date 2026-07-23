@@ -1,13 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "astro",
-  "installCommand": "corepack pnpm@10.11.0 -C www install --frozen-lockfile",
+  "installCommand": "corepack pnpm@10.11.0 -C uhura/web install --frozen-lockfile && corepack pnpm@10.11.0 -C www install --frozen-lockfile",
   "devCommand": "corepack pnpm@10.11.0 -C www exec astro dev --host 127.0.0.1 --port $PORT",
-  "buildCommand": "corepack pnpm@10.11.0 -C www build",
+  "buildCommand": "bash scripts/build-www.sh",
   "outputDirectory": "www/dist",
-  "git": {
-    "deploymentEnabled": false
-  },
   "headers": [
     {
       "source": "/demo/api/editor/state",

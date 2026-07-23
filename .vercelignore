@@ -3,9 +3,7 @@
 .vercel
 .agents
 target
-uhura
 npm
-scripts
 crates/**/target
 crates/spock-runtime/studio/node_modules
 crates/spock-runtime/studio/dist
@@ -18,3 +16,8 @@ www/.astro
 www/.vercel
 editors/vscode/node_modules
 editors/vscode/*.vsix
+uhura/target
+uhura/web/node_modules
+uhura/web/dist*
+uhura/crates/uhura-wasm/pkg
+uhura/examples/instagram/client/providers/dist
