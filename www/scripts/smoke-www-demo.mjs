@@ -44,11 +44,22 @@ const checkedRedirect = async (pathname, destination) => {
   assert.equal(new URL(location, origin).pathname, destination);
 };
 
+const checkedMissing = async (pathname) => {
+  const response = await fetch(url(pathname), {
+    headers,
+    redirect: 'manual',
+  });
+  assert.equal(response.status, 404, `${pathname} returned ${response.status}`);
+};
+
 await checkedFetch('/', 'text/html');
 await checkedFetch('/demo/', 'text/html');
 await checkedFetch('/demo/play', 'text/html');
 await checkedFetch('/demo/play/', 'text/html');
 await checkedFetch('/demo/_uhura/editor/', 'text/html');
+await checkedFetch('/demo/history-fallback-probe', 'text/html');
+await checkedMissing('/demo/api/history-fallback-probe');
+await checkedMissing('/demo/assets/history-fallback-probe.js');
 await checkedRedirect('/demo/create/', '/demo/create');
 await checkedRedirect('/demo/reels/', '/demo/reels');
 await checkedRedirect('/demo/search/', '/demo/search');
@@ -87,9 +98,19 @@ const browserErrors = [];
 const backendRequests = [];
 
 try {
-  const context = await browser.newContext({
-    extraHTTPHeaders: headers,
-  });
+  const context = await browser.newContext();
+  if (bypass) {
+    await context.route('**/*', async (route) => {
+      const request = route.request();
+      if (new URL(request.url()).origin === origin.origin) {
+        await route.continue({
+          headers: { ...request.headers(), ...headers },
+        });
+        return;
+      }
+      await route.continue();
+    });
+  }
   context.on('request', (request) => {
     const pathname = new URL(request.url()).pathname;
     if (

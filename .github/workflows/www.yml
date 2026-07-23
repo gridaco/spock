@@ -17,6 +17,7 @@ on:
       - ".github/workflows/www.yml"
       - ".gitmodules"
       - ".nvmrc"
+      - "rust-toolchain.toml"
       - ".vercelignore"
       - "vercel.json"
   pull_request:
@@ -34,6 +35,7 @@ on:
       - ".github/workflows/www.yml"
       - ".gitmodules"
       - ".nvmrc"
+      - "rust-toolchain.toml"
       - ".vercelignore"
       - "vercel.json"
 

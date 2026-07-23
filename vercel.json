@@ -32,16 +32,9 @@
   "rewrites": [
     { "source": "/demo", "destination": "/demo/index.html" },
     { "source": "/demo/", "destination": "/demo/index.html" },
-    { "source": "/demo/play", "destination": "/demo/index.html" },
-    { "source": "/demo/play/", "destination": "/demo/index.html" },
-    { "source": "/demo/_uhura/editor", "destination": "/demo/index.html" },
-    { "source": "/demo/_uhura/editor/", "destination": "/demo/index.html" },
-    { "source": "/demo/create", "destination": "/demo/index.html" },
-    { "source": "/demo/reels", "destination": "/demo/index.html" },
-    { "source": "/demo/search", "destination": "/demo/index.html" },
-    { "source": "/demo/p/([^/]+)", "destination": "/demo/index.html" },
-    { "source": "/demo/profile/([^/]+)", "destination": "/demo/index.html" },
-    { "source": "/demo/profile/([^/]+)/(followers|following)", "destination": "/demo/index.html" },
-    { "source": "/demo/stories/([^/]+)", "destination": "/demo/index.html" }
+    {
+      "source": "/demo/:path((?!api/|assets/).*)",
+      "destination": "/demo/index.html"
+    }
   ]
 }
