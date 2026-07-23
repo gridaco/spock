@@ -17,7 +17,7 @@ const allowLocalDevHeaders =
 const checkedFetch = async (pathname, expectedType) => {
   const response = await fetch(url(pathname), {
     headers,
-    redirect: 'follow',
+    redirect: 'manual',
   });
   assert.equal(response.status, 200, `${pathname} returned ${response.status}`);
   if (expectedType) {

@@ -24,12 +24,30 @@ export PATH="$CARGO_HOME/bin:$PATH"
 export RUSTUP_TOOLCHAIN="$ROOT_TOOLCHAIN"
 
 if ! command -v rustup >/dev/null 2>&1; then
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
-    sh -s -- \
-      -y \
-      --no-modify-path \
-      --profile minimal \
-      --default-toolchain "$ROOT_TOOLCHAIN"
+  if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
+    echo "automatic rustup bootstrap requires x86_64 Linux; install rustup first" >&2
+    exit 1
+  fi
+
+  RUSTUP_INIT_VERSION="1.29.0"
+  RUSTUP_INIT_SHA256="4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10"
+  RUSTUP_INIT="$(mktemp)"
+  trap 'rm -f "$RUSTUP_INIT"' EXIT
+
+  curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+    "https://static.rust-lang.org/rustup/archive/$RUSTUP_INIT_VERSION/x86_64-unknown-linux-gnu/rustup-init" \
+    --output "$RUSTUP_INIT"
+  printf '%s  %s\n' "$RUSTUP_INIT_SHA256" "$RUSTUP_INIT" |
+    sha256sum --check --status
+  chmod u+x "$RUSTUP_INIT"
+  "$RUSTUP_INIT" \
+    -y \
+    --no-modify-path \
+    --profile minimal \
+    --default-toolchain "$ROOT_TOOLCHAIN"
+
+  rm -f "$RUSTUP_INIT"
+  trap - EXIT
 fi
 
 rustup toolchain install "$ROOT_TOOLCHAIN" --profile minimal
