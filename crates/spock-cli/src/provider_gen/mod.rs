@@ -1,7 +1,7 @@
-//! Provider generation spike (uhura#29): .wire v0.1 — Spock 스키마 위의 투영·계약 언어.
-//! 이 크레이트는 v0.1 범위만 구현한다: .wire 파일을 파싱해 기계 측
-//! 계약 타입(Mutation / Settlement)을 Uhura 0.4 선언문으로 생성한다.
-//! 뷰 투영·어댑터 생성은 v0.2 (docs/03 참조).
+//! Provider generation spike (uhura#29): .wire — a projection/contract language
+//! over the Spock schema. Parses a .wire declaration, validates it against the
+//! compiler-emitted contract, and generates the provider artifacts: contract
+//! types, view types, snapshot query, dispatch, refusals, assets, and the module.
 
 use pest::Parser;
 use pest_derive::Parser;
@@ -14,7 +14,7 @@ struct WireParser;
 #[derive(Debug, PartialEq)]
 pub struct Field {
     pub name: String,
-    /// `.wire` 원문 타입 표기 (예: `post.id`) — 스키마 대조에 쓴다.
+    /// Original `.wire` type token (e.g. `post.id`) — used for schema validation.
     pub source: String,
     pub ty: String,
 }
@@ -22,7 +22,7 @@ pub struct Field {
 #[derive(Debug, PartialEq)]
 pub struct MutationDecl {
     pub name: String,
-    /// 백엔드 연산 kind 오버라이드 (`op choose_image_request`); 기본은 snake_case(name)
+    /// Backend operation kind override (`op choose_image_request`); defaults to snake_case(name)
     pub op: Option<String>,
     pub fields: Vec<Field>,
     pub policy: String,
@@ -31,11 +31,11 @@ pub struct MutationDecl {
 #[derive(Debug, PartialEq)]
 pub struct CallSpec {
     pub fn_name: String,
-    /// `if <flag>` 분기의 (플래그 필드, 이 호출이 담당하는 값)
+    /// For `if <flag>` branches: (flag field, the value this call handles)
     pub when: Option<(String, bool)>,
-    /// 호출 인자 이름들 — 연산 객체에서 뽑아 RPC 본문이 된다
+    /// Call argument names — extracted from the operation object to form the RPC body
     pub args: Vec<String>,
-    /// 거절 화이트리스트의 라우트 키 (`route feed/like-post`) — 명시 선언, 파생 없음
+    /// Route key in the refusal whitelist (`route feed/like-post`) — explicit, never derived
     pub route: Option<String>,
     pub allows: Vec<String>,
 }
@@ -47,7 +47,7 @@ pub struct SettlementDecl {
 
 #[derive(Debug, PartialEq)]
 pub enum ViewEntry {
-    /// 원본 컬럼 그대로, 선택적 투영(`author -> User`).
+    /// Bare source column, with an optional projection (`author -> User`).
     Column {
         name: String,
         projected: Option<String>,
@@ -58,7 +58,7 @@ pub enum ViewEntry {
     Count { name: String, table: String },
     /// `x = exists <table> where …` → Bool
     Exists { name: String, table: String },
-    /// `x = match <col> { … }` → PascalCase(x) 합타입 (팔에서 몸체 생성)
+    /// `x = match <col> { … }` → PascalCase(x) sum type (variant bodies from the arms)
     Match {
         name: String,
         column: String,
@@ -66,7 +66,7 @@ pub enum ViewEntry {
     },
     /// `x = tiles of <table> …` → Seq<Tile>
     Tiles { name: String, table: String },
-    /// `x = row as T` → T (행 자체의 투영)
+    /// `x = row as T` → T (projection of the row itself)
     RowAs { name: String, ty: String },
 }
 
@@ -79,9 +79,9 @@ pub struct MatchArm {
 
 #[derive(Debug, PartialEq)]
 pub enum VariantField {
-    /// `<col> as <class>` — 뷰 원본 테이블의 컬럼을 자산 클래스로 투영
+    /// `<col> as <class>` — project a column of the view's source table as an asset class
     Scalar { column: String, class: String },
-    /// `each <table>.<col> as <class> …` — 하위 행들의 시퀀스 투영
+    /// `each <table>.<col> as <class> …` — sequence projection over child rows
     Each {
         table: String,
         column: String,
@@ -99,14 +99,14 @@ pub struct ViewDecl {
 #[derive(Debug, PartialEq)]
 pub struct SnapshotRead {
     pub table: String,
-    /// `read carousel_slide as slides` — 불규칙 별칭의 명시 오버라이드.
+    /// `read carousel_slide as slides` — explicit override for irregular aliases.
     pub alias: Option<String>,
 }
 
 #[derive(Debug, Default)]
 pub struct WireFile {
     pub app: Option<String>,
-    /// fixtures 블록의 명시 비디오 매핑 (매니페스트에 파생원 없음)
+    /// Explicit video mappings from the fixtures block (no manifest source to derive from)
     pub videos: Vec<(String, String)>,
     pub snapshot_cap: Option<u32>,
     pub snapshot_reads: Vec<SnapshotRead>,
@@ -125,8 +125,8 @@ impl std::fmt::Display for ParseError {
 }
 impl std::error::Error for ParseError {}
 
-/// `.wire` 필드 타입 → 기계 측 타입 이름.
-/// `<table>.id`는 `<Table>Id`로 투영되고, 스칼라는 0.4 프렐류드 이름을 쓴다.
+/// `.wire` field type → machine-side type name.
+/// `<table>.id` projects to `<Table>Id`; scalars use the 0.4 prelude names.
 fn machine_type(ty: &str) -> Result<String, ParseError> {
     match ty {
         "text" => Ok("Text".to_string()),
@@ -204,7 +204,7 @@ fn parse_arm(pair: pest::iterators::Pair<Rule>) -> Result<MatchArm, ParseError> 
     })
 }
 
-/// 자산 클래스 → 기계 타입. storage_object 컬럼만 자산 투영이 가능하다.
+/// Asset class → machine type. Only storage_object columns can be asset-projected.
 fn asset_type(class: &str) -> Option<&'static str> {
     match class {
         "image" => Some("ImageRef"),
@@ -364,11 +364,11 @@ pub fn parse(source: &str) -> Result<WireFile, ParseError> {
     Ok(out)
 }
 
-/// 정책 문자열에서 `call <fn>(...) [route g/name] allow e1, e2` 절을 추출한다.
-/// `local {...}` / `host {...}` 정책은 호출이 없으므로 빈 목록.
+/// Extract `call <fn>(...) [route g/name] allow e1, e2` clauses from a policy string.
+/// `local {...}` / `host {...}` policies have no calls, so the list is empty.
 pub fn policy_calls(policy: &str) -> Vec<CallSpec> {
     let mut out = Vec::new();
-    // `if <flag> call A(...) ... else call B(...)` — 첫 호출=true, 둘째=false
+    // `if <flag> call A(...) ... else call B(...)` — first call handles true, second false
     let flag = policy.trim_start().strip_prefix("if ").map(|rest| {
         let end = rest
             .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
@@ -378,7 +378,7 @@ pub fn policy_calls(policy: &str) -> Vec<CallSpec> {
     let mut call_index = 0usize;
     let mut rest = policy;
     while let Some(pos) = rest.find("call ") {
-        // "call"이 식별자 일부가 아니어야 한다
+        // "call" must not be part of a longer identifier
         if pos > 0
             && rest[..pos]
                 .chars()
@@ -447,8 +447,8 @@ pub fn policy_calls(policy: &str) -> Vec<CallSpec> {
     out
 }
 
-/// 뮤테이션 → 백엔드 라우팅 표 (JSON). 런타임이 이 표만 보고
-/// 분기·RPC 인자·거절 라우트를 결정한다 — 로직은 소유하지 않는다.
+/// Mutation → backend routing table (JSON). The runtime decides branches, RPC
+/// arguments, and refusal routes from this table alone — it owns no logic.
 pub fn generate_routing(file: &WireFile) -> String {
     let mut out = String::from("{\n");
     for (i, m) in file.mutations.iter().enumerate() {
@@ -506,8 +506,8 @@ pub fn generate_routing(file: &WireFile) -> String {
     out
 }
 
-/// 스키마 대조: .wire가 참조하는 테이블·fn·에러가 계약에 실존하는지.
-/// 위반은 사람이 읽을 수 있는 문장 목록으로 돌려준다 (조용한 통과 금지).
+/// Schema validation: every table/fn/error a .wire file references must exist
+/// in the contract. Violations come back as a readable list (no silent passes).
 pub fn validate_against(file: &WireFile, schema: &SpockSchema) -> Vec<String> {
     let mut problems = Vec::new();
     for read in &file.snapshot_reads {
@@ -552,7 +552,7 @@ pub fn validate_against(file: &WireFile, schema: &SpockSchema) -> Vec<String> {
     problems
 }
 
-/// 스칼라 컬럼 타입 → 기계 타입. FK/enum은 여기 오지 않는다.
+/// Scalar column type → machine type. FK/enum columns never reach here.
 fn column_machine_type(table: &str, column: &SpockColumn) -> Option<String> {
     if column.key && column.base == "uuid" {
         let mut chars = table.chars();
@@ -590,8 +590,8 @@ fn screaming(name: &str) -> String {
     name.to_ascii_uppercase()
 }
 
-/// 뮤테이션 표면 → 어댑터의 `toBackendOperation` 스위치 본문 (TS 텍스트).
-/// kind = `op` 오버라이드 또는 snake_case(이름); 필드 변환은 타입에서 유도.
+/// Mutation surface → the adapter's `toBackendOperation` switch body (TS text).
+/// kind = `op` override or snake_case(name); field mapping is derived from types.
 pub fn generate_dispatch(file: &WireFile) -> Result<String, Vec<String>> {
     let mut problems = Vec::new();
     let Some(app) = &file.app else {
@@ -642,7 +642,7 @@ pub fn generate_dispatch(file: &WireFile) -> Result<String, Vec<String>> {
     }
 }
 
-/// 라우트 키 → kebab 거절 목록. 중복 라우트는 에러.
+/// Route key → kebab-case refusal list. Duplicate routes are an error.
 pub fn generate_refusals(file: &WireFile) -> Result<Vec<(String, Vec<String>)>, Vec<String>> {
     let mut problems = Vec::new();
     let mut out: Vec<(String, Vec<String>)> = Vec::new();
@@ -663,8 +663,8 @@ pub fn generate_refusals(file: &WireFile) -> Result<Vec<(String, Vec<String>)>, 
     }
 }
 
-/// S1+S2 산출물을 실행 가능한 provider 테이블 모듈(ESM JS)로 조립한다.
-/// 로직(큐·정산)은 공유 런타임 몫이고, 이 모듈은 데이터와 순수 디스패치만 담는다.
+/// Assemble the generated artifacts into a runnable provider tables module (ESM JS).
+/// Logic (queue/settlement) belongs to the shared runtime; this module carries data and pure dispatch only.
 pub fn generate_provider_module(
     file: &WireFile,
     schema: &SpockSchema,
@@ -713,8 +713,8 @@ pub fn generate_provider_module(
     Ok(out)
 }
 
-/// 자산 매니페스트(manifest.toml)의 `[assets.<name>]` + `file = "..."` 쌍을
-/// 추출한다. alt/size/sha256 등은 gen-assets 도구 소유라 여기서 읽지 않는다.
+/// Extract `[assets.<name>]` + `file = "..."` pairs from the asset manifest
+/// (manifest.toml). alt/size/sha256 belong to the gen-assets tool and are not read here.
 pub fn parse_manifest(source: &str) -> Result<Vec<(String, String)>, Vec<String>> {
     let mut problems = Vec::new();
     let mut out: Vec<(String, String)> = Vec::new();
@@ -747,8 +747,8 @@ pub fn parse_manifest(source: &str) -> Result<Vec<(String, String)>, Vec<String>
     }
 }
 
-/// 매니페스트 항목 + .wire의 명시 비디오 매핑 → Play 자산 논리명 표 (TS 텍스트).
-/// 이름 충돌은 에러.
+/// Manifest entries + explicit .wire video mappings → Play logical-asset table (TS text).
+/// Name collisions are an error.
 pub fn generate_play_assets(
     entries: &[(String, String)],
     videos: &[(String, String)],
@@ -790,14 +790,14 @@ fn pluralize(name: &str) -> String {
     }
 }
 
-/// 스냅샷 항목의 기본 별칭: camelCase 복수형 (user→users, story→stories,
-/// story_view→storyViews). 이 규칙을 벗어나는 별칭은 `as`로 명시해야 한다.
+/// Default alias for a snapshot entry: camelCase plural (user→users, story→stories,
+/// story_view→storyViews). Aliases outside this rule must be declared with `as`.
 pub fn default_alias(table: &str) -> String {
     pluralize(&camel(table))
 }
 
-/// .wire 스냅샷 선언 + 스키마 컬럼 → 어댑터의 GraphQL 스냅샷 문서.
-/// FK와 storage_object 컬럼은 `name { id }`로, 나머지는 bare로 투영된다.
+/// .wire snapshot declaration + schema columns → the adapter's GraphQL snapshot document.
+/// FK and storage_object columns project as `name { id }`; the rest stay bare.
 pub fn generate_snapshot_query(
     file: &WireFile,
     schema: &SpockSchema,
@@ -850,8 +850,8 @@ fn pascal(name: &str) -> String {
         .collect()
 }
 
-/// 뷰 선언 → 기계 측 레코드 타입 생성. 타입 유도가 스키마와 어긋나면
-/// 생성 대신 문제 목록을 돌려준다 (추측 생성 금지).
+/// View declaration → machine-side record types. If type derivation disagrees with
+/// the schema, return a problem list instead of generating (no speculative output).
 pub fn generate_view_types(file: &WireFile, schema: &SpockSchema) -> Result<String, Vec<String>> {
     let mut problems = Vec::new();
     let mut out = String::new();
@@ -1054,8 +1054,8 @@ fn emit_variant(out: &mut String, name: &str, fields: &[Field]) {
     }
 }
 
-/// 기계 측 계약 선언문 생성. Settlement의 Accepted/Refused는 0.4 결과 어휘에
-/// 고정된 규약이므로 언어가 강제하고, extras만 파일 선언을 따른다.
+/// Generate the machine-side contract declarations. Settlement's Accepted/Refused are
+/// fixed by the 0.4 result vocabulary, so they are enforced; only extras follow the file.
 pub fn generate_machine_types(file: &WireFile) -> String {
     let mut out = String::from("pub enum Mutation {\n");
     for m in &file.mutations {
@@ -1101,10 +1101,10 @@ mod tests {
         assert!(parse("mutation { post: post.id }").is_err());
     }
 }
-// 스키마 입력: 컴파일러가 방출한 계약 JSON(`spock build` / GET /~contract)을
-// 소비한다. .spock 소스 텍스트를 직접 파싱하지 않는다 — 계약이 진실이고
-// (텍스트 파싱은 storage_object 시스템 테이블을 놓쳤다), additively frozen
-// 이라 안정된 입력이다.
+// Schema input: consume the compiler-emitted contract JSON (`spock build` /
+// GET /~contract). We never parse .spock source text — the contract is the
+// truth (text parsing missed the storage_object system table) and, being
+// additively frozen, a stable input.
 
 #[derive(Debug, Default, PartialEq)]
 pub struct SpockSchema {
@@ -1122,8 +1122,8 @@ pub struct SpockTable {
 #[derive(Debug, PartialEq)]
 pub struct SpockColumn {
     pub name: String,
-    /// 기본 타입 토큰: uuid/text/timestamp/bool/int, FK면 대상 테이블 이름
-    /// (storage_object 포함), 인라인 열거(set)면 "enum".
+    /// Base type token: uuid/text/timestamp/bool/int, the target table name for
+    /// FKs (including storage_object), or "enum" for inline enumerations (set).
     pub base: String,
     pub key: bool,
 }
@@ -1161,7 +1161,7 @@ fn column_base(ty: &Value) -> Option<String> {
     }
 }
 
-/// 계약 JSON → 스키마. 모양이 어긋나면 추측하지 않고 문제 목록을 돌려준다.
+/// Contract JSON → schema. On shape mismatch, return a problem list instead of guessing.
 pub fn extract_contract(source: &str) -> Result<SpockSchema, Vec<String>> {
     let root: Value = match serde_json::from_str(source) {
         Ok(v) => v,
@@ -1260,8 +1260,8 @@ pub fn extract_contract(source: &str) -> Result<SpockSchema, Vec<String>> {
 
 // ===== CLI seam: typed contract + declaration path → provider module =====
 
-/// `spock gen provider <program> --app <decl>`: 계약(컴파일러 소유)과 앱 선언에서
-/// provider 테이블 모듈을 생성한다. 문제는 사람이 읽을 목록으로 합쳐 실패시킨다.
+/// `spock gen provider <program> --app <decl>`: generate the provider tables module
+/// from the contract (compiler-owned) and the app declaration; problems merge into one failure.
 pub fn generate_from_contract<C: ::serde::Serialize>(
     contract: &C,
     app_declaration: &std::path::Path,

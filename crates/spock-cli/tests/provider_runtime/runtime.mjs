@@ -1,6 +1,6 @@
-// wire-db 공유 런타임: 앱과 무관한 로직만 소유한다 — 직렬화 큐, 타임아웃,
-// 스냅샷 재조회, 정산 유도, 거절 화이트리스트 판정. 앱마다 다른 것(쿼리·
-// 디스패치·라우팅·거절 표)은 전부 생성된 tables 모듈에서 주입받는다.
+// Shared runtime: owns only the app-independent logic — the serialized queue,
+// timeouts, snapshot refetch, settlement derivation, refusal-whitelist decisions.
+// Everything app-specific (query, dispatch, routing, refusals) comes from the generated tables module.
 
 export function createProvider({
   base = "",
@@ -43,7 +43,7 @@ export function createProvider({
     return body.data;
   }
 
-  // 뮤테이션은 직렬화된다: 앞선 정산이 끝나기 전에 다음 RPC가 나가지 않는다.
+  // Mutations are serialized: the next RPC does not go out before the previous settlement completes.
   let chain = Promise.resolve();
   function dispatch(mutation, fields, actor) {
     const run = chain.then(() => settle(mutation, fields, actor));

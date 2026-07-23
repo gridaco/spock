@@ -1,4 +1,4 @@
-// 공유 런타임 단위 검증 (가짜 서버): 분기 라우팅, 정산 3경로, 직렬화 큐.
+// Shared-runtime unit checks (fake server): branch routing, three settlement paths, serialized queue.
 // usage: node runtime-unit.mjs <tablesModulePath> <runtimeModulePath>
 import { strict as assert } from "node:assert";
 
@@ -23,7 +23,7 @@ const fakeFetch = async (url, init) => {
 
 const provider = createProvider({ base: "", tables, fetchImpl: fakeFetch });
 
-// 1) 분기: liked=true → like_post / liked=false → unlike_post, 인자 = post id
+// 1) Branching: liked=true → like_post / liked=false → unlike_post, argument = post id
 let r = await provider.dispatch("SetLike", { post: "P1", liked: true }, "U1");
 assert.equal(r.settlement, "accepted");
 r = await provider.dispatch("SetLike", { post: "P1", liked: false }, "U1");
@@ -33,26 +33,26 @@ assert.deepEqual(
   ["rpc:like_post:U1", "rpc:unlike_post:U1"],
 );
 
-// 2) 정산: 수락 경로는 반드시 RPC 후 재스냅샷
+// 2) Settlement: the accept path must re-snapshot after the RPC
 assert.deepEqual(log, ["rpc:like_post:U1", "gql", "rpc:unlike_post:U1", "gql"]);
 
-// 3) 거절 — 화이트리스트 안: 선언된 이유가 그대로 나온다
+// 3) Refusal inside the whitelist: the declared reason passes through as-is
 rpcScript = () => ({ ok: false, body: { error: { code: "not_authorized" } } });
 r = await provider.dispatch("SetLike", { post: "P1", liked: true }, null);
 assert.deepEqual(r, { settlement: "refused", reason: "not-authorized", declared: true });
 
-// 4) 거절 — 화이트리스트 밖: 일반 refused로 뭉개진다 (내부 유출 방지)
+// 4) Refusal outside the whitelist: collapsed to a generic refusal (no internal leakage)
 rpcScript = () => ({ ok: false, body: { error: { code: "disk_on_fire" } } });
 r = await provider.dispatch("SetLike", { post: "P1", liked: true }, "U1");
 assert.deepEqual(r, { settlement: "refused", reason: "refused", declared: false });
 
-// 5) 로컬 모드: RPC 없이 수락
+// 5) Local mode: accepted without an RPC
 const before = log.length;
 r = await provider.dispatch("LoadMore", {}, "U1");
 assert.deepEqual(r, { settlement: "accepted", local: true });
 assert.equal(log.length, before, "local mutation performs no fetch");
 
-// 6) 직렬화: 두 디스패치가 겹치지 않는다 (첫 정산 완료 후 둘째 RPC)
+// 6) Serialization: two dispatches never overlap (second RPC only after the first settles)
 log.length = 0;
 rpcScript = () => ({ ok: true, body: {} });
 rpcDelay = 30;

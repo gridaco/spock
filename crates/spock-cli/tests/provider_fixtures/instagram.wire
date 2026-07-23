@@ -1,8 +1,8 @@
-// instagram.wire — v0.1 (파서 대상)
-// 역할: Spock 스키마를 재선언하지 않고(이중 권위 금지) 그 위의
-// 투영·계약 계층을 선언한다. v0.1 생성물 = 기계 측 계약 타입.
+// instagram.wire — parser target
+// Role: declare the projection/contract layer over the Spock schema without
+// redeclaring it (no dual authority).
 
-use contract "contract.json";   // spock build 산출물 (또는 GET /~contract)
+use contract "contract.json";   // spock build output (or GET /~contract)
 app "Instagram";
 
 snapshot app {

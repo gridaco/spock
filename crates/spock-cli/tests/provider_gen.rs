@@ -127,7 +127,7 @@ fn schema_lies_are_refused_with_precise_problems() {
     assert!(err[0].contains("unknown table `ghosts`"), "{err:?}");
 }
 
-/// Node 기반 실행 하니스 — 명시 실행 전용 (CI는 node를 요구하지 않는다):
+/// Node-based execution harness — opt-in only (CI does not require node):
 /// `cargo test -p spock-cli --test provider_gen -- --ignored`
 #[test]
 #[ignore = "requires node"]

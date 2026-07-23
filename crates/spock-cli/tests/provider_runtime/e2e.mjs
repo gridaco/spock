@@ -1,4 +1,4 @@
-// E2E: 생성된 provider 테이블을 실제 spock 백엔드에 대해 검증한다.
+// E2E: verify the generated provider tables against a real spock backend.
 // usage: node e2e.mjs <baseUrl> <providerModulePath>
 import { strict as assert } from "node:assert";
 
@@ -17,7 +17,7 @@ const gql = async (query) => {
   return body.data;
 };
 
-// 실측 프로토콜: 성공/실패는 HTTP 상태, 본문은 행(또는 {error:{code}}) 그대로.
+// Measured protocol: success/failure is the HTTP status; the body is the raw row (or {error:{code}}).
 const rpc = async (fn, args, actor) => {
   const headers = { "content-type": "application/json" };
   if (actor) headers["x-spock-actor"] = actor;
@@ -29,7 +29,7 @@ const rpc = async (fn, args, actor) => {
   return { ok: res.ok, body: await res.json() };
 };
 
-// 1) 생성된 스냅샷 쿼리를 실서버가 수락하고, 시드 수치와 일치하는가
+// 1) The real server accepts the generated snapshot query and the counts match the seed
 const data = await gql(SNAPSHOT_QUERY);
 const counts = Object.fromEntries(
   Object.entries(data).map(([k, v]) => [k, v.length]),
@@ -40,7 +40,7 @@ const expected = {
 };
 assert.deepEqual(counts, expected, `seed counts: ${JSON.stringify(counts)}`);
 
-// 2) 실 뮤테이션 왕복: 아직 좋아요 안 한 (user, post) 쌍을 찾아 like → unlike 복원
+// 2) Real mutation round-trip: find a (user, post) pair without a like, then like → unlike to restore
 const liked = new Set(data.likes.map((l) => `${l.user.id}/${l.post.id}`));
 let actor = null;
 let post = null;
@@ -66,7 +66,7 @@ assert.ok(unlikeReply.ok, `unlike_post: ${JSON.stringify(unlikeReply)}`);
 const restored = await gql(SNAPSHOT_QUERY);
 assert.equal(restored.likes.length, expected.likes, "state restored");
 
-// 3) 무인증 거절 → 에러 코드가 생성된 화이트리스트와 정합하는가
+// 3) Unauthenticated refusal → the error code must agree with the generated whitelist
 const refused = await rpc("like_post", { post }, null);
 assert.ok(!refused.ok, "unauthenticated like must be refused");
 const code = String(refused.body.error?.code ?? "").replace(/_/g, "-");
