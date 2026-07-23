@@ -103,6 +103,15 @@ enum GenTarget {
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
+    /// SPIKE (uhura#29): provider tables from an app declaration + the contract.
+    Provider {
+        file: PathBuf,
+        /// The app assembly declaration (.wire spike syntax).
+        #[arg(long)]
+        app: PathBuf,
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -194,9 +203,9 @@ fn execute(command: Command) -> ExitCode {
         }
         Command::Gen { target } => {
             let (file, out) = match &target {
-                GenTarget::Types { file, out } | GenTarget::GraphqlSchema { file, out } => {
-                    (file.clone(), out.clone())
-                }
+                GenTarget::Types { file, out }
+                | GenTarget::GraphqlSchema { file, out }
+                | GenTarget::Provider { file, out, .. } => (file.clone(), out.clone()),
             };
             let Some(program) = load_or_report(&file) else {
                 return ExitCode::FAILURE;
@@ -209,6 +218,10 @@ fn execute(command: Command) -> ExitCode {
                     program.contract(),
                     GenerationTarget::GraphqlSchema,
                 ),
+                GenTarget::Provider { app, .. } => {
+                    spock_cli::provider_gen::generate_from_contract(program.contract(), &app)
+                        .map_err(anyhow::Error::msg)
+                }
             };
             match artifact {
                 Ok(content) => emit(out, content),

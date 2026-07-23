@@ -1,0 +1,37 @@
+pub enum Media {
+  Image {
+    image: ImageRef,
+  },
+  Carousel {
+    images: Seq<ImageRef>,
+  },
+  Video {
+    src: Text,
+    poster: ImageRef,
+  },
+}
+
+pub struct Post {
+  id: PostId,
+  author: User,
+  caption: Text,
+  media: Media,
+  like_count: Nat,
+  comment_count: Nat,
+  viewer_liked: Bool,
+  viewer_saved: Bool,
+  posted_label: Text,
+}
+
+pub struct Profile {
+  user: User,
+  bio: Text,
+  post_count: Nat,
+  follower_count: Nat,
+  following_count: Nat,
+  viewer_follows: Bool,
+  posts: Seq<Tile>,
+  reels: Seq<Tile>,
+  tagged: Seq<Tile>,
+  saved: Seq<Tile>,
+}

@@ -1,0 +1,69 @@
+
+  query UhuraSnapshot {
+    users: user(limit: 200) {
+      id
+      username
+      display_name
+      avatar { id }
+      avatar_alt
+      bio
+    }
+    stories: story(limit: 200) {
+      id
+      author { id }
+      position
+      media_file { id }
+      media_alt
+      caption
+      published_at
+    }
+    storyViews: story_view(limit: 200) {
+      viewer { id }
+      story { id }
+      at
+    }
+    posts: post(limit: 200) {
+      id
+      author { id }
+      caption
+      published_at
+      show_in_feed
+      media_kind
+      media_file { id }
+      video_file { id }
+      media_alt
+    }
+    slides: carousel_slide(limit: 200) {
+      id
+      post { id }
+      position
+      file { id }
+      alt
+    }
+    comments: comment(limit: 200) {
+      id
+      post { id }
+      author { id }
+      body
+      created_at
+    }
+    likes: like(limit: 200) {
+      user { id }
+      post { id }
+      at
+    }
+    saves: save(limit: 200) {
+      user { id }
+      post { id }
+      at
+    }
+    follows: follow(limit: 200) {
+      follower { id }
+      followed { id }
+      at
+    }
+    postTags: post_tag(limit: 200) {
+      post { id }
+      person { id }
+    }
+  }

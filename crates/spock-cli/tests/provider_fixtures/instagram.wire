@@ -1,0 +1,90 @@
+// instagram.wire — v0.1 (파서 대상)
+// 역할: Spock 스키마를 재선언하지 않고(이중 권위 금지) 그 위의
+// 투영·계약 계층을 선언한다. v0.1 생성물 = 기계 측 계약 타입.
+
+use contract "contract.json";   // spock build 산출물 (또는 GET /~contract)
+app "Instagram";
+
+snapshot app {
+  cap 200 per table;
+  read user, story, story_view, post, carousel_slide as slides,
+       comment, like, save, follow, post_tag;
+}
+
+view Post from post {
+  id;
+  author -> User;
+  caption;
+  media = match media_kind {
+    "image"    => Image { image: media_file as image },
+    "carousel" => Carousel { images: each carousel_slide.file as image order by position },
+    "video"    => Video { src: video_file as url, poster: media_file as image },
+  };
+  like_count = count like where post = id;
+  comment_count = count comment where post = id;
+  viewer_liked = exists like where post = id and user = viewer;
+  viewer_saved = exists save where post = id and user = viewer;
+  posted_label = ago(published_at);
+}
+
+view Profile from user {
+  user = row as User;
+  bio;
+  post_count = count post where author = id and show_in_feed;
+  follower_count = count follow where followed = id;
+  following_count = count follow where follower = id;
+  viewer_follows = exists follow where follower = viewer and followed = id;
+  posts = tiles of post where author = id and show_in_feed;
+  reels = tiles of post where author = id and media_kind is video;
+  tagged = tiles of post_tag where person = id;
+  saved = tiles of save where user = id;
+}
+
+mutation SetLike { post: post.id, liked: bool }
+  -> if liked call like_post(post) route feed/like-post allow not_authorized, not_found
+     else call unlike_post(post) route feed/unlike-post allow not_authorized;
+
+mutation SetSave { post: post.id, saved: bool }
+  -> if saved call save_post(post) route feed/save-post allow not_authorized, not_found
+     else call unsave_post(post) route feed/unsave-post allow not_authorized;
+
+mutation LoadMore
+  -> local { window feed += 4; resnapshot; };
+
+mutation ReloadFeed
+  -> local { window feed = 4; resnapshot; };
+
+mutation SetFollow { user: user.id, following: bool }
+  -> if following call follow_user(user) route profile/follow-user allow not_authorized, not_found, cannot_follow_self
+     else call unfollow_user(user) route profile/unfollow-user allow not_authorized;
+
+mutation AddComment { post: post.id, body: text }
+  -> call add_comment(post, body) route comments/add-comment allow not_authorized, comment_body_invalid, not_found;
+
+mutation SearchPeople { query: text }
+  -> local { resnapshot; filter people by query; };
+
+mutation ChooseImage op choose_image_request
+  -> host { pick_file; check type in (jpeg, png, webp); upload; settle ImageReady; };
+
+mutation PublishImage op publish_image_request { object: text, caption: text, alt: text }
+  -> call create_image_post(object, caption, alt) route create/publish-image allow not_authorized, image_not_ready, unsupported_media_type;
+
+mutation MarkStory { story: story.id }
+  -> call mark_story_viewed(story) route feed/mark-story-seen allow not_authorized, not_found;
+
+settlement {
+  ok => Accepted after resnapshot;
+  refusal => Refused { reason: kebab(error.code) };
+  extra ImageReady { object: text, preview: text, name: text };
+  timeout 15s;
+  no retry;
+}
+
+fixtures from spock.seed {
+  assets capture as webp under logical names;
+  video "video-nils-aurora" = "media-nils-aurora.mp4";
+  video "video-theo-court" = "media-theo-court.mp4";
+  video "video-mira-ferry" = "media-mira-ferry.mp4";
+  emit Observation.fixture, RequestPort.fixture;
+}
