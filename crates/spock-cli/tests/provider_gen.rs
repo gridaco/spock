@@ -119,3 +119,28 @@ fn schema_lies_are_refused_with_precise_problems() {
     let err = pg::generate_snapshot_query(&bad_table, &schema).unwrap_err();
     assert!(err[0].contains("unknown table `ghosts`"), "{err:?}");
 }
+
+/// Node 기반 실행 하니스 — 명시 실행 전용 (CI는 node를 요구하지 않는다):
+/// `cargo test -p spock-cli --test provider_gen -- --ignored`
+#[test]
+#[ignore = "requires node"]
+fn generated_module_drives_the_shared_runtime_under_node() {
+    let file = pg::parse(WIRE).expect("parse");
+    let module = pg::generate_provider_module(&file, &schema()).expect("generates");
+    let dir = std::env::temp_dir().join("spock-provider-spike");
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let module_path = dir.join("provider-tables.mjs");
+    std::fs::write(&module_path, module).expect("write module");
+
+    let base = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/provider_runtime");
+    let output = std::process::Command::new("node")
+        .arg(format!("{base}/runtime-unit.mjs"))
+        .arg(&module_path)
+        .arg(format!("{base}/runtime.mjs"))
+        .output()
+        .expect("node must be available for this opt-in check");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stdout.contains("runtime ok"), "{stdout}");
+}
