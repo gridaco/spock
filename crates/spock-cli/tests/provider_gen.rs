@@ -68,7 +68,9 @@ fn refusal_whitelist_semantically_matches_the_handwritten_table() {
     }
     generated.sort();
 
-    let start = PROVIDER_TS.find("const COMMAND_REFUSALS").expect("table present");
+    let start = PROVIDER_TS
+        .find("const COMMAND_REFUSALS")
+        .expect("table present");
     let end = PROVIDER_TS[start..].find("};").expect("table end") + start;
     let block = &PROVIDER_TS[start..end];
     let mut handwritten: Vec<(String, Vec<String>)> = Vec::new();
@@ -95,8 +97,7 @@ fn refusal_whitelist_semantically_matches_the_handwritten_table() {
 fn play_assets_match_the_handwritten_adapter() {
     let entries = pg::parse_manifest(MANIFEST).expect("manifest parses");
     let file = pg::parse(WIRE).expect("parse");
-    let generated =
-        pg::generate_play_assets(&entries, &file.videos).expect("no collisions");
+    let generated = pg::generate_play_assets(&entries, &file.videos).expect("no collisions");
     let golden = include_str!("provider_fixtures/play-assets.ts");
     assert_eq!(generated, golden.trim_end());
 }
@@ -106,14 +107,20 @@ fn schema_lies_are_refused_with_precise_problems() {
     let schema = schema();
     let bad_fn = pg::parse("mutation X { post: post.id } -> call likee_post(post);").unwrap();
     let problems = pg::validate_against(&bad_fn, &schema);
-    assert!(problems[0].contains("unknown fn `likee_post`"), "{problems:?}");
+    assert!(
+        problems[0].contains("unknown fn `likee_post`"),
+        "{problems:?}"
+    );
 
     let bad_allow = pg::parse(
         "mutation X { post: post.id } -> call like_post(post) route feed/x allow cannot_follow_self;",
     )
     .unwrap();
     let problems = pg::validate_against(&bad_allow, &schema);
-    assert!(problems[0].contains("allows `cannot_follow_self`"), "{problems:?}");
+    assert!(
+        problems[0].contains("allows `cannot_follow_self`"),
+        "{problems:?}"
+    );
 
     let bad_table = pg::parse("snapshot app { cap 200 per table; read ghosts; }").unwrap();
     let err = pg::generate_snapshot_query(&bad_table, &schema).unwrap_err();
@@ -141,6 +148,9 @@ fn generated_module_drives_the_shared_runtime_under_node() {
         .expect("node must be available for this opt-in check");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        output.status.success(),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
     assert!(stdout.contains("runtime ok"), "{stdout}");
 }

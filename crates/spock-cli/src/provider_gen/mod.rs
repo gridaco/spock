@@ -48,7 +48,10 @@ pub struct SettlementDecl {
 #[derive(Debug, PartialEq)]
 pub enum ViewEntry {
     /// 원본 컬럼 그대로, 선택적 투영(`author -> User`).
-    Column { name: String, projected: Option<String> },
+    Column {
+        name: String,
+        projected: Option<String>,
+    },
     /// `x = ago(col)` → Text
     Ago { name: String, column: String },
     /// `x = count <table> where …` → Nat
@@ -167,7 +170,11 @@ fn parse_arm(pair: pest::iterators::Pair<Rule>) -> Result<MatchArm, ParseError> 
     let mut fields = Vec::new();
     for vfield in inner {
         let mut parts = vfield.into_inner();
-        let name = parts.next().expect("variant field name").as_str().to_string();
+        let name = parts
+            .next()
+            .expect("variant field name")
+            .as_str()
+            .to_string();
         let expr = parts
             .next()
             .expect("variant field expr")
@@ -207,8 +214,7 @@ fn asset_type(class: &str) -> Option<&'static str> {
 }
 
 pub fn parse(source: &str) -> Result<WireFile, ParseError> {
-    let mut pairs =
-        WireParser::parse(Rule::file, source).map_err(|e| ParseError(e.to_string()))?;
+    let mut pairs = WireParser::parse(Rule::file, source).map_err(|e| ParseError(e.to_string()))?;
     let file = pairs.next().expect("file rule");
     let mut out = WireFile::default();
 
@@ -224,8 +230,7 @@ pub fn parse(source: &str) -> Result<WireFile, ParseError> {
                         Rule::read_decl => {
                             for read in entry.into_inner() {
                                 let mut parts = read.into_inner();
-                                let table =
-                                    parts.next().expect("read table").as_str().to_string();
+                                let table = parts.next().expect("read table").as_str().to_string();
                                 let alias = parts.next().map(|p| p.as_str().to_string());
                                 out.snapshot_reads.push(SnapshotRead { table, alias });
                             }
@@ -272,7 +277,10 @@ pub fn parse(source: &str) -> Result<WireFile, ParseError> {
                                 .as_str()
                                 .to_string();
                             entries.push(match rule {
-                                Rule::ago_e => ViewEntry::Ago { name, column: first },
+                                Rule::ago_e => ViewEntry::Ago {
+                                    name,
+                                    column: first,
+                                },
                                 Rule::count_e => ViewEntry::Count { name, table: first },
                                 Rule::exists_e => ViewEntry::Exists { name, table: first },
                                 Rule::tiles_e => ViewEntry::Tiles { name, table: first },
@@ -400,9 +408,7 @@ pub fn policy_calls(policy: &str) -> Vec<CallSpec> {
         let mut route = None;
         let trimmed = rest.trim_start();
         if let Some(after) = trimmed.strip_prefix("route ") {
-            let token_end = after
-                .find(char::is_whitespace)
-                .unwrap_or(after.len());
+            let token_end = after.find(char::is_whitespace).unwrap_or(after.len());
             route = Some(after[..token_end].to_string());
             rest = &after[token_end..];
         }
@@ -427,9 +433,7 @@ pub fn policy_calls(policy: &str) -> Vec<CallSpec> {
             rest = &rest[consumed.min(rest.len())..];
         }
         if !fn_name.is_empty() {
-            let when = flag
-                .as_ref()
-                .map(|f| (f.clone(), call_index == 0));
+            let when = flag.as_ref().map(|f| (f.clone(), call_index == 0));
             call_index += 1;
             out.push(CallSpec {
                 fn_name,
@@ -758,8 +762,7 @@ pub fn generate_play_assets(
     if !problems.is_empty() {
         return Err(problems);
     }
-    let mut out =
-        String::from("const LOCAL_PLAY_ASSETS: Readonly<Record<string, string>> = {\n");
+    let mut out = String::from("const LOCAL_PLAY_ASSETS: Readonly<Record<string, string>> = {\n");
     for (name, file) in entries.iter().chain(videos) {
         out.push_str(&format!("  \"{name}\": \"{file}\",\n"));
     }
@@ -801,7 +804,9 @@ pub fn generate_snapshot_query(
 ) -> Result<String, Vec<String>> {
     let mut problems = Vec::new();
     let Some(cap) = file.snapshot_cap else {
-        return Err(vec!["snapshot has no `cap N per table` declaration".to_string()]);
+        return Err(vec![
+            "snapshot has no `cap N per table` declaration".to_string()
+        ]);
     };
     let mut out = String::from("\n  query UhuraSnapshot {\n");
     for read in &file.snapshot_reads {
@@ -815,8 +820,7 @@ pub fn generate_snapshot_query(
             .unwrap_or_else(|| default_alias(&read.table));
         out.push_str(&format!("    {alias}: {}(limit: {cap}) {{\n", read.table));
         for column in &table.columns {
-            let is_ref =
-                column.base == "storage_object" || schema.has_table(&column.base);
+            let is_ref = column.base == "storage_object" || schema.has_table(&column.base);
             if is_ref {
                 out.push_str(&format!("      {} {{ id }}\n", column.name));
             } else {
@@ -848,10 +852,7 @@ fn pascal(name: &str) -> String {
 
 /// 뷰 선언 → 기계 측 레코드 타입 생성. 타입 유도가 스키마와 어긋나면
 /// 생성 대신 문제 목록을 돌려준다 (추측 생성 금지).
-pub fn generate_view_types(
-    file: &WireFile,
-    schema: &SpockSchema,
-) -> Result<String, Vec<String>> {
+pub fn generate_view_types(file: &WireFile, schema: &SpockSchema) -> Result<String, Vec<String>> {
     let mut problems = Vec::new();
     let mut out = String::new();
     for (i, view) in file.views.iter().enumerate() {
@@ -1015,10 +1016,7 @@ pub fn generate_view_types(
                 }
                 ViewEntry::Tiles { name, table: t } => {
                     if !schema.has_table(t) {
-                        problems.push(format!(
-                            "view {}: tiles of unknown table `{t}`",
-                            view.name
-                        ));
+                        problems.push(format!("view {}: tiles of unknown table `{t}`", view.name));
                     }
                     (name.clone(), "Seq<Tile>".to_string())
                 }
@@ -1107,8 +1105,6 @@ mod tests {
 // 소비한다. .spock 소스 텍스트를 직접 파싱하지 않는다 — 계약이 진실이고
 // (텍스트 파싱은 storage_object 시스템 테이블을 놓쳤다), additively frozen
 // 이라 안정된 입력이다.
-
-
 
 #[derive(Debug, Default, PartialEq)]
 pub struct SpockSchema {
@@ -1245,10 +1241,7 @@ pub fn extract_contract(source: &str) -> Result<SpockSchema, Vec<String>> {
                             .collect()
                     })
                     .unwrap_or_default();
-                let mutating = !f
-                    .get("readonly")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
+                let mutating = !f.get("readonly").and_then(Value::as_bool).unwrap_or(false);
                 schema.fns.push(SpockFn {
                     name: name.to_string(),
                     errors,
