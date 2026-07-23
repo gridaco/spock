@@ -1,0 +1,3842 @@
+{
+  "spock": "v0",
+  "doc": "instagram — the Spock authority in the canonical full-stack framework example.\n\nRFD 0024 IMPLEMENTATION PREVIEW — EXPERIMENTAL, UNSTABLE, AND\nNON-NORMATIVE. The `0.5.2` toolchain accepts the top-level `error`\ndeclarations in this file as implementation evidence, not accepted v0 or a\ncompatibility promise.\n\nThis program is the live authority behind the sibling Uhura client. Its\ntables and seed mirror the demo's\nstandard fixture (fixtures/standard.toml), with the fixture's generated\nimages materialized as Spock storage objects. Its fns satisfy the feed,\ncomments, profile, people, story, saved-library, and create port contracts.\nThe client-owned Play provider assembles projection shapes from Spock GraphQL,\nsigns storage downloads, and maps port commands onto `POST /rest/v1/rpc/*`.\n\nIdentity is the v0 dev seam (RFD 0014): the driver acts as Mira by sending\n`X-Spock-Actor: 10000000-0000-4000-8000-000000000001` — user keys are\nliteral uuids in the seed, so ids are stable across restarts.\n\nImage and video file columns are `storage_object` references. Existing demo\nJPEGs and MP4s enter through `file(\"./seed/…\")`; uploaded bytes enter through\nSpock's signed storage protocol and can be attached with `create_image_post`.\n\nCounts are intentionally absent from the stored model. Posts, likes,\ncomments, follows, saves, and story views are source rows; the Play provider\nderives every number and label shown by Uhura from a GraphQL snapshot. Saves\nremain private viewer state and are never presented as public engagement.\nThe 162-row demo seed exercises 9 actors, 23 posts, 12 story frames, and the\nthree stored-media shapes: image, carousel, and playable video plus poster.",
+  "errors": [
+    {
+      "code": "not_authorized",
+      "doc": "The current actor is absent or is not permitted to perform the operation."
+    },
+    {
+      "code": "cannot_follow_self",
+      "doc": "A person cannot follow themselves."
+    },
+    {
+      "code": "image_not_ready",
+      "doc": "The uploaded image is not ready to be attached to a post."
+    },
+    {
+      "code": "unsupported_media_type",
+      "doc": "The uploaded object is not a supported image type."
+    }
+  ],
+  "tables": [
+    {
+      "name": "user",
+      "doc": "A demo person. The identity anchor: `user.id` is what `X-Spock-Actor`\ncarries and `spock_actor()` returns. Profile counts are derived from post\nand follow rows instead of being stored here as decorative labels.",
+      "key": [
+        "id"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "uuid"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "auto"
+          }
+        },
+        {
+          "name": "username",
+          "doc": "The unique handle, e.g. \"mira.santos\".",
+          "type": {
+            "kind": "text"
+          },
+          "optional": false,
+          "unique": true,
+          "default": null
+        },
+        {
+          "name": "display_name",
+          "doc": "Full display name, e.g. \"Mira Santos\".",
+          "type": {
+            "kind": "text"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "avatar",
+          "doc": "The avatar image stored in Spock's byte plane.",
+          "type": {
+            "kind": "ref",
+            "table": "storage_object",
+            "on_delete": "restrict"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "avatar_alt",
+          "doc": "Alt text for the avatar.",
+          "type": {
+            "kind": "text"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "bio",
+          "doc": "Profile bio.",
+          "type": {
+            "kind": "text"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        }
+      ],
+      "uniques": [],
+      "anchor": true,
+      "errors": [
+        {
+          "code": "user_already_exists",
+          "kind": "key",
+          "fields": [
+            "id"
+          ],
+          "status": 409
+        },
+        {
+          "code": "user_username_taken",
+          "kind": "unique",
+          "fields": [
+            "username"
+          ],
+          "status": 409
+        },
+        {
+          "code": "user_username_required",
+          "kind": "required",
+          "fields": [
+            "username"
+          ],
+          "status": 422
+        },
+        {
+          "code": "user_display_name_required",
+          "kind": "required",
+          "fields": [
+            "display_name"
+          ],
+          "status": 422
+        },
+        {
+          "code": "user_avatar_required",
+          "kind": "required",
+          "fields": [
+            "avatar"
+          ],
+          "status": 422
+        },
+        {
+          "code": "user_avatar_alt_required",
+          "kind": "required",
+          "fields": [
+            "avatar_alt"
+          ],
+          "status": 422
+        },
+        {
+          "code": "user_bio_required",
+          "kind": "required",
+          "fields": [
+            "bio"
+          ],
+          "status": 422
+        },
+        {
+          "code": "user_avatar_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "avatar"
+          ],
+          "status": 422
+        },
+        {
+          "code": "user_restricted",
+          "kind": "restricted",
+          "fields": [],
+          "status": 409
+        }
+      ]
+    },
+    {
+      "name": "follow",
+      "doc": "A directed follower edge. Profile follower/following counts and people\nlists are computed from these rows.",
+      "key": [
+        "follower",
+        "followed"
+      ],
+      "fields": [
+        {
+          "name": "follower",
+          "doc": "The person doing the following.",
+          "type": {
+            "kind": "ref",
+            "table": "user",
+            "on_delete": "cascade"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "followed",
+          "doc": "The person being followed.",
+          "type": {
+            "kind": "ref",
+            "table": "user",
+            "on_delete": "cascade"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "at",
+          "doc": "When the relationship began.",
+          "type": {
+            "kind": "timestamp"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "now"
+          }
+        }
+      ],
+      "uniques": [],
+      "errors": [
+        {
+          "code": "follow_already_exists",
+          "kind": "key",
+          "fields": [
+            "follower",
+            "followed"
+          ],
+          "status": 409
+        },
+        {
+          "code": "follow_follower_required",
+          "kind": "required",
+          "fields": [
+            "follower"
+          ],
+          "status": 422
+        },
+        {
+          "code": "follow_followed_required",
+          "kind": "required",
+          "fields": [
+            "followed"
+          ],
+          "status": 422
+        },
+        {
+          "code": "follow_at_required",
+          "kind": "required",
+          "fields": [
+            "at"
+          ],
+          "status": 422
+        },
+        {
+          "code": "follow_follower_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "follower"
+          ],
+          "status": 422
+        },
+        {
+          "code": "follow_followed_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "followed"
+          ],
+          "status": 422
+        }
+      ]
+    },
+    {
+      "name": "story",
+      "doc": "One active story frame. Authors can own a sequence of frames; position is\nunique within that active sequence so playback order is deterministic.",
+      "key": [
+        "id"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "uuid"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "auto"
+          }
+        },
+        {
+          "name": "author",
+          "doc": "Who published the frame.",
+          "type": {
+            "kind": "ref",
+            "table": "user",
+            "on_delete": "cascade"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "position",
+          "doc": "Position within the author's current story, 1-based.",
+          "type": {
+            "kind": "int"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "media_file",
+          "doc": "Story image stored in Spock's byte plane.",
+          "type": {
+            "kind": "ref",
+            "table": "storage_object",
+            "on_delete": "restrict"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "media_alt",
+          "doc": "Accessible alternative text.",
+          "type": {
+            "kind": "text"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "caption",
+          "doc": "Optional overlay caption.",
+          "type": {
+            "kind": "text"
+          },
+          "optional": true,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "published_at",
+          "doc": "Real publication instant; the provider formats relative time.",
+          "type": {
+            "kind": "timestamp"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "now"
+          }
+        }
+      ],
+      "uniques": [
+        [
+          "author",
+          "position"
+        ]
+      ],
+      "errors": [
+        {
+          "code": "story_already_exists",
+          "kind": "key",
+          "fields": [
+            "id"
+          ],
+          "status": 409
+        },
+        {
+          "code": "story_author_position_taken",
+          "kind": "unique",
+          "fields": [
+            "author",
+            "position"
+          ],
+          "status": 409
+        },
+        {
+          "code": "story_author_required",
+          "kind": "required",
+          "fields": [
+            "author"
+          ],
+          "status": 422
+        },
+        {
+          "code": "story_position_required",
+          "kind": "required",
+          "fields": [
+            "position"
+          ],
+          "status": 422
+        },
+        {
+          "code": "story_media_file_required",
+          "kind": "required",
+          "fields": [
+            "media_file"
+          ],
+          "status": 422
+        },
+        {
+          "code": "story_media_alt_required",
+          "kind": "required",
+          "fields": [
+            "media_alt"
+          ],
+          "status": 422
+        },
+        {
+          "code": "story_published_at_required",
+          "kind": "required",
+          "fields": [
+            "published_at"
+          ],
+          "status": 422
+        },
+        {
+          "code": "story_author_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "author"
+          ],
+          "status": 422
+        },
+        {
+          "code": "story_media_file_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "media_file"
+          ],
+          "status": 422
+        }
+      ]
+    },
+    {
+      "name": "story_view",
+      "doc": "A viewer has seen a specific story frame. Ring state is derived: an\nauthor's ring is unseen when at least one current frame lacks this edge.",
+      "key": [
+        "viewer",
+        "story"
+      ],
+      "fields": [
+        {
+          "name": "viewer",
+          "doc": "Who viewed the frame.",
+          "type": {
+            "kind": "ref",
+            "table": "user",
+            "on_delete": "cascade"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "story",
+          "doc": "Which frame was viewed.",
+          "type": {
+            "kind": "ref",
+            "table": "story",
+            "on_delete": "cascade"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "at",
+          "doc": "When it was viewed.",
+          "type": {
+            "kind": "timestamp"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "now"
+          }
+        }
+      ],
+      "uniques": [],
+      "errors": [
+        {
+          "code": "story_view_already_exists",
+          "kind": "key",
+          "fields": [
+            "viewer",
+            "story"
+          ],
+          "status": 409
+        },
+        {
+          "code": "story_view_viewer_required",
+          "kind": "required",
+          "fields": [
+            "viewer"
+          ],
+          "status": 422
+        },
+        {
+          "code": "story_view_story_required",
+          "kind": "required",
+          "fields": [
+            "story"
+          ],
+          "status": 422
+        },
+        {
+          "code": "story_view_at_required",
+          "kind": "required",
+          "fields": [
+            "at"
+          ],
+          "status": 422
+        },
+        {
+          "code": "story_view_viewer_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "viewer"
+          ],
+          "status": 422
+        },
+        {
+          "code": "story_view_story_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "story"
+          ],
+          "status": 422
+        }
+      ]
+    },
+    {
+      "name": "post",
+      "doc": "A published post. `media_kind` selects the port's media union variant: an\n`image` row carries `media_file`/`media_alt`; a `video` row additionally\ncarries playable `video_file` bytes while retaining `media_file` as its\nposter; a `carousel` row leaves those fields absent and owns\n`carousel_slide` rows instead.",
+      "key": [
+        "id"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "uuid"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "auto"
+          }
+        },
+        {
+          "name": "author",
+          "doc": "The author.",
+          "type": {
+            "kind": "ref",
+            "table": "user",
+            "on_delete": "restrict"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "caption",
+          "doc": "Caption text. An empty string means the author published without one.",
+          "type": {
+            "kind": "text"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "published_at",
+          "doc": "Real publication instant; the provider derives age labels and ordering.",
+          "type": {
+            "kind": "timestamp"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "now"
+          }
+        },
+        {
+          "name": "show_in_feed",
+          "doc": "Whether this post participates in the home feed. Older profile posts\nremain first-class posts but do not flood the short demo feed.",
+          "type": {
+            "kind": "bool"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "bool",
+            "value": true
+          }
+        },
+        {
+          "name": "media_kind",
+          "doc": "Which media union variant this post renders as.",
+          "type": {
+            "kind": "set",
+            "values": [
+              "image",
+              "carousel",
+              "video"
+            ]
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "media_file",
+          "doc": "Image or video-poster object; absent for carousels.",
+          "type": {
+            "kind": "ref",
+            "table": "storage_object",
+            "on_delete": "restrict"
+          },
+          "optional": true,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "video_file",
+          "doc": "Playable video bytes; present only for video posts.",
+          "type": {
+            "kind": "ref",
+            "table": "storage_object",
+            "on_delete": "restrict"
+          },
+          "optional": true,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "media_alt",
+          "doc": "Alt text for `media_file`; absent for carousels.",
+          "type": {
+            "kind": "text"
+          },
+          "optional": true,
+          "unique": false,
+          "default": null
+        }
+      ],
+      "uniques": [],
+      "errors": [
+        {
+          "code": "post_already_exists",
+          "kind": "key",
+          "fields": [
+            "id"
+          ],
+          "status": 409
+        },
+        {
+          "code": "post_author_required",
+          "kind": "required",
+          "fields": [
+            "author"
+          ],
+          "status": 422
+        },
+        {
+          "code": "post_caption_required",
+          "kind": "required",
+          "fields": [
+            "caption"
+          ],
+          "status": 422
+        },
+        {
+          "code": "post_published_at_required",
+          "kind": "required",
+          "fields": [
+            "published_at"
+          ],
+          "status": 422
+        },
+        {
+          "code": "post_show_in_feed_required",
+          "kind": "required",
+          "fields": [
+            "show_in_feed"
+          ],
+          "status": 422
+        },
+        {
+          "code": "post_media_kind_required",
+          "kind": "required",
+          "fields": [
+            "media_kind"
+          ],
+          "status": 422
+        },
+        {
+          "code": "post_author_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "author"
+          ],
+          "status": 422
+        },
+        {
+          "code": "post_media_file_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "media_file"
+          ],
+          "status": 422
+        },
+        {
+          "code": "post_video_file_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "video_file"
+          ],
+          "status": 422
+        },
+        {
+          "code": "post_media_kind_invalid",
+          "kind": "invalid",
+          "fields": [
+            "media_kind"
+          ],
+          "status": 422
+        }
+      ]
+    },
+    {
+      "name": "post_tag",
+      "doc": "A person tagged in a published post. The composite key prevents duplicate\ntags while keeping the post itself as the single media/caption authority\nused by feed, profile-grid, tagged-grid, and post-detail projections. A tag\ndisappears with either endpoint: deleting a post cannot leave a dangling\nprofile tile, and deleting a person removes references to that identity.",
+      "key": [
+        "post",
+        "person"
+      ],
+      "fields": [
+        {
+          "name": "post",
+          "doc": "The post carrying the tag.",
+          "type": {
+            "kind": "ref",
+            "table": "post",
+            "on_delete": "cascade"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "person",
+          "doc": "The person tagged in that post.",
+          "type": {
+            "kind": "ref",
+            "table": "user",
+            "on_delete": "cascade"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        }
+      ],
+      "uniques": [],
+      "errors": [
+        {
+          "code": "post_tag_already_exists",
+          "kind": "key",
+          "fields": [
+            "post",
+            "person"
+          ],
+          "status": 409
+        },
+        {
+          "code": "post_tag_post_required",
+          "kind": "required",
+          "fields": [
+            "post"
+          ],
+          "status": 422
+        },
+        {
+          "code": "post_tag_person_required",
+          "kind": "required",
+          "fields": [
+            "person"
+          ],
+          "status": 422
+        },
+        {
+          "code": "post_tag_post_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "post"
+          ],
+          "status": 422
+        },
+        {
+          "code": "post_tag_person_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "person"
+          ],
+          "status": 422
+        }
+      ]
+    },
+    {
+      "name": "carousel_slide",
+      "doc": "One slide of a carousel post, in slide order.",
+      "key": [
+        "id"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "uuid"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "auto"
+          }
+        },
+        {
+          "name": "post",
+          "doc": "The carousel post this slide belongs to.",
+          "type": {
+            "kind": "ref",
+            "table": "post",
+            "on_delete": "cascade"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "position",
+          "doc": "Slide order, 1-based.",
+          "type": {
+            "kind": "int"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "file",
+          "doc": "The slide image stored in Spock's byte plane.",
+          "type": {
+            "kind": "ref",
+            "table": "storage_object",
+            "on_delete": "restrict"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "alt",
+          "doc": "Alt text for the slide.",
+          "type": {
+            "kind": "text"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        }
+      ],
+      "uniques": [],
+      "errors": [
+        {
+          "code": "carousel_slide_already_exists",
+          "kind": "key",
+          "fields": [
+            "id"
+          ],
+          "status": 409
+        },
+        {
+          "code": "carousel_slide_post_required",
+          "kind": "required",
+          "fields": [
+            "post"
+          ],
+          "status": 422
+        },
+        {
+          "code": "carousel_slide_position_required",
+          "kind": "required",
+          "fields": [
+            "position"
+          ],
+          "status": 422
+        },
+        {
+          "code": "carousel_slide_file_required",
+          "kind": "required",
+          "fields": [
+            "file"
+          ],
+          "status": 422
+        },
+        {
+          "code": "carousel_slide_alt_required",
+          "kind": "required",
+          "fields": [
+            "alt"
+          ],
+          "status": 422
+        },
+        {
+          "code": "carousel_slide_post_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "post"
+          ],
+          "status": 422
+        },
+        {
+          "code": "carousel_slide_file_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "file"
+          ],
+          "status": 422
+        }
+      ]
+    },
+    {
+      "name": "comment",
+      "doc": "A comment on a post. Thread order and age labels derive from `created_at`.",
+      "key": [
+        "id"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "uuid"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "auto"
+          }
+        },
+        {
+          "name": "post",
+          "doc": "The post commented on.",
+          "type": {
+            "kind": "ref",
+            "table": "post",
+            "on_delete": "cascade"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "author",
+          "doc": "Who wrote it.",
+          "type": {
+            "kind": "ref",
+            "table": "user",
+            "on_delete": "restrict"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "body",
+          "doc": "The comment text (non-empty).",
+          "type": {
+            "kind": "text"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null,
+          "check": "nonempty"
+        },
+        {
+          "name": "created_at",
+          "doc": "Real creation instant.",
+          "type": {
+            "kind": "timestamp"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "now"
+          }
+        }
+      ],
+      "uniques": [],
+      "errors": [
+        {
+          "code": "comment_already_exists",
+          "kind": "key",
+          "fields": [
+            "id"
+          ],
+          "status": 409
+        },
+        {
+          "code": "comment_post_required",
+          "kind": "required",
+          "fields": [
+            "post"
+          ],
+          "status": 422
+        },
+        {
+          "code": "comment_author_required",
+          "kind": "required",
+          "fields": [
+            "author"
+          ],
+          "status": 422
+        },
+        {
+          "code": "comment_body_required",
+          "kind": "required",
+          "fields": [
+            "body"
+          ],
+          "status": 422
+        },
+        {
+          "code": "comment_created_at_required",
+          "kind": "required",
+          "fields": [
+            "created_at"
+          ],
+          "status": 422
+        },
+        {
+          "code": "comment_post_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "post"
+          ],
+          "status": 422
+        },
+        {
+          "code": "comment_author_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "author"
+          ],
+          "status": 422
+        },
+        {
+          "code": "comment_body_invalid",
+          "kind": "invalid",
+          "fields": [
+            "body"
+          ],
+          "status": 422
+        }
+      ]
+    },
+    {
+      "name": "like",
+      "doc": "A like edge. The composite key makes a like at-most-once per (user, post)\nby construction — no separate `unique` needed.",
+      "key": [
+        "user",
+        "post"
+      ],
+      "fields": [
+        {
+          "name": "user",
+          "doc": "Who liked.",
+          "type": {
+            "kind": "ref",
+            "table": "user",
+            "on_delete": "restrict"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "post",
+          "doc": "The liked post.",
+          "type": {
+            "kind": "ref",
+            "table": "post",
+            "on_delete": "cascade"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "at",
+          "doc": "When the like landed.",
+          "type": {
+            "kind": "timestamp"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "now"
+          }
+        }
+      ],
+      "uniques": [],
+      "errors": [
+        {
+          "code": "like_already_exists",
+          "kind": "key",
+          "fields": [
+            "user",
+            "post"
+          ],
+          "status": 409
+        },
+        {
+          "code": "like_user_required",
+          "kind": "required",
+          "fields": [
+            "user"
+          ],
+          "status": 422
+        },
+        {
+          "code": "like_post_required",
+          "kind": "required",
+          "fields": [
+            "post"
+          ],
+          "status": 422
+        },
+        {
+          "code": "like_at_required",
+          "kind": "required",
+          "fields": [
+            "at"
+          ],
+          "status": 422
+        },
+        {
+          "code": "like_user_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "user"
+          ],
+          "status": 422
+        },
+        {
+          "code": "like_post_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "post"
+          ],
+          "status": 422
+        }
+      ]
+    },
+    {
+      "name": "save",
+      "doc": "A post saved to one user's private library. The composite key makes saving\nidempotent. Unlike a like, this edge is viewer-private state: it produces no\nnotification and has no public count.",
+      "key": [
+        "user",
+        "post"
+      ],
+      "fields": [
+        {
+          "name": "user",
+          "doc": "The user who saved the post. RPCs always stamp the current actor.",
+          "type": {
+            "kind": "ref",
+            "table": "user",
+            "on_delete": "cascade"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "post",
+          "doc": "The saved post.",
+          "type": {
+            "kind": "ref",
+            "table": "post",
+            "on_delete": "cascade"
+          },
+          "optional": false,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "at",
+          "doc": "When the post was saved.",
+          "type": {
+            "kind": "timestamp"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "now"
+          }
+        }
+      ],
+      "uniques": [],
+      "errors": [
+        {
+          "code": "save_already_exists",
+          "kind": "key",
+          "fields": [
+            "user",
+            "post"
+          ],
+          "status": 409
+        },
+        {
+          "code": "save_user_required",
+          "kind": "required",
+          "fields": [
+            "user"
+          ],
+          "status": 422
+        },
+        {
+          "code": "save_post_required",
+          "kind": "required",
+          "fields": [
+            "post"
+          ],
+          "status": 422
+        },
+        {
+          "code": "save_at_required",
+          "kind": "required",
+          "fields": [
+            "at"
+          ],
+          "status": 422
+        },
+        {
+          "code": "save_user_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "user"
+          ],
+          "status": 422
+        },
+        {
+          "code": "save_post_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "post"
+          ],
+          "status": 422
+        }
+      ]
+    },
+    {
+      "name": "storage_object",
+      "doc": "A stored file. Metadata for a byte object whose bytes live in the runtime's blob store: created pending on upload, committed when its bytes land, swept when abandoned or unreferenced (RFD 0018).",
+      "key": [
+        "id"
+      ],
+      "fields": [
+        {
+          "name": "id",
+          "type": {
+            "kind": "uuid"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "auto"
+          }
+        },
+        {
+          "name": "owner",
+          "type": {
+            "kind": "ref",
+            "table": "user",
+            "on_delete": "set_null"
+          },
+          "optional": true,
+          "unique": false,
+          "default": {
+            "kind": "actor"
+          }
+        },
+        {
+          "name": "name",
+          "type": {
+            "kind": "text"
+          },
+          "optional": true,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "content_type",
+          "type": {
+            "kind": "text"
+          },
+          "optional": true,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "size",
+          "type": {
+            "kind": "int"
+          },
+          "optional": true,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "checksum",
+          "type": {
+            "kind": "text"
+          },
+          "optional": true,
+          "unique": false,
+          "default": null
+        },
+        {
+          "name": "state",
+          "type": {
+            "kind": "set",
+            "values": [
+              "pending",
+              "committed"
+            ]
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "str",
+            "value": "pending"
+          }
+        },
+        {
+          "name": "created_at",
+          "type": {
+            "kind": "timestamp"
+          },
+          "optional": false,
+          "unique": false,
+          "default": {
+            "kind": "now"
+          }
+        }
+      ],
+      "uniques": [],
+      "builtin": true,
+      "errors": [
+        {
+          "code": "storage_object_already_exists",
+          "kind": "key",
+          "fields": [
+            "id"
+          ],
+          "status": 409
+        },
+        {
+          "code": "storage_object_state_required",
+          "kind": "required",
+          "fields": [
+            "state"
+          ],
+          "status": 422
+        },
+        {
+          "code": "storage_object_created_at_required",
+          "kind": "required",
+          "fields": [
+            "created_at"
+          ],
+          "status": 422
+        },
+        {
+          "code": "storage_object_owner_not_found",
+          "kind": "ref_not_found",
+          "fields": [
+            "owner"
+          ],
+          "status": 422
+        },
+        {
+          "code": "storage_object_state_invalid",
+          "kind": "invalid",
+          "fields": [
+            "state"
+          ],
+          "status": 422
+        },
+        {
+          "code": "storage_object_restricted",
+          "kind": "restricted",
+          "fields": [],
+          "status": 409
+        }
+      ]
+    }
+  ],
+  "records": [],
+  "fns": [
+    {
+      "name": "nonempty",
+      "doc": "A comment body must contain something other than spaces, tabs, or line\nbreaks (RFD 0013 validator; derives `comment_body_invalid` on the whole\nfloor, fn escapes included).",
+      "readonly": true,
+      "params": [
+        {
+          "name": "s",
+          "type": {
+            "kind": "text"
+          },
+          "optional": false
+        }
+      ],
+      "returns": {
+        "arity": "one",
+        "of": "bool",
+        "scalar": true
+      },
+      "errors": [],
+      "refusals": [],
+      "sql": [
+        "SELECT length(trim(:s, ' ' || char(9, 10, 13))) > 0"
+      ]
+    },
+    {
+      "name": "like_post",
+      "doc": "Like a post as the current actor (`X-Spock-Actor`). Idempotent: liking a\npost you already like returns the existing like row and does not touch\nany counter because the displayed count is derived from like rows. Refuses\n`not_authorized` when anonymous and answers `not_found` when the post does\nnot exist (the returning SELECT finds no row, so the transaction rolls back).",
+      "readonly": false,
+      "params": [
+        {
+          "name": "post",
+          "doc": "The post to like.",
+          "type": {
+            "kind": "ref",
+            "table": "post",
+            "on_delete": "restrict"
+          },
+          "optional": false
+        }
+      ],
+      "returns": {
+        "arity": "one",
+        "of": "like",
+        "scalar": false
+      },
+      "errors": [
+        "not_authorized",
+        "not_found"
+      ],
+      "refusals": [
+        "not_authorized"
+      ],
+      "sql": [
+        "\n    SELECT spock_refuse('not_authorized') WHERE spock_actor() IS NULL\n  ",
+        "\n    INSERT INTO \"like\" (\"user\", post)\n    SELECT spock_actor(), p.id FROM post p WHERE p.id = :post\n    ON CONFLICT (\"user\", post) DO NOTHING\n  ",
+        "\n    SELECT * FROM \"like\" WHERE post = :post AND \"user\" = spock_actor()\n  "
+      ]
+    },
+    {
+      "name": "unlike_post",
+      "doc": "Remove the actor's like. Idempotent: unliking a post you don't like (or\na post that doesn't exist) returns null and changes nothing.",
+      "readonly": false,
+      "params": [
+        {
+          "name": "post",
+          "doc": "The post to unlike.",
+          "type": {
+            "kind": "ref",
+            "table": "post",
+            "on_delete": "restrict"
+          },
+          "optional": false
+        }
+      ],
+      "returns": {
+        "arity": "maybe",
+        "of": "like",
+        "scalar": false
+      },
+      "errors": [
+        "not_authorized"
+      ],
+      "refusals": [
+        "not_authorized"
+      ],
+      "sql": [
+        "\n    SELECT spock_refuse('not_authorized') WHERE spock_actor() IS NULL\n  ",
+        "\n    DELETE FROM \"like\" WHERE post = :post AND \"user\" = spock_actor()\n    RETURNING *\n  "
+      ]
+    },
+    {
+      "name": "save_post",
+      "doc": "Save a post to the current actor's private library. Idempotent: saving an\nalready-saved post returns the existing edge without refreshing its time.",
+      "readonly": false,
+      "params": [
+        {
+          "name": "post",
+          "doc": "The post to save.",
+          "type": {
+            "kind": "ref",
+            "table": "post",
+            "on_delete": "restrict"
+          },
+          "optional": false
+        }
+      ],
+      "returns": {
+        "arity": "one",
+        "of": "save",
+        "scalar": false
+      },
+      "errors": [
+        "not_authorized",
+        "not_found"
+      ],
+      "refusals": [
+        "not_authorized"
+      ],
+      "sql": [
+        "\n    SELECT spock_refuse('not_authorized') WHERE spock_actor() IS NULL\n  ",
+        "\n    INSERT INTO save (\"user\", post)\n    SELECT spock_actor(), p.id FROM post p WHERE p.id = :post\n    ON CONFLICT (\"user\", post) DO NOTHING\n  ",
+        "\n    SELECT * FROM save WHERE post = :post AND \"user\" = spock_actor()\n  "
+      ]
+    },
+    {
+      "name": "unsave_post",
+      "doc": "Remove a post from the current actor's private library. Idempotent: an\nabsent save edge returns null and changes nothing.",
+      "readonly": false,
+      "params": [
+        {
+          "name": "post",
+          "doc": "The post to remove from saved posts.",
+          "type": {
+            "kind": "ref",
+            "table": "post",
+            "on_delete": "restrict"
+          },
+          "optional": false
+        }
+      ],
+      "returns": {
+        "arity": "maybe",
+        "of": "save",
+        "scalar": false
+      },
+      "errors": [
+        "not_authorized"
+      ],
+      "refusals": [
+        "not_authorized"
+      ],
+      "sql": [
+        "\n    SELECT spock_refuse('not_authorized') WHERE spock_actor() IS NULL\n  ",
+        "\n    DELETE FROM save WHERE post = :post AND \"user\" = spock_actor()\n    RETURNING *\n  "
+      ]
+    },
+    {
+      "name": "add_comment",
+      "doc": "Comment on a post as the current actor, returning the authority's echo of\nthe new row — including its minted UUIDv7 `id` and real `created_at`.\nAn empty or whitespace-only body trips the `comment_body_invalid` check; a\nmissing post is `not_found` (the answering INSERT..SELECT inserts nothing).",
+      "readonly": false,
+      "params": [
+        {
+          "name": "post",
+          "doc": "The post to comment on.",
+          "type": {
+            "kind": "ref",
+            "table": "post",
+            "on_delete": "restrict"
+          },
+          "optional": false
+        },
+        {
+          "name": "body",
+          "doc": "The comment text (non-empty).",
+          "type": {
+            "kind": "text"
+          },
+          "optional": false
+        }
+      ],
+      "returns": {
+        "arity": "one",
+        "of": "comment",
+        "scalar": false
+      },
+      "errors": [
+        "not_authorized",
+        "comment_body_invalid",
+        "not_found"
+      ],
+      "refusals": [
+        "not_authorized"
+      ],
+      "sql": [
+        "\n    SELECT spock_refuse('not_authorized') WHERE spock_actor() IS NULL\n  ",
+        "\n    INSERT INTO comment (post, author, body)\n    SELECT p.id, spock_actor(), :body\n    FROM post p WHERE p.id = :post\n    RETURNING *\n  "
+      ]
+    },
+    {
+      "name": "follow_user",
+      "doc": "Follow another person. Idempotent; a repeated follow returns the existing\nedge. Counts and lists update automatically because they derive from rows.",
+      "readonly": false,
+      "params": [
+        {
+          "name": "target",
+          "doc": "The person to follow.",
+          "type": {
+            "kind": "ref",
+            "table": "user",
+            "on_delete": "restrict"
+          },
+          "optional": false
+        }
+      ],
+      "returns": {
+        "arity": "one",
+        "of": "follow",
+        "scalar": false
+      },
+      "errors": [
+        "not_authorized",
+        "cannot_follow_self",
+        "not_found"
+      ],
+      "refusals": [
+        "not_authorized",
+        "cannot_follow_self"
+      ],
+      "sql": [
+        "\n    SELECT spock_refuse('not_authorized') WHERE spock_actor() IS NULL\n  ",
+        "\n    SELECT spock_refuse('cannot_follow_self') WHERE spock_actor() = :target\n  ",
+        "\n    INSERT INTO follow (follower, followed)\n    SELECT spock_actor(), u.id FROM \"user\" u WHERE u.id = :target\n    ON CONFLICT (follower, followed) DO NOTHING\n  ",
+        "\n    SELECT * FROM follow\n    WHERE follower = spock_actor() AND followed = :target\n  "
+      ]
+    },
+    {
+      "name": "unfollow_user",
+      "doc": "Stop following another person. Idempotent; an absent edge returns null.",
+      "readonly": false,
+      "params": [
+        {
+          "name": "target",
+          "doc": "The person to stop following.",
+          "type": {
+            "kind": "ref",
+            "table": "user",
+            "on_delete": "restrict"
+          },
+          "optional": false
+        }
+      ],
+      "returns": {
+        "arity": "maybe",
+        "of": "follow",
+        "scalar": false
+      },
+      "errors": [
+        "not_authorized"
+      ],
+      "refusals": [
+        "not_authorized"
+      ],
+      "sql": [
+        "\n    SELECT spock_refuse('not_authorized') WHERE spock_actor() IS NULL\n  ",
+        "\n    DELETE FROM follow\n    WHERE follower = spock_actor() AND followed = :target\n    RETURNING *\n  "
+      ]
+    },
+    {
+      "name": "mark_story_viewed",
+      "doc": "Mark one story frame as viewed. Idempotent; the resulting ring state is\ncomputed by comparing all story rows with the viewer's view edges.",
+      "readonly": false,
+      "params": [
+        {
+          "name": "story",
+          "doc": "The story frame that became visible.",
+          "type": {
+            "kind": "ref",
+            "table": "story",
+            "on_delete": "restrict"
+          },
+          "optional": false
+        }
+      ],
+      "returns": {
+        "arity": "one",
+        "of": "story_view",
+        "scalar": false
+      },
+      "errors": [
+        "not_authorized",
+        "not_found"
+      ],
+      "refusals": [
+        "not_authorized"
+      ],
+      "sql": [
+        "\n    SELECT spock_refuse('not_authorized') WHERE spock_actor() IS NULL\n  ",
+        "\n    INSERT INTO story_view (viewer, story)\n    SELECT spock_actor(), s.id FROM story s WHERE s.id = :story\n    ON CONFLICT (viewer, story) DO NOTHING\n  ",
+        "\n    SELECT * FROM story_view\n    WHERE viewer = spock_actor() AND story = :story\n  "
+      ]
+    },
+    {
+      "name": "create_image_post",
+      "doc": "Publish one uploaded image as a new feed post. The caller first mints a\nsigned upload URL, PUTs the bytes, then passes the returned storage-object\nid here. Only a committed JPEG, PNG, or WebP object owned by the current\nactor may be attached; seed objects deliberately have no owner and cannot\nbe claimed. Storage v0 records the upload's Content-Type header; byte-level\nimage decoding/sniffing is deliberately beyond this local-dev PoC.\nRetrying the same object is idempotent: the first published post is returned.",
+      "readonly": false,
+      "params": [
+        {
+          "name": "image",
+          "doc": "A committed image object minted by the current actor.",
+          "type": {
+            "kind": "ref",
+            "table": "storage_object",
+            "on_delete": "restrict"
+          },
+          "optional": false
+        },
+        {
+          "name": "caption",
+          "doc": "The new post's caption; empty publishes without a caption.",
+          "type": {
+            "kind": "text"
+          },
+          "optional": false
+        },
+        {
+          "name": "alt",
+          "doc": "Accessible alternative text for the image; empty is accepted when the\nauthor does not provide one.",
+          "type": {
+            "kind": "text"
+          },
+          "optional": false
+        }
+      ],
+      "returns": {
+        "arity": "one",
+        "of": "post",
+        "scalar": false
+      },
+      "errors": [
+        "not_authorized",
+        "image_not_ready",
+        "unsupported_media_type"
+      ],
+      "refusals": [
+        "not_authorized",
+        "image_not_ready",
+        "unsupported_media_type"
+      ],
+      "sql": [
+        "\n    SELECT spock_refuse('not_authorized') WHERE spock_actor() IS NULL\n  ",
+        "\n    SELECT spock_refuse('image_not_ready')\n    WHERE NOT EXISTS (\n      SELECT 1 FROM storage_object\n      WHERE id = :image AND state = 'committed'\n    )\n  ",
+        "\n    SELECT spock_refuse('not_authorized')\n    WHERE NOT EXISTS (\n      SELECT 1 FROM storage_object\n      WHERE id = :image AND owner = spock_actor()\n    )\n  ",
+        "\n    SELECT spock_refuse('unsupported_media_type')\n    WHERE NOT EXISTS (\n      SELECT 1 FROM storage_object\n      WHERE id = :image\n        AND content_type IN ('image/jpeg', 'image/png', 'image/webp')\n    )\n  ",
+        "\n    INSERT INTO post (\n      author, caption, media_kind, media_file, media_alt\n    )\n    SELECT spock_actor(), :caption, 'image', :image, :alt\n    WHERE NOT EXISTS (\n      SELECT 1 FROM post AS existing WHERE existing.media_file = :image\n    )\n  ",
+        "\n    SELECT * FROM post\n    WHERE author = spock_actor() AND media_file = :image\n    ORDER BY published_at\n    LIMIT 1\n  "
+      ]
+    }
+  ],
+  "seed": [
+    {
+      "table": "user",
+      "binding": "mira",
+      "fields": {
+        "avatar": {
+          "file": "./seed/avatar-mira.jpg"
+        },
+        "avatar_alt": "Mira Santos",
+        "bio": "Food and travel photographer in Lisbon. Usually awake before the trams.",
+        "display_name": "Mira Santos",
+        "id": "10000000-0000-4000-8000-000000000001",
+        "username": "mira.santos"
+      }
+    },
+    {
+      "table": "user",
+      "binding": "lena",
+      "fields": {
+        "avatar": {
+          "file": "./seed/avatar-lena.jpg"
+        },
+        "avatar_alt": "Lena Holt",
+        "bio": "Ceramics and slow mornings. Small-batch studio work from Portland.",
+        "display_name": "Lena Holt",
+        "id": "10000000-0000-4000-8000-000000000002",
+        "username": "lena.holt"
+      }
+    },
+    {
+      "table": "user",
+      "binding": "marco",
+      "fields": {
+        "avatar": {
+          "file": "./seed/avatar-marco.jpg"
+        },
+        "avatar_alt": "Marco Reyes",
+        "bio": "Surf photographer, road-trip cook, and reluctant morning person.",
+        "display_name": "Marco Reyes",
+        "id": "10000000-0000-4000-8000-000000000003",
+        "username": "marco.reyes"
+      }
+    },
+    {
+      "table": "user",
+      "binding": "nils",
+      "fields": {
+        "avatar": {
+          "file": "./seed/avatar-nils.jpg"
+        },
+        "avatar_alt": "Nils Bergman",
+        "bio": "Night skies and northern water, filmed around Tromsø.",
+        "display_name": "Nils Bergman",
+        "id": "10000000-0000-4000-8000-000000000004",
+        "username": "nils.bergman"
+      }
+    },
+    {
+      "table": "user",
+      "binding": "priya",
+      "fields": {
+        "avatar": {
+          "file": "./seed/avatar-priya.jpg"
+        },
+        "avatar_alt": "Priya Raman",
+        "bio": "Bread notebook, tiny kitchen, stubborn sourdough starter.",
+        "display_name": "Priya Raman",
+        "id": "10000000-0000-4000-8000-000000000005",
+        "username": "priya.raman"
+      }
+    },
+    {
+      "table": "user",
+      "binding": "ayla",
+      "fields": {
+        "avatar": {
+          "file": "./seed/avatar-ayla.jpg"
+        },
+        "avatar_alt": "Ayla Demir",
+        "bio": "Istanbul by ferry. Architecture, tea, and ordinary light.",
+        "display_name": "Ayla Demir",
+        "id": "10000000-0000-4000-8000-000000000006",
+        "username": "ayla.demir"
+      }
+    },
+    {
+      "table": "user",
+      "binding": "june",
+      "fields": {
+        "avatar": {
+          "file": "./seed/avatar-june.jpg"
+        },
+        "avatar_alt": "June Park",
+        "bio": "Natural-fiber clothes made in a very crowded studio.",
+        "display_name": "June Park",
+        "id": "10000000-0000-4000-8000-000000000007",
+        "username": "june.park"
+      }
+    },
+    {
+      "table": "user",
+      "binding": "theo",
+      "fields": {
+        "avatar": {
+          "file": "./seed/avatar-theo.jpg"
+        },
+        "avatar_alt": "Theo Okafor",
+        "bio": "Murals, community courts, and an unreliable jump shot.",
+        "display_name": "Theo Okafor",
+        "id": "10000000-0000-4000-8000-000000000008",
+        "username": "theo.okafor"
+      }
+    },
+    {
+      "table": "user",
+      "binding": "kenji",
+      "fields": {
+        "avatar": {
+          "file": "./seed/avatar-kenji.jpg"
+        },
+        "avatar_alt": "Kenji Tanaka",
+        "bio": "Long climbs, quiet roads, and coffee at the turnaround.",
+        "display_name": "Kenji Tanaka",
+        "id": "10000000-0000-4000-8000-000000000009",
+        "username": "kenji.rides"
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "lena"
+        },
+        "follower": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "marco"
+        },
+        "follower": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "priya"
+        },
+        "follower": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "ayla"
+        },
+        "follower": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "june"
+        },
+        "follower": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "kenji"
+        },
+        "follower": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "mira"
+        },
+        "follower": {
+          "ref": "lena"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "marco"
+        },
+        "follower": {
+          "ref": "lena"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "priya"
+        },
+        "follower": {
+          "ref": "lena"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "june"
+        },
+        "follower": {
+          "ref": "lena"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "theo"
+        },
+        "follower": {
+          "ref": "lena"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "lena"
+        },
+        "follower": {
+          "ref": "marco"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "nils"
+        },
+        "follower": {
+          "ref": "marco"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "ayla"
+        },
+        "follower": {
+          "ref": "marco"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "kenji"
+        },
+        "follower": {
+          "ref": "marco"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "lena"
+        },
+        "follower": {
+          "ref": "nils"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "marco"
+        },
+        "follower": {
+          "ref": "nils"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "theo"
+        },
+        "follower": {
+          "ref": "nils"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "mira"
+        },
+        "follower": {
+          "ref": "priya"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "lena"
+        },
+        "follower": {
+          "ref": "priya"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "ayla"
+        },
+        "follower": {
+          "ref": "priya"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "june"
+        },
+        "follower": {
+          "ref": "priya"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "lena"
+        },
+        "follower": {
+          "ref": "ayla"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "priya"
+        },
+        "follower": {
+          "ref": "ayla"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "june"
+        },
+        "follower": {
+          "ref": "ayla"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "mira"
+        },
+        "follower": {
+          "ref": "june"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "lena"
+        },
+        "follower": {
+          "ref": "june"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "ayla"
+        },
+        "follower": {
+          "ref": "june"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "theo"
+        },
+        "follower": {
+          "ref": "june"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "mira"
+        },
+        "follower": {
+          "ref": "theo"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "lena"
+        },
+        "follower": {
+          "ref": "theo"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "june"
+        },
+        "follower": {
+          "ref": "theo"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "lena"
+        },
+        "follower": {
+          "ref": "kenji"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "marco"
+        },
+        "follower": {
+          "ref": "kenji"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "nils"
+        },
+        "follower": {
+          "ref": "kenji"
+        }
+      }
+    },
+    {
+      "table": "follow",
+      "fields": {
+        "followed": {
+          "ref": "priya"
+        },
+        "follower": {
+          "ref": "kenji"
+        }
+      }
+    },
+    {
+      "table": "story",
+      "binding": "mira_story",
+      "fields": {
+        "author": {
+          "ref": "mira"
+        },
+        "caption": "Breakfast before the first tram",
+        "id": "30000000-0000-4000-8000-000000000001",
+        "media_alt": "Pastéis de nata cooling on a marble counter",
+        "media_file": {
+          "file": "./seed/thumb-mira-1.jpg"
+        },
+        "position": 1,
+        "published_at": "2026-07-13T15:10:00Z"
+      }
+    },
+    {
+      "table": "story",
+      "binding": "mira_story_tram",
+      "fields": {
+        "author": {
+          "ref": "mira"
+        },
+        "caption": "Then the city wakes",
+        "id": "30000000-0000-4000-8000-000000000008",
+        "media_alt": "Tram rails catching the first light in Lisbon",
+        "media_file": {
+          "file": "./seed/thumb-mira-2.jpg"
+        },
+        "position": 2,
+        "published_at": "2026-07-13T15:22:00Z"
+      }
+    },
+    {
+      "table": "story",
+      "binding": "mira_story_market",
+      "fields": {
+        "author": {
+          "ref": "mira"
+        },
+        "caption": "Saturday palette",
+        "id": "30000000-0000-4000-8000-000000000009",
+        "media_alt": "Crates of citrus stacked at the morning market",
+        "media_file": {
+          "file": "./seed/thumb-mira-3.jpg"
+        },
+        "position": 3,
+        "published_at": "2026-07-13T15:38:00Z"
+      }
+    },
+    {
+      "table": "story",
+      "binding": "lena_story",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "caption": "One pull, no edits",
+        "id": "30000000-0000-4000-8000-000000000002",
+        "media_alt": "Lena throwing a tall clay cylinder",
+        "media_file": {
+          "file": "./seed/thumb-lena-7.jpg"
+        },
+        "position": 1,
+        "published_at": "2026-07-13T14:55:00Z"
+      }
+    },
+    {
+      "table": "story",
+      "binding": "lena_story_glazes",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "caption": "The unglamorous half of studio day",
+        "id": "30000000-0000-4000-8000-000000000010",
+        "media_alt": "Rows of glaze buckets labelled by firing cone",
+        "media_file": {
+          "file": "./seed/thumb-lena-8.jpg"
+        },
+        "position": 2,
+        "published_at": "2026-07-13T15:08:00Z"
+      }
+    },
+    {
+      "table": "story",
+      "binding": "lena_story_studio",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "caption": "Reset for tomorrow",
+        "id": "30000000-0000-4000-8000-000000000011",
+        "media_alt": "Morning light crossing a clean ceramics workbench",
+        "media_file": {
+          "file": "./seed/thumb-lena-9.jpg"
+        },
+        "position": 3,
+        "published_at": "2026-07-13T15:24:00Z"
+      }
+    },
+    {
+      "table": "story",
+      "binding": "marco_story",
+      "fields": {
+        "author": {
+          "ref": "marco"
+        },
+        "caption": "Last night at camp",
+        "id": "30000000-0000-4000-8000-000000000004",
+        "media_alt": "Campfire on a bluff above the break",
+        "media_file": {
+          "file": "./seed/media-marco-baja-2.jpg"
+        },
+        "position": 1,
+        "published_at": "2026-07-13T14:40:00Z"
+      }
+    },
+    {
+      "table": "story",
+      "binding": "marco_story_swell",
+      "fields": {
+        "author": {
+          "ref": "marco"
+        },
+        "caption": "It finally arrived",
+        "id": "30000000-0000-4000-8000-000000000012",
+        "media_alt": "Long left-hand wave peeling along a desert point",
+        "media_file": {
+          "file": "./seed/media-marco-baja-1.jpg"
+        },
+        "position": 2,
+        "published_at": "2026-07-13T14:52:00Z"
+      }
+    },
+    {
+      "table": "story",
+      "binding": "marco_story_dawn",
+      "fields": {
+        "author": {
+          "ref": "marco"
+        },
+        "caption": "Pack up before the wind",
+        "id": "30000000-0000-4000-8000-000000000013",
+        "media_alt": "Surfboard fins silhouetted against a Baja sunrise",
+        "media_file": {
+          "file": "./seed/media-marco-baja-3.jpg"
+        },
+        "position": 3,
+        "published_at": "2026-07-13T15:04:00Z"
+      }
+    },
+    {
+      "table": "story",
+      "binding": "priya_story",
+      "fields": {
+        "author": {
+          "ref": "priya"
+        },
+        "caption": "Still warm",
+        "id": "30000000-0000-4000-8000-000000000005",
+        "media_alt": "Freshly sliced sourdough loaf",
+        "media_file": {
+          "file": "./seed/media-priya-starter.jpg"
+        },
+        "position": 1,
+        "published_at": "2026-07-13T14:20:00Z"
+      }
+    },
+    {
+      "table": "story",
+      "binding": "june_story",
+      "fields": {
+        "author": {
+          "ref": "june"
+        },
+        "caption": "Fitting day",
+        "id": "30000000-0000-4000-8000-000000000006",
+        "media_alt": "Linen garments arranged by shade",
+        "media_file": {
+          "file": "./seed/media-june-lookbook.jpg"
+        },
+        "position": 1,
+        "published_at": "2026-07-13T13:50:00Z"
+      }
+    },
+    {
+      "table": "story",
+      "binding": "kenji_story",
+      "fields": {
+        "author": {
+          "ref": "kenji"
+        },
+        "caption": "Worth the climb",
+        "id": "30000000-0000-4000-8000-000000000007",
+        "media_alt": "Road bike at Copper Pass",
+        "media_file": {
+          "file": "./seed/media-kenji-copper.jpg"
+        },
+        "position": 1,
+        "published_at": "2026-07-13T13:15:00Z"
+      }
+    },
+    {
+      "table": "story_view",
+      "fields": {
+        "story": {
+          "ref": "mira_story"
+        },
+        "viewer": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "story_view",
+      "fields": {
+        "story": {
+          "ref": "mira_story_tram"
+        },
+        "viewer": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "story_view",
+      "fields": {
+        "story": {
+          "ref": "mira_story_market"
+        },
+        "viewer": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "story_view",
+      "fields": {
+        "story": {
+          "ref": "priya_story"
+        },
+        "viewer": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "story_view",
+      "fields": {
+        "story": {
+          "ref": "kenji_story"
+        },
+        "viewer": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "post",
+      "binding": "lena_glaze",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "caption": "New copper-red test tiles out of the kiln. Cone 10, heavy reduction — the speckle finally behaved.",
+        "id": "20000000-0000-4000-8000-000000000001",
+        "media_alt": "Grid of copper-red glaze test tiles on a maple bench",
+        "media_file": {
+          "file": "./seed/media-lena-glaze.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-07-13T13:00:00Z"
+      }
+    },
+    {
+      "table": "post",
+      "binding": "marco_baja",
+      "fields": {
+        "author": {
+          "ref": "marco"
+        },
+        "caption": "Three days down the Baja coast. Swell arrived on the last morning, as it always does.",
+        "id": "20000000-0000-4000-8000-000000000002",
+        "media_kind": "carousel",
+        "published_at": "2026-07-13T10:00:00Z"
+      }
+    },
+    {
+      "table": "post",
+      "binding": "nils_aurora",
+      "fields": {
+        "author": {
+          "ref": "nils"
+        },
+        "caption": "Aurora over the fjord last night — the whole sky was breathing.",
+        "id": "20000000-0000-4000-8000-000000000003",
+        "media_alt": "Green aurora curtains over a dark fjord",
+        "media_file": {
+          "file": "./seed/media-nils-aurora-poster.jpg"
+        },
+        "media_kind": "video",
+        "published_at": "2026-07-13T06:00:00Z",
+        "video_file": {
+          "file": "./seed/media-nils-aurora.mp4"
+        }
+      }
+    },
+    {
+      "table": "post",
+      "binding": "priya_starter",
+      "fields": {
+        "author": {
+          "ref": "priya"
+        },
+        "caption": "Day 400 of the starter. She's earned a name: Clint Yeastwood.",
+        "id": "20000000-0000-4000-8000-000000000004",
+        "media_alt": "Open crumb of a sourdough loaf, sliced on a flour-dusted board",
+        "media_file": {
+          "file": "./seed/media-priya-starter.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-07-12T23:00:00Z"
+      }
+    },
+    {
+      "table": "post",
+      "binding": "ayla_ferry",
+      "fields": {
+        "author": {
+          "ref": "ayla"
+        },
+        "caption": "Morning ferry across the Bosphorus. Tea, gulls, and nowhere to be until noon.",
+        "id": "20000000-0000-4000-8000-000000000005",
+        "media_alt": "Ferry deck railing over blue water, city skyline behind",
+        "media_file": {
+          "file": "./seed/media-ayla-ferry.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-07-12T16:00:00Z"
+      }
+    },
+    {
+      "table": "post",
+      "binding": "june_lookbook",
+      "fields": {
+        "author": {
+          "ref": "june"
+        },
+        "caption": "Studio lookbook, page one. Linen in every weight we could mill.",
+        "id": "20000000-0000-4000-8000-000000000006",
+        "media_alt": "Folded linen garments stacked by shade on a workbench",
+        "media_file": {
+          "file": "./seed/media-june-lookbook.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-07-12T10:00:00Z"
+      }
+    },
+    {
+      "table": "post",
+      "binding": "theo_court",
+      "fields": {
+        "author": {
+          "ref": "theo"
+        },
+        "caption": "Finished the mural at the 9th street court. Paint holds up better than my jumper.",
+        "id": "20000000-0000-4000-8000-000000000007",
+        "media_alt": "Basketball court painted with bold geometric shapes",
+        "media_file": {
+          "file": "./seed/media-theo-court.jpg"
+        },
+        "media_kind": "video",
+        "published_at": "2026-07-11T17:00:00Z",
+        "video_file": {
+          "file": "./seed/media-theo-court.mp4"
+        }
+      }
+    },
+    {
+      "table": "post",
+      "binding": "kenji_copper",
+      "fields": {
+        "author": {
+          "ref": "kenji"
+        },
+        "caption": "120km of switchbacks and one very smug goat. Copper Pass, you were worth it.",
+        "id": "20000000-0000-4000-8000-000000000008",
+        "media_alt": "Road bike leaning on a stone wall at a mountain pass",
+        "media_file": {
+          "file": "./seed/media-kenji-copper.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-07-11T11:00:00Z"
+      }
+    },
+    {
+      "table": "post",
+      "binding": "lena_bowls",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "caption": "Copper glaze in close-up, before the wax cooled.",
+        "id": "21000000-0000-4000-8000-000000000001",
+        "media_alt": "Copper-red glaze tiles",
+        "media_file": {
+          "file": "./seed/thumb-lena-1.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-07-10T14:00:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "lena_greenware",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "caption": "A quiet stack of bowls waiting for bisque firing.",
+        "id": "21000000-0000-4000-8000-000000000002",
+        "media_alt": "Stack of unglazed bowls",
+        "media_file": {
+          "file": "./seed/thumb-lena-2.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-07-08T16:00:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "lena_kiln",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "caption": "Kiln Tetris, level thirty-seven.",
+        "id": "21000000-0000-4000-8000-000000000003",
+        "media_alt": "Kiln shelf mid-load",
+        "media_file": {
+          "file": "./seed/thumb-lena-3.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-07-05T11:30:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "lena_celadon",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "caption": "Celadon tests after a slower cool-down.",
+        "id": "21000000-0000-4000-8000-000000000004",
+        "media_alt": "Celadon test cups",
+        "media_file": {
+          "file": "./seed/thumb-lena-4.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-07-02T09:15:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "lena_clay",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "caption": "Fresh reclaim, wedged and ready for tomorrow.",
+        "id": "21000000-0000-4000-8000-000000000005",
+        "media_alt": "Wedging table with fresh clay",
+        "media_file": {
+          "file": "./seed/thumb-lena-5.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-06-28T18:40:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "lena_plates",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "caption": "Dinner plates with just enough iron speckle.",
+        "id": "21000000-0000-4000-8000-000000000006",
+        "media_alt": "Iron-speckled dinner plates",
+        "media_file": {
+          "file": "./seed/thumb-lena-6.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-06-24T13:00:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "lena_throwing",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "caption": "Pulling one tall cylinder before lunch.",
+        "id": "21000000-0000-4000-8000-000000000007",
+        "media_alt": "Throwing a tall cylinder",
+        "media_file": {
+          "file": "./seed/thumb-lena-7.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-06-19T16:20:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "lena_buckets",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "caption": "Labelling day. Future me will be grateful.",
+        "id": "21000000-0000-4000-8000-000000000008",
+        "media_alt": "Glaze buckets labelled by cone",
+        "media_file": {
+          "file": "./seed/thumb-lena-8.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-06-12T10:10:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "lena_morning",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "caption": "Seven o'clock light across the clean bench.",
+        "id": "21000000-0000-4000-8000-000000000009",
+        "media_alt": "Morning light across the studio bench",
+        "media_file": {
+          "file": "./seed/thumb-lena-9.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-06-03T14:05:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "mira_pasteis",
+      "fields": {
+        "author": {
+          "ref": "mira"
+        },
+        "caption": "The batch that vanished before I finished the coffee.",
+        "id": "22000000-0000-4000-8000-000000000001",
+        "media_alt": "Pastéis de nata on a marble counter",
+        "media_file": {
+          "file": "./seed/thumb-mira-1.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-07-09T07:30:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "mira_tram",
+      "fields": {
+        "author": {
+          "ref": "mira"
+        },
+        "caption": "Rails holding the first light on Rua da Conceição.",
+        "id": "22000000-0000-4000-8000-000000000002",
+        "media_alt": "Tram rails catching dawn light",
+        "media_file": {
+          "file": "./seed/thumb-mira-2.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-07-04T05:45:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "mira_citrus",
+      "fields": {
+        "author": {
+          "ref": "mira"
+        },
+        "caption": "Saturday citrus, arranged better than any still life.",
+        "id": "22000000-0000-4000-8000-000000000003",
+        "media_alt": "Market citrus stacked in crates",
+        "media_file": {
+          "file": "./seed/thumb-mira-3.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-06-29T08:20:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "mira_tiles",
+      "fields": {
+        "author": {
+          "ref": "mira"
+        },
+        "caption": "Blue after blue after blue.",
+        "id": "22000000-0000-4000-8000-000000000004",
+        "media_alt": "Tiled facade in alternating blues",
+        "media_file": {
+          "file": "./seed/thumb-mira-4.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-06-21T15:10:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "mira_sardines",
+      "fields": {
+        "author": {
+          "ref": "mira"
+        },
+        "caption": "Sardines, smoke, lemon. Nothing else needed.",
+        "id": "22000000-0000-4000-8000-000000000005",
+        "media_alt": "Grilled sardines over coals",
+        "media_file": {
+          "file": "./seed/thumb-mira-5.jpg"
+        },
+        "media_kind": "image",
+        "published_at": "2026-06-13T20:15:00Z",
+        "show_in_feed": false
+      }
+    },
+    {
+      "table": "post",
+      "binding": "mira_ferry",
+      "fields": {
+        "author": {
+          "ref": "mira"
+        },
+        "caption": "The last ferry left a gold line all the way home.",
+        "id": "22000000-0000-4000-8000-000000000006",
+        "media_alt": "Ferry wake at golden hour",
+        "media_file": {
+          "file": "./seed/thumb-mira-6.jpg"
+        },
+        "media_kind": "video",
+        "published_at": "2026-06-01T19:50:00Z",
+        "show_in_feed": false,
+        "video_file": {
+          "file": "./seed/media-mira-ferry.mp4"
+        }
+      }
+    },
+    {
+      "table": "post_tag",
+      "fields": {
+        "person": {
+          "ref": "mira"
+        },
+        "post": {
+          "ref": "marco_baja"
+        }
+      }
+    },
+    {
+      "table": "post_tag",
+      "fields": {
+        "person": {
+          "ref": "ayla"
+        },
+        "post": {
+          "ref": "june_lookbook"
+        }
+      }
+    },
+    {
+      "table": "post_tag",
+      "fields": {
+        "person": {
+          "ref": "june"
+        },
+        "post": {
+          "ref": "theo_court"
+        }
+      }
+    },
+    {
+      "table": "post_tag",
+      "fields": {
+        "person": {
+          "ref": "lena"
+        },
+        "post": {
+          "ref": "priya_starter"
+        }
+      }
+    },
+    {
+      "table": "post_tag",
+      "fields": {
+        "person": {
+          "ref": "marco"
+        },
+        "post": {
+          "ref": "kenji_copper"
+        }
+      }
+    },
+    {
+      "table": "post_tag",
+      "fields": {
+        "person": {
+          "ref": "theo"
+        },
+        "post": {
+          "ref": "lena_glaze"
+        }
+      }
+    },
+    {
+      "table": "carousel_slide",
+      "fields": {
+        "alt": "Long left-hand wave peeling along a desert point",
+        "file": {
+          "file": "./seed/media-marco-baja-1.jpg"
+        },
+        "position": 1,
+        "post": {
+          "ref": "marco_baja"
+        }
+      }
+    },
+    {
+      "table": "carousel_slide",
+      "fields": {
+        "alt": "Campfire on the bluff above the break at dusk",
+        "file": {
+          "file": "./seed/media-marco-baja-2.jpg"
+        },
+        "position": 2,
+        "post": {
+          "ref": "marco_baja"
+        }
+      }
+    },
+    {
+      "table": "carousel_slide",
+      "fields": {
+        "alt": "Board fins silhouetted against the sunrise",
+        "file": {
+          "file": "./seed/media-marco-baja-3.jpg"
+        },
+        "position": 3,
+        "post": {
+          "ref": "marco_baja"
+        }
+      }
+    },
+    {
+      "table": "comment",
+      "fields": {
+        "author": {
+          "ref": "kenji"
+        },
+        "body": "That copper red is unreal. What cone are you firing to?",
+        "created_at": "2026-07-13T13:28:00Z",
+        "post": {
+          "ref": "lena_glaze"
+        }
+      }
+    },
+    {
+      "table": "comment",
+      "fields": {
+        "author": {
+          "ref": "priya"
+        },
+        "body": "The third tile down — that speckle! Saving this for glaze inspiration.",
+        "created_at": "2026-07-13T13:35:00Z",
+        "post": {
+          "ref": "lena_glaze"
+        }
+      }
+    },
+    {
+      "table": "comment",
+      "fields": {
+        "author": {
+          "ref": "june"
+        },
+        "body": "Would buy the whole batch honestly. Seconds sale when?",
+        "created_at": "2026-07-13T13:42:00Z",
+        "post": {
+          "ref": "lena_glaze"
+        }
+      }
+    },
+    {
+      "table": "comment",
+      "fields": {
+        "author": {
+          "ref": "theo"
+        },
+        "body": "These would look wild as a court-side mosaic. Collab?",
+        "created_at": "2026-07-13T13:51:00Z",
+        "post": {
+          "ref": "lena_glaze"
+        }
+      }
+    },
+    {
+      "table": "comment",
+      "fields": {
+        "author": {
+          "ref": "kenji"
+        },
+        "body": "That road looks nearly as good as the wave.",
+        "created_at": "2026-07-13T10:18:00Z",
+        "post": {
+          "ref": "marco_baja"
+        }
+      }
+    },
+    {
+      "table": "comment",
+      "fields": {
+        "author": {
+          "ref": "ayla"
+        },
+        "body": "Frame two belongs on a wall.",
+        "created_at": "2026-07-13T10:26:00Z",
+        "post": {
+          "ref": "marco_baja"
+        }
+      }
+    },
+    {
+      "table": "comment",
+      "fields": {
+        "author": {
+          "ref": "mira"
+        },
+        "body": "The reflection makes this. Beautiful.",
+        "created_at": "2026-07-13T06:22:00Z",
+        "post": {
+          "ref": "nils_aurora"
+        }
+      }
+    },
+    {
+      "table": "comment",
+      "fields": {
+        "author": {
+          "ref": "lena"
+        },
+        "body": "Clint looks extremely healthy.",
+        "created_at": "2026-07-13T12:40:00Z",
+        "post": {
+          "ref": "priya_starter"
+        }
+      }
+    },
+    {
+      "table": "comment",
+      "fields": {
+        "author": {
+          "ref": "theo"
+        },
+        "body": "I volunteer for quality control.",
+        "created_at": "2026-07-13T13:05:00Z",
+        "post": {
+          "ref": "priya_starter"
+        }
+      }
+    },
+    {
+      "table": "comment",
+      "fields": {
+        "author": {
+          "ref": "mira"
+        },
+        "body": "That blue is perfect.",
+        "created_at": "2026-07-13T06:00:00Z",
+        "post": {
+          "ref": "ayla_ferry"
+        }
+      }
+    },
+    {
+      "table": "comment",
+      "fields": {
+        "author": {
+          "ref": "ayla"
+        },
+        "body": "The warm grey set, please.",
+        "created_at": "2026-07-12T22:35:00Z",
+        "post": {
+          "ref": "june_lookbook"
+        }
+      }
+    },
+    {
+      "table": "comment",
+      "fields": {
+        "author": {
+          "ref": "june"
+        },
+        "body": "This completely changes the block.",
+        "created_at": "2026-07-12T06:10:00Z",
+        "post": {
+          "ref": "theo_court"
+        }
+      }
+    },
+    {
+      "table": "comment",
+      "fields": {
+        "author": {
+          "ref": "marco"
+        },
+        "body": "Goat photo or it did not happen.",
+        "created_at": "2026-07-12T00:20:00Z",
+        "post": {
+          "ref": "kenji_copper"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "lena_glaze"
+        },
+        "user": {
+          "ref": "marco"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "lena_glaze"
+        },
+        "user": {
+          "ref": "nils"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "lena_glaze"
+        },
+        "user": {
+          "ref": "priya"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "lena_glaze"
+        },
+        "user": {
+          "ref": "ayla"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "lena_glaze"
+        },
+        "user": {
+          "ref": "june"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "lena_glaze"
+        },
+        "user": {
+          "ref": "theo"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "lena_glaze"
+        },
+        "user": {
+          "ref": "kenji"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "marco_baja"
+        },
+        "user": {
+          "ref": "lena"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "marco_baja"
+        },
+        "user": {
+          "ref": "nils"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "marco_baja"
+        },
+        "user": {
+          "ref": "priya"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "marco_baja"
+        },
+        "user": {
+          "ref": "ayla"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "marco_baja"
+        },
+        "user": {
+          "ref": "kenji"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "nils_aurora"
+        },
+        "user": {
+          "ref": "lena"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "nils_aurora"
+        },
+        "user": {
+          "ref": "marco"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "nils_aurora"
+        },
+        "user": {
+          "ref": "priya"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "nils_aurora"
+        },
+        "user": {
+          "ref": "ayla"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "nils_aurora"
+        },
+        "user": {
+          "ref": "june"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "priya_starter"
+        },
+        "user": {
+          "ref": "lena"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "priya_starter"
+        },
+        "user": {
+          "ref": "marco"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "priya_starter"
+        },
+        "user": {
+          "ref": "nils"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "priya_starter"
+        },
+        "user": {
+          "ref": "ayla"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "priya_starter"
+        },
+        "user": {
+          "ref": "june"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "priya_starter"
+        },
+        "user": {
+          "ref": "theo"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "priya_starter"
+        },
+        "user": {
+          "ref": "kenji"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "ayla_ferry"
+        },
+        "user": {
+          "ref": "lena"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "ayla_ferry"
+        },
+        "user": {
+          "ref": "marco"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "ayla_ferry"
+        },
+        "user": {
+          "ref": "priya"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "ayla_ferry"
+        },
+        "user": {
+          "ref": "june"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "june_lookbook"
+        },
+        "user": {
+          "ref": "lena"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "june_lookbook"
+        },
+        "user": {
+          "ref": "priya"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "june_lookbook"
+        },
+        "user": {
+          "ref": "ayla"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "june_lookbook"
+        },
+        "user": {
+          "ref": "theo"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "theo_court"
+        },
+        "user": {
+          "ref": "marco"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "theo_court"
+        },
+        "user": {
+          "ref": "ayla"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "theo_court"
+        },
+        "user": {
+          "ref": "june"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "theo_court"
+        },
+        "user": {
+          "ref": "kenji"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "kenji_copper"
+        },
+        "user": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "kenji_copper"
+        },
+        "user": {
+          "ref": "lena"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "kenji_copper"
+        },
+        "user": {
+          "ref": "marco"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "kenji_copper"
+        },
+        "user": {
+          "ref": "nils"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "kenji_copper"
+        },
+        "user": {
+          "ref": "priya"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "kenji_copper"
+        },
+        "user": {
+          "ref": "ayla"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "kenji_copper"
+        },
+        "user": {
+          "ref": "june"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "kenji_copper"
+        },
+        "user": {
+          "ref": "theo"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "lena_bowls"
+        },
+        "user": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "lena_bowls"
+        },
+        "user": {
+          "ref": "priya"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "lena_greenware"
+        },
+        "user": {
+          "ref": "june"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "lena_kiln"
+        },
+        "user": {
+          "ref": "theo"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "mira_pasteis"
+        },
+        "user": {
+          "ref": "lena"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "mira_pasteis"
+        },
+        "user": {
+          "ref": "priya"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "mira_tram"
+        },
+        "user": {
+          "ref": "june"
+        }
+      }
+    },
+    {
+      "table": "like",
+      "fields": {
+        "post": {
+          "ref": "mira_ferry"
+        },
+        "user": {
+          "ref": "kenji"
+        }
+      }
+    },
+    {
+      "table": "save",
+      "fields": {
+        "post": {
+          "ref": "marco_baja"
+        },
+        "user": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "save",
+      "fields": {
+        "post": {
+          "ref": "nils_aurora"
+        },
+        "user": {
+          "ref": "mira"
+        }
+      }
+    },
+    {
+      "table": "save",
+      "fields": {
+        "post": {
+          "ref": "lena_glaze"
+        },
+        "user": {
+          "ref": "priya"
+        }
+      }
+    }
+  ]
+}

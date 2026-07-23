@@ -1,0 +1,59 @@
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* }
+
+file = { SOI ~ item* ~ EOI }
+item = _{ use_decl | app_decl | snapshot | view | mutation | settlement | fixtures }
+
+ident  = @{ (ASCII_ALPHANUMERIC | "_")+ }
+dotted = @{ ident ~ ("." ~ ident)* }
+string = @{ "\"" ~ (!"\"" ~ ANY)* ~ "\"" }
+
+// Balanced raw block: preserve uninterpreted bodies (views/snapshot/fixtures) verbatim
+rawblock = @{ "{" ~ (rawblock | !("{" | "}") ~ ANY)* ~ "}" }
+
+use_decl = { "use" ~ ident ~ string ~ ";" }
+app_decl = { "app" ~ string ~ ";" }
+
+number     = @{ ASCII_DIGIT+ }
+cap_decl   = { "cap" ~ number ~ "per" ~ "table" ~ ";" }
+read_entry = { ident ~ ("as" ~ ident)? }
+read_decl  = { "read" ~ read_entry ~ ("," ~ read_entry)* ~ ";" }
+snapshot   = { "snapshot" ~ ident ~ "{" ~ (cap_decl | read_decl)* ~ "}" }
+
+// Views: column entries and derived entries. For where-clauses, only types are
+// derived and the body is preserved raw.
+raw_cond = @{ (!(";" | "{" | "}") ~ ANY)* }
+raw_tail = @{ (!("," | ";" | "{" | "}") ~ ANY)* }
+ago_e    = { "ago" ~ "(" ~ ident ~ ")" }
+count_e  = { "count" ~ ident ~ raw_cond }
+exists_e = { "exists" ~ ident ~ raw_cond }
+tiles_e  = { "tiles" ~ "of" ~ ident ~ raw_cond }
+rowas_e  = { "row" ~ "as" ~ ident }
+
+// match arms: tag string → variant { field: asset projection }.
+// The asset class (`as image`/`as url`) decides the storage_object machine type.
+each_e  = { "each" ~ ident ~ "." ~ ident ~ "as" ~ ident ~ raw_tail }
+asof_e  = { ident ~ "as" ~ ident }
+vfexpr  = { each_e | asof_e }
+vfield  = { ident ~ ":" ~ vfexpr }
+arm     = { string ~ "=>" ~ ident ~ "{" ~ vfield ~ ("," ~ vfield)* ~ ","? ~ "}" }
+match_e = { "match" ~ ident ~ "{" ~ arm ~ ("," ~ arm)* ~ ","? ~ "}" }
+vexpr    = { ago_e | count_e | exists_e | match_e | tiles_e | rowas_e }
+computed = { ident ~ "=" ~ vexpr ~ ";" }
+column   = { ident ~ ("->" ~ ident)? ~ ";" }
+view     = { "view" ~ ident ~ "from" ~ ident ~ "{" ~ (computed | column)* ~ "}" }
+// Videos have no manifest source to derive from, so they are declared explicitly.
+video_decl = { "video" ~ string ~ "=" ~ string ~ ";" }
+fixtures   = { "fixtures" ~ "from" ~ dotted ~ "{" ~ (video_decl | raw_stmt)* ~ "}" }
+
+field   = { ident ~ ":" ~ dotted }
+fields  = { "{" ~ (field ~ ("," ~ field)* ~ ","?)? ~ "}" }
+
+// Policy: from after `->` to the depth-0 `;` (consumes `;` inside braces)
+policy  = @{ "->" ~ (rawblock | !(";" | "{" | "}") ~ ANY)* }
+// `op`: backend operation kind override (default = snake_case of the mutation name)
+mutation = { "mutation" ~ ident ~ ("op" ~ ident)? ~ fields? ~ policy? ~ ";" }
+
+extra_decl = { "extra" ~ ident ~ fields ~ ";" }
+raw_stmt   = @{ (rawblock | !(";" | "{" | "}") ~ ANY)+ ~ ";" }
+settlement = { "settlement" ~ "{" ~ (extra_decl | raw_stmt)* ~ "}" }

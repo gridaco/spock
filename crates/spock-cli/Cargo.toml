@@ -14,10 +14,13 @@ name = "spock"
 path = "src/main.rs"
 
 [dependencies]
+pest = "2"
+pest_derive = "2"
 spock-lang = { path = "../spock-lang" }
 spock-runtime = { path = "../spock-runtime" }
 spock-project = { path = "../spock-project" }
 spock-host = { path = "../spock-host" }
+serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 anyhow.workspace = true

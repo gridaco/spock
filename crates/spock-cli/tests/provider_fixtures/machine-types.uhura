@@ -1,0 +1,44 @@
+pub enum Mutation {
+  SetLike {
+    post: PostId,
+    liked: Bool,
+  },
+  SetSave {
+    post: PostId,
+    saved: Bool,
+  },
+  LoadMore,
+  ReloadFeed,
+  SetFollow {
+    user: UserId,
+    following: Bool,
+  },
+  AddComment {
+    post: PostId,
+    body: Text,
+  },
+  SearchPeople {
+    query: Text,
+  },
+  ChooseImage,
+  PublishImage {
+    object: Text,
+    caption: Text,
+    alt: Text,
+  },
+  MarkStory {
+    story: StoryId,
+  },
+}
+
+pub enum Settlement {
+  Accepted,
+  Refused {
+    reason: Text,
+  },
+  ImageReady {
+    object: Text,
+    preview: Text,
+    name: Text,
+  },
+}

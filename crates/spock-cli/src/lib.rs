@@ -489,3 +489,4 @@ mod tests {
         drop(released);
     }
 }
+pub mod provider_gen;
