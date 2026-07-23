@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "astro",
   "installCommand": "corepack pnpm@10.11.0 -C uhura/web install --frozen-lockfile && corepack pnpm@10.11.0 -C www install --frozen-lockfile",
-  "devCommand": "corepack pnpm@10.11.0 -C www exec astro dev --host 127.0.0.1 --port $PORT",
+  "devCommand": "ASTRO_DEV_BACKGROUND=0 corepack pnpm@10.11.0 -C www exec astro dev --host 127.0.0.1 --port $PORT",
   "buildCommand": "bash scripts/build-www.sh",
   "outputDirectory": "www/dist",
   "headers": [
@@ -33,7 +33,7 @@
     { "source": "/demo", "destination": "/demo/index.html" },
     { "source": "/demo/", "destination": "/demo/index.html" },
     {
-      "source": "/demo/:path((?!api/|assets/).*)",
+      "source": "/demo/((?!api(?:/|$)|assets(?:/|$)|index\\.html$|uhura-static-bundle\\.json$|uhura-web-build\\.json$).*)",
       "destination": "/demo/index.html"
     }
   ]
