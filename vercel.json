@@ -2,6 +2,49 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "astro",
   "installCommand": "corepack pnpm@10.11.0 -C www install --frozen-lockfile",
+  "devCommand": "corepack pnpm@10.11.0 -C www exec astro dev --host 127.0.0.1 --port $PORT",
   "buildCommand": "corepack pnpm@10.11.0 -C www build",
-  "outputDirectory": "www/dist"
+  "outputDirectory": "www/dist",
+  "git": {
+    "deploymentEnabled": false
+  },
+  "headers": [
+    {
+      "source": "/demo/api/editor/state",
+      "headers": [
+        { "key": "Content-Type", "value": "application/json" }
+      ]
+    },
+    {
+      "source": "/demo/api/play/wasm/uhura_wasm_bg.wasm",
+      "headers": [
+        { "key": "Content-Type", "value": "application/wasm" }
+      ]
+    }
+  ],
+  "redirects": [
+    { "source": "/demo/create/", "destination": "/demo/create", "permanent": true },
+    { "source": "/demo/reels/", "destination": "/demo/reels", "permanent": true },
+    { "source": "/demo/search/", "destination": "/demo/search", "permanent": true },
+    { "source": "/demo/p/:id/", "destination": "/demo/p/:id", "permanent": true },
+    { "source": "/demo/profile/:user/", "destination": "/demo/profile/:user", "permanent": true },
+    { "source": "/demo/profile/:user/followers/", "destination": "/demo/profile/:user/followers", "permanent": true },
+    { "source": "/demo/profile/:user/following/", "destination": "/demo/profile/:user/following", "permanent": true },
+    { "source": "/demo/stories/:id/", "destination": "/demo/stories/:id", "permanent": true }
+  ],
+  "rewrites": [
+    { "source": "/demo", "destination": "/demo/index.html" },
+    { "source": "/demo/", "destination": "/demo/index.html" },
+    { "source": "/demo/play", "destination": "/demo/index.html" },
+    { "source": "/demo/play/", "destination": "/demo/index.html" },
+    { "source": "/demo/_uhura/editor", "destination": "/demo/index.html" },
+    { "source": "/demo/_uhura/editor/", "destination": "/demo/index.html" },
+    { "source": "/demo/create", "destination": "/demo/index.html" },
+    { "source": "/demo/reels", "destination": "/demo/index.html" },
+    { "source": "/demo/search", "destination": "/demo/index.html" },
+    { "source": "/demo/p/([^/]+)", "destination": "/demo/index.html" },
+    { "source": "/demo/profile/([^/]+)", "destination": "/demo/index.html" },
+    { "source": "/demo/profile/([^/]+)/(followers|following)", "destination": "/demo/index.html" },
+    { "source": "/demo/stories/([^/]+)", "destination": "/demo/index.html" }
+  ]
 }

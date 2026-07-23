@@ -16,4 +16,5 @@
 /www/.vercel/
 /www/dist/
 /www/node_modules/
+/www/public/demo/
 .vercel

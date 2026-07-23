@@ -6,12 +6,15 @@ on:
     paths:
       - "www/**"
       - "docs/**"
+      - "uhura"
+      - "scripts/build-www-demo.sh"
       - "CHANGELOG.md"
       - "CODE_OF_CONDUCT.md"
       - "CONTRIBUTING.md"
       - "GOVERNANCE.md"
       - "editors/vscode/syntaxes/spock.tmLanguage.json"
       - ".github/workflows/www.yml"
+      - ".gitmodules"
       - ".nvmrc"
       - ".vercelignore"
       - "vercel.json"
@@ -19,21 +22,126 @@ on:
     paths:
       - "www/**"
       - "docs/**"
+      - "uhura"
+      - "scripts/build-www-demo.sh"
       - "CHANGELOG.md"
       - "CODE_OF_CONDUCT.md"
       - "CONTRIBUTING.md"
       - "GOVERNANCE.md"
       - "editors/vscode/syntaxes/spock.tmLanguage.json"
       - ".github/workflows/www.yml"
+      - ".gitmodules"
       - ".nvmrc"
       - ".vercelignore"
       - "vercel.json"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: www-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: identify Uhura source
+        id: uhura
+        run: echo "commit=$(git -C uhura rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.11.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: |
+            uhura/web/pnpm-lock.yaml
+            www/pnpm-lock.yaml
+
+      - name: restore exact Uhura demo
+        id: demo-cache
+        uses: actions/cache@v4
+        with:
+          path: www/public/demo
+          key: www-demo-v1-ubuntu-${{ steps.uhura.outputs.commit }}-${{ hashFiles('.github/workflows/www.yml', '.nvmrc', 'scripts/build-www-demo.sh', 'uhura/Cargo.lock', 'uhura/web/pnpm-lock.yaml') }}
+
+      - uses: dtolnay/rust-toolchain@1.92.0
+        if: steps.demo-cache.outputs.cache-hit != 'true'
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        if: steps.demo-cache.outputs.cache-hit != 'true'
+        with:
+          key: www-uhura-demo
+          workspaces: uhura -> target
+          cache-directories: uhura/target/tools
+
+      - name: install Uhura web dependencies
+        if: steps.demo-cache.outputs.cache-hit != 'true'
+        run: pnpm -C uhura/web install --frozen-lockfile
+
+      - name: install lockfile-exact wasm-bindgen CLI
+        if: steps.demo-cache.outputs.cache-hit != 'true'
+        run: |
+          version="$(sed -n '/name = "wasm-bindgen"/{n;s/version = "\([^"]*\)"/\1/p;q;}' uhura/Cargo.lock)"
+          test -n "$version"
+          installed=""
+          if [ -x uhura/target/tools/bin/wasm-bindgen ]; then
+            installed="$(uhura/target/tools/bin/wasm-bindgen --version | awk '{print $2}')"
+          fi
+          if [ "$installed" != "$version" ]; then
+            cargo install wasm-bindgen-cli \
+              --version "$version" \
+              --locked \
+              --force \
+              --root uhura/target/tools
+          fi
+          test "$(uhura/target/tools/bin/wasm-bindgen --version | awk '{print $2}')" = "$version"
+
+      - name: build Uhura demo
+        if: steps.demo-cache.outputs.cache-hit != 'true'
+        env:
+          WASM_BINDGEN: ${{ github.workspace }}/uhura/target/tools/bin/wasm-bindgen
+        run: bash scripts/build-www-demo.sh
+
+      - name: verify Uhura demo
+        run: node www/scripts/check-demo.mjs
+
+      - name: build website
+        run: |
+          pnpm -C www install --frozen-lockfile
+          pnpm -C www build
+
+      - name: preserve production demo
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: www-demo-${{ github.sha }}
+          path: www/public/demo
+          if-no-files-found: error
+          retention-days: 1
+
+  deploy-production:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: Production
+    concurrency:
+      group: www-production
+      cancel-in-progress: false
+    env:
+      VERCEL_ORG_ID: team_DKn4AHX8KEHvWIlqdFH2jDyP
+      VERCEL_PROJECT_ID: prj_tFKQHS5kwR1zMRcg46OpblVbkMZK
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: pnpm/action-setup@v4
         with:
           version: 10.11.0
@@ -42,5 +150,81 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
           cache-dependency-path: www/pnpm-lock.yaml
-      - run: pnpm -C www install --frozen-lockfile
-      - run: pnpm -C www build
+
+      - name: restore production demo
+        uses: actions/download-artifact@v4
+        with:
+          name: www-demo-${{ github.sha }}
+          path: www/public/demo
+
+      - name: install deployment tools
+        run: |
+          pnpm -C www install --frozen-lockfile
+          pnpm -C www exec playwright install --with-deps chromium
+          npm install --global vercel@56.5.0
+
+      - name: build staged production deployment
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          test -n "$VERCEL_TOKEN"
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          vercel build --prod --token="$VERCEL_TOKEN"
+
+      - name: stage production deployment
+        id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          deployment_url="$(
+            vercel deploy \
+              --prebuilt \
+              --prod \
+              --skip-domain \
+              --archive=tgz \
+              --yes \
+              --token="$VERCEL_TOKEN"
+          )"
+          case "$deployment_url" in
+            https://*) ;;
+            *) echo "Vercel did not return a deployment URL" >&2; exit 1 ;;
+          esac
+          echo "url=$deployment_url" >> "$GITHUB_OUTPUT"
+
+      - name: smoke staged production deployment
+        env:
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: node www/scripts/smoke-www-demo.mjs "${{ steps.deploy.outputs.url }}"
+
+      - name: verify deployed inputs are still current
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          if ! git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- \
+            www \
+            docs \
+            uhura \
+            scripts/build-www-demo.sh \
+            CHANGELOG.md \
+            CODE_OF_CONDUCT.md \
+            CONTRIBUTING.md \
+            GOVERNANCE.md \
+            editors/vscode/syntaxes/spock.tmLanguage.json \
+            .github/workflows/www.yml \
+            .gitmodules \
+            .nvmrc \
+            .vercelignore \
+            vercel.json
+          then
+            echo "A newer main revision changes website inputs; refusing stale promotion." >&2
+            exit 1
+          fi
+
+      - name: promote tested deployment
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          vercel promote \
+            "${{ steps.deploy.outputs.url }}" \
+            --yes \
+            --timeout=5m \
+            --token="$VERCEL_TOKEN"
