@@ -31,6 +31,9 @@ the seed may be expanded or superseded using the study structure below.
 - [The `view` problem space](view-problem-space.md) — unresolved meanings,
   cross-cutting constraints, prior-art questions, and an evaluation harness for
   future proposals.
+- [Browser-Wasm feasibility for the Spock authority runtime](browser-wasm-runtime-feasibility.md)
+  — dependency audit and falsifiable experiment plan for an optional in-session
+  browser host; no supported target or implementation is adopted.
 
 ## Expected structure
 
