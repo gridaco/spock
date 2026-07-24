@@ -32,6 +32,13 @@ the seed may be expanded or superseded using the study structure below.
   cross-cutting constraints, prior-art questions, and an evaluation harness for
   future proposals.
 
+## Open design candidates
+
+- [A conservative shape for `view`](view-design-candidate.md) — one concrete,
+  non-normative bundle derived from the neutral problem-space study, persisted
+  so review can falsify or refine it before any language proposal or
+  implementation.
+
 ## Expected structure
 
 An informal study should state its question, method, evidence, findings,
