@@ -10,8 +10,10 @@
   },
   "scripts": {
     "dev": "astro dev",
+    "check:demo": "node scripts/check-demo.mjs",
+    "smoke:demo": "node scripts/smoke-www-demo.mjs",
     "check": "astro check",
-    "build": "astro check && astro build",
+    "build": "node scripts/check-demo.mjs && astro check && astro build",
     "preview": "astro preview"
   },
   "dependencies": {
@@ -25,6 +27,7 @@
   "devDependencies": {
     "@astrojs/check": "^0.9.9",
     "@tailwindcss/vite": "^4.3.2",
+    "playwright": "1.61.1",
     "tailwindcss": "^4.3.2",
     "typescript": "^6.0.3"
   }
