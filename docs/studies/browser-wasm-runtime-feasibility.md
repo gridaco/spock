@@ -38,7 +38,7 @@ to its containing page.
 
 ## Outcome at this checkpoint
 
-The compiler builds as browser-compatible Wasm, and a temporary wrapper has
+The compiler produces a browser-targeted Wasm build, and a temporary wrapper has
 executed under Node. It has not yet run in a real browser or passed
 native/browser differential tests. A full authority session has a credible
 architecture, but its decisive SQLite experiment has not been completed. The
