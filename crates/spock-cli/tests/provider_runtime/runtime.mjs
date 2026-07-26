@@ -8,17 +8,36 @@ export function createProvider({
   fetchImpl = globalThis.fetch,
   timeoutMs = 15000,
 }) {
+  // App-independent port helpers. The Uhura key types they check are app data and
+  // arrive from the generated tables module, never from this file.
   const helpers = {
-    keyText: (v) => String(v),
     requiredField: (fields, name) => {
-      if (!(name in fields)) throw new Error(`missing field ${name}`);
-      return fields[name];
+      const value = fields.get(name);
+      if (!value) throw new TypeError(`Uhura value has no field \`${name}\``);
+      return value;
     },
-    boolValue: (v) => Boolean(v),
-    textValue: (v) => String(v),
-    POST_ID_TYPE: "post",
-    USER_ID_TYPE: "user",
-    STORY_ID_TYPE: "story",
+    keyText: (value, type) => {
+      if (value?.$ !== "key" || value.type !== type) {
+        throw new TypeError(`expected Uhura key ${type}`);
+      }
+      const body = value.value;
+      if (body?.$ !== "Text" || typeof body.value !== "string") {
+        throw new TypeError(`${type} must wrap Text`);
+      }
+      return body.value;
+    },
+    textValue: (value) => {
+      if (value?.$ !== "Text" || typeof value.value !== "string") {
+        throw new TypeError("expected Uhura Text");
+      }
+      return value.value;
+    },
+    boolValue: (value) => {
+      if (value?.$ !== "bool" || typeof value.value !== "boolean") {
+        throw new TypeError("expected Uhura Bool");
+      }
+      return value.value;
+    },
   };
 
   const timed = async (url, init) => {

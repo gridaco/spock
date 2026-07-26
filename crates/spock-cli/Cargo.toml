@@ -20,6 +20,7 @@ spock-lang = { path = "../spock-lang" }
 spock-runtime = { path = "../spock-runtime" }
 spock-project = { path = "../spock-project" }
 spock-host = { path = "../spock-host" }
+uhura-check = { path = "../../uhura/crates/uhura-check" }
 serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true

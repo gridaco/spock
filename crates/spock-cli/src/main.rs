@@ -109,6 +109,9 @@ enum GenTarget {
         /// The app assembly declaration (.wire spike syntax).
         #[arg(long)]
         app: PathBuf,
+        /// The Uhura client project whose `uhura.toml` carries the package identity.
+        #[arg(long)]
+        uhura: PathBuf,
         #[arg(short, long)]
         out: Option<PathBuf>,
     },
@@ -218,9 +221,13 @@ fn execute(command: Command) -> ExitCode {
                     program.contract(),
                     GenerationTarget::GraphqlSchema,
                 ),
-                GenTarget::Provider { app, .. } => {
-                    spock_cli::provider_gen::generate_from_contract(program.contract(), &app)
-                        .map_err(anyhow::Error::msg)
+                GenTarget::Provider { app, uhura, .. } => {
+                    spock_cli::provider_gen::generate_from_contract(
+                        program.contract(),
+                        &app,
+                        &uhura,
+                    )
+                    .map_err(anyhow::Error::msg)
                 }
             };
             match artifact {
