@@ -197,14 +197,14 @@ fn run_node(script: &str, args: &[&std::path::Path]) -> String {
     stdout
 }
 
-/// Node-based execution harness — opt-in only (CI does not require node):
-/// `cargo test -p spock-cli --test provider_gen -- --ignored`
+/// Node-based execution harness. Node is already required to reach a green
+/// workspace: the canonical Play artifacts these crates test against are built by
+/// `pnpm -C uhura/web build:provider`, so nothing here is optional.
 #[test]
-#[ignore = "requires node"]
 fn generated_module_drives_the_shared_runtime_under_node() {
     let file = pg::parse(WIRE).expect("parse");
     let module = pg::generate_provider_module(&file, &schema(), MODULE).expect("generates");
-    let path = write_module("provider-tables.mjs", module);
+    let path = write_module("runtime-tables.mjs", module);
     let stdout = run_node("runtime-unit.mjs", &[&path]);
     assert!(stdout.contains("runtime ok"), "{stdout}");
 }
@@ -212,11 +212,10 @@ fn generated_module_drives_the_shared_runtime_under_node() {
 /// The runtime may not name any app, and it must refuse keys that do not carry
 /// the Uhura type the generated tables declare.
 #[test]
-#[ignore = "requires node"]
 fn the_runtime_is_app_independent_and_checks_key_types() {
     let file = pg::parse(WIRE).expect("parse");
     let module = pg::generate_provider_module(&file, &schema(), MODULE).expect("generates");
-    let path = write_module("provider-tables.mjs", module);
+    let path = write_module("genericity-tables.mjs", module);
     let source = std::path::PathBuf::from(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/provider_runtime/runtime.mjs"
@@ -228,7 +227,6 @@ fn the_runtime_is_app_independent_and_checks_key_types() {
 /// A second app, with its own tables and its own package identity, drives the very
 /// same runtime file. This is what makes the runtime shared rather than Instagram's.
 #[test]
-#[ignore = "requires node"]
 fn a_second_app_drives_the_same_runtime() {
     const BLOG_CONTRACT: &str = r#"{
       "tables": [
