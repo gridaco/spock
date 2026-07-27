@@ -5,7 +5,7 @@
 use spock_cli::provider_gen as pg;
 
 const CONTRACT: &str = include_str!("provider_fixtures/contract.json");
-const WIRE: &str = include_str!("provider_fixtures/instagram.wire");
+const DECLARATION: &str = include_str!("provider_fixtures/instagram.provider");
 const PROVIDER_TS: &str = include_str!("provider_fixtures/spock-provider.ts");
 const MANIFEST: &str = include_str!("provider_fixtures/manifest.toml");
 
@@ -22,14 +22,14 @@ fn contract_exposes_the_storage_object_system_table() {
 
 #[test]
 fn declaration_validates_clean_against_the_contract() {
-    let file = pg::parse(WIRE).expect("parse");
+    let file = pg::parse(DECLARATION).expect("parse");
     let problems = pg::validate_against(&file, &schema());
     assert!(problems.is_empty(), "{problems:?}");
 }
 
 #[test]
 fn machine_contract_types_match_the_handwritten_machine_uhura() {
-    let file = pg::parse(WIRE).expect("parse");
+    let file = pg::parse(DECLARATION).expect("parse");
     let generated = pg::generate_machine_types(&file);
     let golden = include_str!("provider_fixtures/machine-types.uhura");
     assert_eq!(generated.trim(), golden.trim());
@@ -37,7 +37,7 @@ fn machine_contract_types_match_the_handwritten_machine_uhura() {
 
 #[test]
 fn view_types_match_the_handwritten_machine_uhura() {
-    let file = pg::parse(WIRE).expect("parse");
+    let file = pg::parse(DECLARATION).expect("parse");
     let generated = pg::generate_view_types(&file, &schema()).expect("views validate");
     let golden = include_str!("provider_fixtures/view-types.uhura");
     assert_eq!(generated.trim(), golden.trim());
@@ -45,7 +45,7 @@ fn view_types_match_the_handwritten_machine_uhura() {
 
 #[test]
 fn snapshot_query_matches_the_handwritten_adapter() {
-    let file = pg::parse(WIRE).expect("parse");
+    let file = pg::parse(DECLARATION).expect("parse");
     let generated = pg::generate_snapshot_query(&file, &schema()).expect("generates");
     let golden = include_str!("provider_fixtures/snapshot-query.graphql");
     assert_eq!(generated, golden);
@@ -53,7 +53,7 @@ fn snapshot_query_matches_the_handwritten_adapter() {
 
 #[test]
 fn dispatch_switch_matches_the_handwritten_adapter() {
-    let file = pg::parse(WIRE).expect("parse");
+    let file = pg::parse(DECLARATION).expect("parse");
     let generated = pg::generate_dispatch(&file).expect("generates");
     let golden = include_str!("provider_fixtures/dispatch-switch.ts");
     assert_eq!(generated, golden);
@@ -61,7 +61,7 @@ fn dispatch_switch_matches_the_handwritten_adapter() {
 
 #[test]
 fn refusal_whitelist_semantically_matches_the_handwritten_table() {
-    let file = pg::parse(WIRE).expect("parse");
+    let file = pg::parse(DECLARATION).expect("parse");
     let mut generated = pg::generate_refusals(&file).expect("generates");
     for (_, list) in generated.iter_mut() {
         list.sort();
@@ -96,7 +96,7 @@ fn refusal_whitelist_semantically_matches_the_handwritten_table() {
 #[test]
 fn play_assets_match_the_handwritten_adapter() {
     let entries = pg::parse_manifest(MANIFEST).expect("manifest parses");
-    let file = pg::parse(WIRE).expect("parse");
+    let file = pg::parse(DECLARATION).expect("parse");
     let generated = pg::generate_play_assets(&entries, &file.videos).expect("no collisions");
     let golden = include_str!("provider_fixtures/play-assets.ts");
     assert_eq!(generated, golden.trim_end());
@@ -133,7 +133,7 @@ const MODULE: &str = "app.instagram@1";
 /// module constants, and the runtime contract must stay the four generic helpers.
 #[test]
 fn key_tags_are_generated_data_and_helpers_stay_app_independent() {
-    let file = pg::parse(WIRE).expect("parse");
+    let file = pg::parse(DECLARATION).expect("parse");
     let module = pg::generate_provider_module(&file, &schema(), MODULE).expect("generates");
 
     assert!(
@@ -160,7 +160,7 @@ fn key_tags_are_generated_data_and_helpers_stay_app_independent() {
 /// One generator keeps them from drifting apart.
 #[test]
 fn generated_key_tags_agree_with_the_generated_machine_types() {
-    let file = pg::parse(WIRE).expect("parse");
+    let file = pg::parse(DECLARATION).expect("parse");
     let machine = pg::generate_machine_types(&file);
     let module = pg::generate_provider_module(&file, &schema(), MODULE).expect("generates");
     for ty in ["PostId", "UserId", "StoryId"] {
@@ -202,7 +202,7 @@ fn run_node(script: &str, args: &[&std::path::Path]) -> String {
 /// `pnpm -C uhura/web build:provider`, so nothing here is optional.
 #[test]
 fn generated_module_drives_the_shared_runtime_under_node() {
-    let file = pg::parse(WIRE).expect("parse");
+    let file = pg::parse(DECLARATION).expect("parse");
     let module = pg::generate_provider_module(&file, &schema(), MODULE).expect("generates");
     let path = write_module("runtime-tables.mjs", module);
     let stdout = run_node("runtime-unit.mjs", &[&path]);
@@ -213,7 +213,7 @@ fn generated_module_drives_the_shared_runtime_under_node() {
 /// the Uhura type the generated tables declare.
 #[test]
 fn the_runtime_is_app_independent_and_checks_key_types() {
-    let file = pg::parse(WIRE).expect("parse");
+    let file = pg::parse(DECLARATION).expect("parse");
     let module = pg::generate_provider_module(&file, &schema(), MODULE).expect("generates");
     let path = write_module("genericity-tables.mjs", module);
     let source = std::path::PathBuf::from(concat!(
@@ -242,7 +242,7 @@ fn a_second_app_drives_the_same_runtime() {
         { "name": "retract_article", "errors": ["not_authorized"] }
       ]
     }"#;
-    const BLOG_WIRE: &str = r#"
+    const BLOG_DECLARATION: &str = r#"
       app "Blog";
       snapshot app { cap 50 per table; read article; }
       mutation SetPublished { article: article.id, published: bool }
@@ -251,7 +251,7 @@ fn a_second_app_drives_the_same_runtime() {
     "#;
 
     let schema = pg::extract_contract(BLOG_CONTRACT).expect("contract parses");
-    let file = pg::parse(BLOG_WIRE).expect("parse");
+    let file = pg::parse(BLOG_DECLARATION).expect("parse");
     assert!(pg::validate_against(&file, &schema).is_empty());
     let module = pg::generate_provider_module(&file, &schema, "app.blog@2").expect("generates");
     assert!(module.contains("const ARTICLE_ID_TYPE = `${MODULE}::ArticleId`;"));

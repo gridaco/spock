@@ -1,5 +1,5 @@
-//! Provider generation spike (uhura#29): .wire — a projection/contract language
-//! over the Spock schema. Parses a .wire declaration, validates it against the
+//! Provider generation spike (uhura#29): .provider — a projection/contract language
+//! over the Spock schema. Parses a .provider declaration, validates it against the
 //! compiler-emitted contract, and generates the provider artifacts: contract
 //! types, view types, snapshot query, dispatch, refusals, assets, and the module.
 
@@ -8,13 +8,13 @@ use pest_derive::Parser;
 use serde_json::Value;
 
 #[derive(Parser)]
-#[grammar = "provider_gen/wire.pest"]
-struct WireParser;
+#[grammar = "provider_gen/provider.pest"]
+struct ProviderParser;
 
 #[derive(Debug, PartialEq)]
 pub struct Field {
     pub name: String,
-    /// Original `.wire` type token (e.g. `post.id`) — used for schema validation.
+    /// Original `.provider` type token (e.g. `post.id`) — used for schema validation.
     pub source: String,
     pub ty: String,
 }
@@ -104,7 +104,7 @@ pub struct SnapshotRead {
 }
 
 #[derive(Debug, Default)]
-pub struct WireFile {
+pub struct ProviderFile {
     pub app: Option<String>,
     /// Explicit video mappings from the fixtures block (no manifest source to derive from)
     pub videos: Vec<(String, String)>,
@@ -125,7 +125,7 @@ impl std::fmt::Display for ParseError {
 }
 impl std::error::Error for ParseError {}
 
-/// `.wire` field type → machine-side type name.
+/// `.provider` field type → machine-side type name.
 /// `<table>.id` projects to `<Table>Id`; scalars use the 0.4 prelude names.
 fn machine_type(ty: &str) -> Result<String, ParseError> {
     match ty {
@@ -213,10 +213,11 @@ fn asset_type(class: &str) -> Option<&'static str> {
     }
 }
 
-pub fn parse(source: &str) -> Result<WireFile, ParseError> {
-    let mut pairs = WireParser::parse(Rule::file, source).map_err(|e| ParseError(e.to_string()))?;
+pub fn parse(source: &str) -> Result<ProviderFile, ParseError> {
+    let mut pairs =
+        ProviderParser::parse(Rule::file, source).map_err(|e| ParseError(e.to_string()))?;
     let file = pairs.next().expect("file rule");
-    let mut out = WireFile::default();
+    let mut out = ProviderFile::default();
 
     for item in file.into_inner() {
         match item.as_rule() {
@@ -449,7 +450,7 @@ pub fn policy_calls(policy: &str) -> Vec<CallSpec> {
 
 /// Mutation → backend routing table (JSON). The runtime decides branches, RPC
 /// arguments, and refusal routes from this table alone — it owns no logic.
-pub fn generate_routing(file: &WireFile) -> String {
+pub fn generate_routing(file: &ProviderFile) -> String {
     let mut out = String::from("{\n");
     for (i, m) in file.mutations.iter().enumerate() {
         let kind = m.op.clone().unwrap_or_else(|| snake(&m.name));
@@ -506,9 +507,9 @@ pub fn generate_routing(file: &WireFile) -> String {
     out
 }
 
-/// Schema validation: every table/fn/error a .wire file references must exist
+/// Schema validation: every table/fn/error a `.provider` file references must exist
 /// in the contract. Violations come back as a readable list (no silent passes).
-pub fn validate_against(file: &WireFile, schema: &SpockSchema) -> Vec<String> {
+pub fn validate_against(file: &ProviderFile, schema: &SpockSchema) -> Vec<String> {
     let mut problems = Vec::new();
     for read in &file.snapshot_reads {
         if !schema.has_table(&read.table) {
@@ -598,7 +599,7 @@ fn screaming(name: &str) -> String {
 
 /// Mutation surface → the adapter's `toBackendOperation` switch body (TS text).
 /// kind = `op` override or snake_case(name); field mapping is derived from types.
-pub fn generate_dispatch(file: &WireFile) -> Result<String, Vec<String>> {
+pub fn generate_dispatch(file: &ProviderFile) -> Result<String, Vec<String>> {
     let mut problems = Vec::new();
     let Some(app) = &file.app else {
         return Err(vec!["missing `app \"Name\";` declaration".to_string()]);
@@ -649,7 +650,7 @@ pub fn generate_dispatch(file: &WireFile) -> Result<String, Vec<String>> {
 }
 
 /// Route key → kebab-case refusal list. Duplicate routes are an error.
-pub fn generate_refusals(file: &WireFile) -> Result<Vec<(String, Vec<String>)>, Vec<String>> {
+pub fn generate_refusals(file: &ProviderFile) -> Result<Vec<(String, Vec<String>)>, Vec<String>> {
     let mut problems = Vec::new();
     let mut out: Vec<(String, Vec<String>)> = Vec::new();
     for m in &file.mutations {
@@ -676,7 +677,7 @@ pub fn generate_refusals(file: &WireFile) -> Result<Vec<(String, Vec<String>)>, 
 /// under. Key tags are app data, so they are generated here rather than supplied by
 /// the runtime, which must stay app-independent.
 pub fn generate_provider_module(
-    file: &WireFile,
+    file: &ProviderFile,
     schema: &SpockSchema,
     module: &str,
 ) -> Result<String, Vec<String>> {
@@ -763,7 +764,7 @@ pub fn parse_manifest(source: &str) -> Result<Vec<(String, String)>, Vec<String>
     }
 }
 
-/// Manifest entries + explicit .wire video mappings → Play logical-asset table (TS text).
+/// Manifest entries + explicit .provider video mappings → Play logical-asset table (TS text).
 /// Name collisions are an error.
 pub fn generate_play_assets(
     entries: &[(String, String)],
@@ -812,10 +813,10 @@ pub fn default_alias(table: &str) -> String {
     pluralize(&camel(table))
 }
 
-/// .wire snapshot declaration + schema columns → the adapter's GraphQL snapshot document.
+/// .provider snapshot declaration + schema columns → the adapter's GraphQL snapshot document.
 /// FK and storage_object columns project as `name { id }`; the rest stay bare.
 pub fn generate_snapshot_query(
-    file: &WireFile,
+    file: &ProviderFile,
     schema: &SpockSchema,
 ) -> Result<String, Vec<String>> {
     let mut problems = Vec::new();
@@ -868,7 +869,10 @@ fn pascal(name: &str) -> String {
 
 /// View declaration → machine-side record types. If type derivation disagrees with
 /// the schema, return a problem list instead of generating (no speculative output).
-pub fn generate_view_types(file: &WireFile, schema: &SpockSchema) -> Result<String, Vec<String>> {
+pub fn generate_view_types(
+    file: &ProviderFile,
+    schema: &SpockSchema,
+) -> Result<String, Vec<String>> {
     let mut problems = Vec::new();
     let mut out = String::new();
     for (i, view) in file.views.iter().enumerate() {
@@ -1072,7 +1076,7 @@ fn emit_variant(out: &mut String, name: &str, fields: &[Field]) {
 
 /// Generate the machine-side contract declarations. Settlement's Accepted/Refused are
 /// fixed by the 0.4 result vocabulary, so they are enforced; only extras follow the file.
-pub fn generate_machine_types(file: &WireFile) -> String {
+pub fn generate_machine_types(file: &ProviderFile) -> String {
     let mut out = String::from("pub enum Mutation {\n");
     for m in &file.mutations {
         emit_variant(&mut out, &m.name, &m.fields);
@@ -1298,14 +1302,14 @@ pub fn read_module_identity(uhura_project: &std::path::Path) -> Result<String, S
 /// client's own package identity; problems merge into one failure.
 pub fn generate_from_contract<C: ::serde::Serialize>(
     contract: &C,
-    app_declaration: &std::path::Path,
+    declaration: &std::path::Path,
     uhura_project: &std::path::Path,
 ) -> Result<String, String> {
     let json = serde_json::to_string(contract)
         .map_err(|e| format!("contract serialization failed: {e}"))?;
     let schema = extract_contract(&json).map_err(|p| p.join("\n"))?;
-    let source = std::fs::read_to_string(app_declaration)
-        .map_err(|e| format!("cannot read {}: {e}", app_declaration.display()))?;
+    let source = std::fs::read_to_string(declaration)
+        .map_err(|e| format!("cannot read {}: {e}", declaration.display()))?;
     let file = parse(&source).map_err(|e| e.to_string())?;
     let problems = validate_against(&file, &schema);
     if !problems.is_empty() {
