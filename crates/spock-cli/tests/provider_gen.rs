@@ -178,13 +178,28 @@ fn write_module(name: &str, contents: String) -> std::path::PathBuf {
 }
 
 fn run_node(script: &str, args: &[&std::path::Path]) -> String {
+    run_node_raw(
+        script,
+        &args
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>(),
+        true,
+    )
+}
+
+/// `trailing_runtime` appends the shared runtime path, which every harness except
+/// the live-server one takes as its final argument.
+fn run_node_raw(script: &str, args: &[String], trailing_runtime: bool) -> String {
     let base = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/provider_runtime");
     let mut command = std::process::Command::new("node");
     command.arg(format!("{base}/{script}"));
     for arg in args {
         command.arg(arg);
     }
-    command.arg(format!("{base}/runtime.mjs"));
+    if trailing_runtime {
+        command.arg(format!("{base}/runtime.mjs"));
+    }
     let output = command
         .output()
         .expect("node must be available for this opt-in check");
@@ -259,4 +274,57 @@ fn a_second_app_drives_the_same_runtime() {
     let path = write_module("blog-tables.mjs", module);
     let stdout = run_node("second-app.mjs", &[&path]);
     assert!(stdout.contains("second app ok"), "{stdout}");
+}
+
+/// The live-server evidence, wired. The spike recorded that the generated snapshot
+/// query is accepted by a real Spock authority, that a like/unlike round trip lands
+/// and restores state, and that an unauthenticated refusal matches the generated
+/// whitelist — but ran it by hand, so nothing re-checked it. This boots the canonical
+/// Instagram authority in-process on an ephemeral port and runs that same harness.
+#[test]
+fn generated_tables_drive_a_live_authority() {
+    let program = spock_cli::FileProgram::load(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../uhura/examples/instagram/backend/app.spock"
+    ))
+    .expect("the canonical authority loads");
+    let base_dir = program.source_dir();
+    let module =
+        pg::generate_provider_module(&pg::parse(DECLARATION).expect("parse"), &schema(), MODULE)
+            .expect("generates");
+    let module_path = write_module("live-tables.mjs", module);
+
+    // In-memory database: `construct` rebuilds from seed, so the counts the harness
+    // asserts are the contract's own seed rather than leftover state.
+    let run = spock_cli::StandaloneRun::construct(program.into_contract(), None, base_dir)
+        .expect("authority constructs");
+    let app = run.app();
+
+    let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let listener = runtime
+        .block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0)))
+        .expect("ephemeral port");
+    let base = format!("http://{}", listener.local_addr().expect("bound address"));
+    let (stop, halt) = tokio::sync::oneshot::channel::<()>();
+    let served = runtime.spawn(async move {
+        tokio::select! {
+            result = spock_runtime::http::serve(app, listener) => result.map_err(|e| e.to_string()),
+            _ = halt => Ok(()),
+        }
+    });
+
+    let stdout = std::panic::catch_unwind(|| {
+        run_node_raw(
+            "e2e.mjs",
+            &[base.clone(), module_path.display().to_string()],
+            false,
+        )
+    });
+
+    let _ = stop.send(());
+    let outcome = runtime.block_on(served).expect("server task joins");
+    assert!(outcome.is_ok(), "server failed: {outcome:?}");
+
+    let stdout = stdout.unwrap_or_else(|payload| std::panic::resume_unwind(payload));
+    assert!(stdout.contains("e2e ok"), "{stdout}");
 }
