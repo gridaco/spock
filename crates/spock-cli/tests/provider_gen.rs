@@ -288,14 +288,31 @@ fn generated_tables_drive_a_live_authority() {
         "/../../uhura/examples/instagram/backend/app.spock"
     ))
     .expect("the canonical authority loads");
-    let base_dir = program.source_dir();
     let module =
         pg::generate_provider_module(&pg::parse(DECLARATION).expect("parse"), &schema(), MODULE)
             .expect("generates");
     let module_path = write_module("live-tables.mjs", module);
 
-    // In-memory database: `construct` rebuilds from seed, so the counts the harness
-    // asserts are the contract's own seed rather than leftover state.
+    let stdout = against_live_authority(program, |base| {
+        run_node_raw(
+            "e2e.mjs",
+            &[base.to_string(), module_path.display().to_string()],
+            false,
+        )
+    });
+    assert!(stdout.contains("e2e ok"), "{stdout}");
+}
+
+/// Serve one program in-process on an ephemeral loopback port for the duration of
+/// `harness`. The database is in-memory, so `construct` rebuilds it from the
+/// contract's own seed and a harness never observes another test's state. The
+/// server is stopped and joined afterwards, so a server-side failure surfaces
+/// instead of hiding behind a harness that happened to pass.
+fn against_live_authority(
+    program: spock_cli::FileProgram,
+    harness: impl FnOnce(&str) -> String + std::panic::UnwindSafe,
+) -> String {
+    let base_dir = program.source_dir();
     let run = spock_cli::StandaloneRun::construct(program.into_contract(), None, base_dir)
         .expect("authority constructs");
     let app = run.app();
@@ -313,18 +330,55 @@ fn generated_tables_drive_a_live_authority() {
         }
     });
 
-    let stdout = std::panic::catch_unwind(|| {
+    let outcome = std::panic::catch_unwind(|| harness(&base));
+
+    let _ = stop.send(());
+    let server = runtime.block_on(served).expect("server task joins");
+    assert!(server.is_ok(), "server failed: {server:?}");
+
+    outcome.unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+}
+
+/// A second, independently authored contract. `filter-lab` models no domain — it
+/// exists to stress the query layer — so it carries shapes the Instagram contract
+/// never exercises: a composite key, a self-reference, a closed set, a float, a
+/// timestamp, and a nullable column. Generating against it, and having its own
+/// authority accept the result, is what separates a generator from one app's script.
+#[test]
+fn a_second_contract_generates_a_query_its_own_authority_accepts() {
+    let program = spock_cli::FileProgram::load(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../examples/filter-lab/schema.spock"
+    ))
+    .expect("filter-lab loads");
+
+    // The contract is read from the program the compiler just built, not from a
+    // committed copy, so this cannot drift away from `schema.spock`.
+    let json = serde_json::to_string(program.contract()).expect("contract serializes");
+    let schema = pg::extract_contract(&json).expect("a second contract extracts");
+    assert!(schema.fns.is_empty(), "filter-lab declares no fns");
+
+    let declaration =
+        pg::parse("app \"FilterLab\";\nsnapshot app { cap 50 per table; read widget; read edge; }")
+            .expect("parse");
+    assert!(
+        pg::validate_against(&declaration, &schema).is_empty(),
+        "the declaration validates against a contract it was not written for"
+    );
+
+    let query = pg::generate_snapshot_query(&declaration, &schema).expect("generates");
+    // Composite key: `edge` keys on (src, dst), so neither is a single id column.
+    assert!(query.contains("src { id }") && query.contains("dst { id }"));
+    // Self-reference: `parent` points back into the same table.
+    assert!(query.contains("parent { id }"));
+    let query_path = write_module("filter-lab-snapshot.graphql", query);
+
+    let stdout = against_live_authority(program, |base| {
         run_node_raw(
-            "e2e.mjs",
-            &[base.clone(), module_path.display().to_string()],
+            "second-contract.mjs",
+            &[base.to_string(), query_path.display().to_string()],
             false,
         )
     });
-
-    let _ = stop.send(());
-    let outcome = runtime.block_on(served).expect("server task joins");
-    assert!(outcome.is_ok(), "server failed: {outcome:?}");
-
-    let stdout = stdout.unwrap_or_else(|payload| std::panic::resume_unwind(payload));
-    assert!(stdout.contains("e2e ok"), "{stdout}");
+    assert!(stdout.contains("second contract ok"), "{stdout}");
 }
