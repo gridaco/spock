@@ -827,6 +827,25 @@ overrides are an explicit unanchored source/test trust boundary.
 `spock start` and `spock dev` are the only umbrella lifecycle: one project,
 listener, origin, and coordinated shutdown.
 
+## AI and agent documentation
+
+The canonical [llms.txt](llms.txt) index maps AI tools to Spock's authoritative
+guides, specifications, design records, governance, and source. It is generated
+from the Markdown documentation with Sourcey and published at
+[spock.sh/llms.txt](https://spock.sh/llms.txt) by the website build.
+
+After changing indexed documentation, install the website dependencies and
+regenerate the tracked source:
+
+```sh
+corepack pnpm@10.11.0 -C www install --frozen-lockfile
+corepack pnpm@10.11.0 -C www generate:llms
+```
+
+The production build checks that `llms.txt` is current and copies that exact
+canonical file to the static website, preventing a second hand-maintained copy
+from drifting.
+
 ## Contributing and language evolution
 
 Spock welcomes implementation, documentation, testing, research, and competing

@@ -1,0 +1,39 @@
+# Spock
+
+> Install the Spock toolchain from npm — prebuilt native binaries for macOS, Linux, and Windows, with no build step and no network access at install time.
+
+
+## Start here
+
+- [Project and framework overview](/docs/): What Spock is, its current scope, and its documentation map.
+- [Getting started](/docs/start/): Installation, a quickstart, and the complete tutorial.
+- [Spock v0 language specification](/docs/spec/v0/): The normative definition of current language behavior.
+- [GraphQL dialect specification](/docs/spec/graphql/): The normative GraphQL exposure contract.
+- [Design records](https://github.com/gridaco/spock/tree/main/docs/rfd): Accepted and historical design records in the source repository.
+- [Governance](/docs/governance/project/): Project authority, process, and decision making.
+- [Contributing](/docs/contributing/): How to report problems and contribute changes.
+- [GitHub source](https://github.com/gridaco/spock): Source code, issues, and releases.
+
+## Documentation
+
+- [Install](/docs/start/install/): Install the Spock toolchain from npm — prebuilt native binaries for macOS, Linux, and Windows, with no build step and no network access at install time.
+- [Quickstart](/docs/start/quickstart/): Scaffold a project, declare a two-table authority, serve it, and meet your first derived error — in about ten minutes.
+- [Tutorial: build a mini-Instagram backend](/docs/start/tutorial/): Build a mini-Instagram backend — users, posts, likes, comments — from an empty project to a contract with a named refusal, one verified step at a time.
+- [Identity: the actor seam](/docs/language/actor/): How Spock v0 carries identity — the auth table anchor, the X-Spock-Actor header, spock_actor(), = me, and the impersonation workflow.
+- [The derived API](/docs/language/derived-api/): Every table derives a contract, REST reads, a GraphQL schema, and a pre-declared error vocabulary — none of it authored by you.
+- [Functions and refusals](/docs/language/functions/): How Spock functions declare typed contracts over SQL escape bodies — polarity, return shapes, records, product errors, and refusals.
+- [Seed and disposable state](/docs/language/seed/): How seed blocks populate a program's world through its own contract, and why replay — not migration — is the state life cycle.
+- [Tables, types, and defaults](/docs/language/tables/): Declaring durable truth in Spock: tables, builtin types, keys, defaults, uniqueness, references, closed sets, and validator checks.
+- [CLI](/docs/reference/cli/): Every spock command — check, new, init, start, dev, run, build, and gen — with flags, defaults, and the output each one prints.
+- [Error codes](/docs/reference/errors/): The complete Spock error vocabulary — derived, reserved, and product runtime codes, both wire envelopes, and every compile-time diagnostic.
+- [HTTP API](/docs/reference/http/): Every endpoint the runtime serves — the meta surface, REST reads and filter operators, rpc, the GraphQL binding, wire errors, and the storage plane.
+- [spock.toml](/docs/reference/spock-toml/): The strict version-1 spock.toml manifest — schema, validation diagnostics, the canonical scaffolds, and how commands discover a project.
+- [Project status](/docs/status/): What is stable, experimental, in progress, and deliberately absent in Spock v0 — plus the project vocabulary.
+- [Uhura](/docs/uhura/): What Uhura is, what it owns versus Spock, and what ships with the spock CLI today.
+- [Examples](/docs/examples/): The example portfolio — what each harness demonstrates, what runs, and what is deliberately not a program yet.
+- [Spock v0 — language specification](/docs/spec/v0/): Status: normative for the v0 toolchain. Scope: the implemented declarations — `table`/`auth table`, `record`, `fn`/`mut fn`, and `seed` — one embedded-SQLite runtime, and a minimal HTTP protocol. Future declarations such as `view`, `role`, and `policy` remain deliberately absent and reserved (§2.3) so v0 programs stay forward-compatible.
+- [The GraphQL surface — dialect specification](/docs/spec/graphql/): Status: **normative**. This document specifies the GraphQL dialect Spock derives, independent of what any given toolchain version has implemented. The v0 runtime implements **Tier 1** (§7); higher tiers are the target. `docs/spec/v0.md` §8.2 records the v0 protocol binding (mount, page discipline, error envelope); §9 here records the executed migration from the pre-dialect surface.
+- [Spock design principles](/docs/governance/design-principles/): These principles turn the README doctrine into a review rubric. They do not replace judgment. They make judgment explainable, consistent, and open to challenge with evidence.
+- [Language change process](/docs/governance/language-change-process/): Spock is intentionally small, unconventional, and opinionated. Language evolution therefore starts with a demonstrated problem and proceeds through published judgment. Implementations and syntax sketches may be evidence, but the first working patch or most popular spelling does not decide adoption.
+- [Language Design Committee](/docs/governance/language-design-committee/): The Language Design Committee is Spock's permanent language-design authority. Its legal and administrative relationship to the Project Lead, membership rules, voting thresholds, conflicts, and appeals are defined in GOVERNANCE.md. This charter describes how the committee operates.
+- [Current adoption defaults](/docs/governance/commonly-declined/): This page records current adoption defaults for recurring questions. It is deliberately small. It is not a blacklist, a permanent verdict, a substitute for committee judgment, or a list of every rejected RFD. Spock is pre-1.0; experiments that test these assumptions are welcome.

@@ -10,6 +10,10 @@ loader publishes the selected files from `../docs/` and the root governance
 documents, preserving their normative, decision-record, governance, or
 non-normative status. Do not copy those sources into `www/`.
 
+The same rule applies to `../llms.txt`: Sourcey generates the tracked canonical
+file, and the website build verifies and copies it to `public/llms.txt`. The
+published copy is generated and ignored; do not edit or commit it.
+
 ## Local development
 
 From the repository root:
